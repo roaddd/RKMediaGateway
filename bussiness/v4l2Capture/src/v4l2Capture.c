@@ -32,8 +32,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
         ctx->fd = -1;
         return -1;
     }
-    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE) && 
-        !(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) {
+    if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) {
         fprintf(stderr, "[ERROR] device not support video capture\n");
         close(ctx->fd);
         ctx->fd = -1;
@@ -87,17 +86,17 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     {
         // 多平面模式必须用v4l2_buffer + v4l2_plane
         struct v4l2_buffer buf;
-        struct v4l2_plane planes[1]; // RKISP通常只有1个平面（NV12）
+        struct v4l2_plane planes[VIDEO_MAX_PLANES]; // RKISP通常只有1个平面（NV12）
         memset(&buf, 0, sizeof(buf));
         memset(planes, 0, sizeof(planes));
 
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
-        buf.length = 1; // 平面数量（RKISP NV12为1）
+        buf.length = VIDEO_MAX_PLANES; // 平面数量（RKISP NV12为1）
         buf.m.planes = planes; // 指向平面数组
 
-        // 关键修复：多平面模式的VIDIOC_QUERYBUF
+        // 多平面模式的VIDIOC_QUERYBUF
         if (ioctl(ctx->fd, VIDIOC_QUERYBUF, &buf) < 0) {
             fprintf(stderr, "[ERROR] query buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
             // 清理已映射的缓冲区
@@ -157,13 +156,13 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len
 
     // 多平面模式出队缓冲区
     struct v4l2_buffer buf;
-    struct v4l2_plane planes[1];
+    struct v4l2_plane planes[VIDEO_MAX_PLANES];
     memset(&buf, 0, sizeof(buf));
     memset(planes, 0, sizeof(planes));
 
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     buf.memory = V4L2_MEMORY_MMAP;
-    buf.length = 1;
+    buf.length = VIDEO_MAX_PLANES;
     buf.m.planes = planes;
 
     if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
@@ -190,7 +189,7 @@ void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
     if (!ctx) return;
 
     // 停止流采集
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     ioctl(ctx->fd, VIDIOC_STREAMOFF, &type);
 
     // 释放mmap映射

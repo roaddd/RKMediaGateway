@@ -15,9 +15,18 @@ endif()
 
 # 1. 包含头文件目录
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
+# 第三方头文件
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
+
+# 指定动态库的搜索路径
+set(THIRDPARTY_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/mpp/lib)
+link_directories(${THIRDPARTY_LIB_DIR})
 
 # 2. 收集V4L2采集模块源码
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
+# MPP硬件编码模块
+file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 
 # 3. 编译目标控制
 # 目标1：v4l2_test（编译main_v4l2Capture_test.cpp）
@@ -30,6 +39,19 @@ if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
     target_link_libraries(v4l2_test PRIVATE pthread m)
     # 设置输出路径
     set_target_properties(v4l2_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
+# MPP硬件编码测试程序
+if(BUILD_TARGET STREQUAL "mpp_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(mpp_test
+        ${PROJECT_SOURCE_DIR}/main/main_mpp_h264_test.cpp
+        ${V4L2_CAPTURE_SRC}
+        ${MPP_ENCODER_SRC}
+    )
+    target_link_libraries(mpp_test PRIVATE rockchip_mpp pthread m)
+    set_target_properties(mpp_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()

@@ -20,6 +20,9 @@
 #define OUTPUT_FILE      "capture_nv12.yuv" // 保存的原始数据文件
 
 // ==================== V4L2采集上下文 ====================
+
+#define VIDEO_MAX_PLANES    1
+
 typedef struct {
     int fd;                     // 摄像头设备文件描述符
     void *buf[4];               // mmap映射的缓冲区指针（最多4个）

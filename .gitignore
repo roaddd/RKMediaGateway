@@ -1,2 +1,3 @@
 /build/output
-/build/thirdparty/mpp/
+/thirdparty/mpp/inc
+/thirdparty/mpp/lib
