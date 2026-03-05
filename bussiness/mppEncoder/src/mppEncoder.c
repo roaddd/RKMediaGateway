@@ -1,5 +1,6 @@
 #include "mppEncoder.h"
 #include "mpp_meta.h"
+#include "rk_mpi_cmd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,6 +111,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16);
 
     mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC);
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", 100);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:level", 40);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", 1);
@@ -196,6 +198,13 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
 
     // 投喂一帧并拉取对应编码包（部分情况下可能暂时取不到 packet）。
+    if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
+        MPP_RET idr_ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);
+        if (idr_ret != MPP_OK) {
+            mpp_log_error("MPP_ENC_SET_IDR_FRAME failed", idr_ret);
+        }
+    }
+
     mpp_frame_set_pts(enc->frame, enc->pts++);
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
     if (ret != MPP_OK) {

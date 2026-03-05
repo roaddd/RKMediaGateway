@@ -42,19 +42,44 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
     return -1;
 }
 
+static const char *h264_nalu_type_name(uint8_t nalu_type) {
+    switch (nalu_type) {
+        case 1: return "NON_IDR";
+        case 5: return "IDR";
+        case 6: return "SEI";
+        case 7: return "SPS";
+        case 8: return "PPS";
+        case 9: return "AUD";
+        default: return "OTHER";
+    }
+}
+
 static int send_h264_annexb(void *session, uint8_t *data, size_t len) {
+    static unsigned long long frame_seq = 0;
     size_t nalu_start = 0;
     int code_len = 0;
+    int nalu_count = 0;
+    char nalu_log[256];
+    size_t nalu_log_len = 0;
+
+    nalu_log[0] = '\0';
 
     // 这里按“单个 NALU”发送给 rtsp_server。
     // 原因是 MPP 输出通常是 Annex-B，一个缓冲里可能带多个 NALU。
     // 如果整块直接送下去，底层可能按单个 NALU 处理，导致 RTP 打包边界错误。
     // 因此先拆包，再逐个调用 sessionSendVideoData()，兼容性更稳。
     if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
+        uint8_t nalu_type = (len > 0) ? (data[0] & 0x1F) : 0;
+        snprintf(nalu_log, sizeof(nalu_log), "%u(%s)",
+                 (unsigned)nalu_type,
+                 h264_nalu_type_name(nalu_type));
+        nalu_count = (len > 0) ? 1 : 0;
         if (sessionSendVideoData(session, data, (int)len) < 0) {
             fprintf(stderr, "[ERROR] sessionSendVideoData failed\n");
             return -1;
         }
+        printf("[H264] frame=%llu nalu_count=%d types=%s\n",
+               frame_seq++, nalu_count, nalu_log);
         return 0;
     }
 
@@ -70,6 +95,25 @@ static int send_h264_annexb(void *session, uint8_t *data, size_t len) {
         find_start_code(data, len, payload_start, &next_start, &next_code_len);
 
         if (next_start > payload_start) {
+            uint8_t nalu_type = data[payload_start] & 0x1F;
+            int written = 0;
+
+            if (nalu_log_len < sizeof(nalu_log)) {
+                written = snprintf(nalu_log + nalu_log_len,
+                                   sizeof(nalu_log) - nalu_log_len,
+                                   "%s%u(%s)",
+                                   (nalu_count == 0) ? "" : ",",
+                                   (unsigned)nalu_type,
+                                   h264_nalu_type_name(nalu_type));
+                if (written > 0) {
+                    nalu_log_len += (size_t)written;
+                    if (nalu_log_len >= sizeof(nalu_log)) {
+                        nalu_log_len = sizeof(nalu_log) - 1;
+                    }
+                }
+            }
+            nalu_count++;
+
             if (sessionSendVideoData(session,
                                      data + payload_start,
                                      (int)(next_start - payload_start)) < 0) {
@@ -86,6 +130,8 @@ static int send_h264_annexb(void *session, uint8_t *data, size_t len) {
         code_len = next_code_len;
     }
 
+    printf("[H264] frame=%llu nalu_count=%d types=%s\n",
+           frame_seq++, nalu_count, nalu_count > 0 ? nalu_log : "none");
     return 0;
 }
 
