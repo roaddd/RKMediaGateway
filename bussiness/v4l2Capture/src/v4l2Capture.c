@@ -1,21 +1,17 @@
-#include <linux/videodev2.h>
-
 #include "v4l2Capture.h"
 
-// ==================== 工具函数：打印V4L2错误信息 ====================
-void print_v4l2_error(const char *msg, int ret) {
+static void print_v4l2_error(const char *msg, int ret) {
     fprintf(stderr, "[ERROR] %s: %s (errno=%d)\n", msg, strerror(-ret), ret);
 }
 
-// ==================== 初始化V4L2采集 ====================
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     if (!ctx) {
         fprintf(stderr, "[ERROR] ctx is NULL\n");
         return -1;
     }
     memset(ctx, 0, sizeof(V4L2CaptureCtx));
+    ctx->fd = -1;
 
-    // 1. 打开摄像头设备
     ctx->fd = open(CAM_DEV_PATH, O_RDWR, 0);
     if (ctx->fd < 0) {
         perror("[ERROR] open camera dev failed");
@@ -23,7 +19,6 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     }
     printf("[INFO] open camera %s success\n", CAM_DEV_PATH);
 
-    // 2. 检查设备是否支持视频采集
     struct v4l2_capability cap;
     int ret = ioctl(ctx->fd, VIDIOC_QUERYCAP, &cap);
     if (ret < 0) {
@@ -46,13 +41,13 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     }
     printf("[INFO] camera support video capture and streaming\n");
 
-    // 3. 设置采集格式（NV12，1920x1080）
-    struct v4l2_format fmt = {0};
+    struct v4l2_format fmt;
+    memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     fmt.fmt.pix_mp.width = CAPTURE_WIDTH;
     fmt.fmt.pix_mp.height = CAPTURE_HEIGHT;
     fmt.fmt.pix_mp.pixelformat = CAPTURE_FORMAT;
-    fmt.fmt.pix_mp.field = V4L2_FIELD_NONE; // 逐行扫描
+    fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
 
     ret = ioctl(ctx->fd, VIDIOC_S_FMT, &fmt);
     if (ret < 0) {
@@ -61,15 +56,17 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
         ctx->fd = -1;
         return -1;
     }
-    // 验证实际设置的格式（摄像头可能自动调整分辨率）
-    printf("[INFO] capture format set: %dx%d, format=NV12 (0x%x)\n",
-           fmt.fmt.pix_mp.width, fmt.fmt.pix_mp.height, fmt.fmt.pix_mp.pixelformat);
 
-    // 4. 请求缓冲区（用于mmap映射）
-    struct v4l2_requestbuffers req = {0};
-    req.count = 4;                // 申请4个缓冲区（经验值）
+    printf("[INFO] capture format set: %dx%d, format=0x%x\n",
+           fmt.fmt.pix_mp.width,
+           fmt.fmt.pix_mp.height,
+           fmt.fmt.pix_mp.pixelformat);
+
+    struct v4l2_requestbuffers req;
+    memset(&req, 0, sizeof(req));
+    req.count = 4;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    req.memory = V4L2_MEMORY_MMAP; // 内存映射方式（避免数据拷贝）
+    req.memory = V4L2_MEMORY_MMAP;
 
     ret = ioctl(ctx->fd, VIDIOC_REQBUFS, &req);
     if (ret < 0) {
@@ -81,82 +78,78 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     ctx->buf_count = req.count;
     printf("[INFO] request %d buffers success\n", ctx->buf_count);
 
-    // 5. 映射缓冲区到用户空间
-    for (int i = 0; i < ctx->buf_count; i++) 
-    {
-        // 多平面模式必须用v4l2_buffer + v4l2_plane
+    for (int i = 0; i < ctx->buf_count; i++) {
         struct v4l2_buffer buf;
-        struct v4l2_plane planes[VIDEO_MAX_PLANES]; // RKISP通常只有1个平面（NV12）
+        struct v4l2_plane planes[VIDEO_MAX_PLANES];
+
         memset(&buf, 0, sizeof(buf));
         memset(planes, 0, sizeof(planes));
 
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
-        buf.length = VIDEO_MAX_PLANES; // 平面数量（RKISP NV12为1）
-        buf.m.planes = planes; // 指向平面数组
+        buf.length = VIDEO_MAX_PLANES;
+        buf.m.planes = planes;
 
-        // 多平面模式的VIDIOC_QUERYBUF
         if (ioctl(ctx->fd, VIDIOC_QUERYBUF, &buf) < 0) {
             fprintf(stderr, "[ERROR] query buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
-            // 清理已映射的缓冲区
-            for (int j = 0; j < i; j++) {
-                if (ctx->buf[j]) munmap(ctx->buf[j], ctx->buf_len[j]);
-            }
-            close(ctx->fd);
-            ctx->fd = -1;
+            v4l2_capture_deinit(ctx);
             return -1;
         }
 
-        // 映射缓冲区（用平面的offset和length）
-        ctx->buf[i] = mmap(NULL, planes[0].length, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->fd, planes[0].m.mem_offset);
+        ctx->buf[i] = mmap(NULL,
+                           planes[0].length,
+                           PROT_READ | PROT_WRITE,
+                           MAP_SHARED,
+                           ctx->fd,
+                           planes[0].m.mem_offset);
         if (ctx->buf[i] == MAP_FAILED) {
             fprintf(stderr, "[ERROR] mmap buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
-            for (int j = 0; j < i; j++) {
-                if (ctx->buf[j]) munmap(ctx->buf[j], ctx->buf_len[j]);
-            }
-            close(ctx->fd);
-            ctx->fd = -1;
+            ctx->buf[i] = NULL;
+            v4l2_capture_deinit(ctx);
             return -1;
         }
-        ctx->buf_len[i] = planes[0].length;
+        ctx->buf_len[i] = (int)planes[0].length;
         printf("[INFO] buffer %d mapped: addr=%p, len=%d\n", i, ctx->buf[i], ctx->buf_len[i]);
 
-        // 入队缓冲区（多平面模式）
         if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
             fprintf(stderr, "[ERROR] qbuf buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
-            for (int j = 0; j <= i; j++) {
-                if (ctx->buf[j]) munmap(ctx->buf[j], ctx->buf_len[j]);
-            }
-            close(ctx->fd);
-            ctx->fd = -1;
+            v4l2_capture_deinit(ctx);
             return -1;
         }
     }
 
-    // 6. 启动流采集
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     ret = ioctl(ctx->fd, VIDIOC_STREAMON, &type);
     if (ret < 0) {
         print_v4l2_error("VIDIOC_STREAMON failed", ret);
-        close(ctx->fd);
-        ctx->fd = -1;
+        v4l2_capture_deinit(ctx);
         return -1;
     }
     printf("[INFO] start streaming capture success\n");
 
-    return 0;
-}
-
-// ==================== 采集一帧数据 ====================
-int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len) {
-    if (ctx->fd < 0 || !frame_data || !frame_len) {
+    // 预分配一块用户态缓存。
+    // 后续每次取帧都会先把 DQBUF 得到的数据拷贝到这里，再把原始缓冲 QBUF 回驱动。
+    // 这样上层拿到的 frame_data 在本次函数返回后仍然有效，不会因为驱动复用底层缓冲而被覆盖。
+    ctx->frame_cache_len = CAPTURE_WIDTH * CAPTURE_HEIGHT * 3 / 2;
+    ctx->frame_cache = (uint8_t *)malloc((size_t)ctx->frame_cache_len);
+    if (!ctx->frame_cache) {
+        fprintf(stderr, "[ERROR] malloc frame cache failed\n");
+        v4l2_capture_deinit(ctx);
         return -1;
     }
 
-    // 多平面模式出队缓冲区
+    return 0;
+}
+
+int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len) {
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len) {
+        return -1;
+    }
+
     struct v4l2_buffer buf;
     struct v4l2_plane planes[VIDEO_MAX_PLANES];
+
     memset(&buf, 0, sizeof(buf));
     memset(planes, 0, sizeof(planes));
 
@@ -170,12 +163,30 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len
         return -1;
     }
 
-    // 返回帧数据（多平面模式取第一个平面）
-    *frame_data = (uint8_t *)ctx->buf[buf.index];
-    *frame_len = planes[0].bytesused;
+    // 某些驱动上 bytesused 可能大于初始预估值，这里按需扩容，避免越界。
+    if ((int)planes[0].bytesused > ctx->frame_cache_len) {
+        uint8_t *new_cache = (uint8_t *)realloc(ctx->frame_cache, planes[0].bytesused);
+        if (!new_cache) {
+            fprintf(stderr, "[ERROR] realloc frame cache failed\n");
+            if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
+                fprintf(stderr, "[ERROR] re-qbuf after realloc failed: %s (errno=%d)\n", strerror(errno), errno);
+            }
+            return -1;
+        }
+        ctx->frame_cache = new_cache;
+        ctx->frame_cache_len = (int)planes[0].bytesused;
+    }
+
+    // 关键修复点：
+    // 旧实现直接把 mmap 缓冲地址返回给上层，然后马上执行 QBUF。
+    // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
+    // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
+    memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
+    *frame_data = ctx->frame_cache;
+    *frame_len = (int)planes[0].bytesused;
     printf("[INFO] capture frame %d: len=%d\n", buf.index, *frame_len);
 
-    // 重新入队缓冲区
+    // 原始驱动缓冲在数据复制完成后即可立即回队，继续参与下一轮采集。
     if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
         fprintf(stderr, "[ERROR] re-qbuf failed: %s (errno=%d)\n", strerror(errno), errno);
         return -1;
@@ -184,23 +195,33 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len
     return 0;
 }
 
-// ==================== 释放V4L2资源 ====================
 void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
-    if (!ctx) return;
+    if (!ctx) {
+        return;
+    }
 
-    // 停止流采集
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    ioctl(ctx->fd, VIDIOC_STREAMOFF, &type);
+    if (ctx->fd >= 0) {
+        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        ioctl(ctx->fd, VIDIOC_STREAMOFF, &type);
+    }
 
-    // 释放mmap映射
     for (int i = 0; i < ctx->buf_count; i++) {
         if (ctx->buf[i]) {
-            munmap(ctx->buf[i], ctx->buf_len[i]);
+            munmap(ctx->buf[i], (size_t)ctx->buf_len[i]);
+            ctx->buf[i] = NULL;
         }
     }
 
-    // 关闭设备
-    close(ctx->fd);
+    if (ctx->frame_cache) {
+        free(ctx->frame_cache);
+        ctx->frame_cache = NULL;
+    }
+
+    if (ctx->fd >= 0) {
+        close(ctx->fd);
+    }
+
     memset(ctx, 0, sizeof(V4L2CaptureCtx));
+    ctx->fd = -1;
     printf("[INFO] v4l2 capture deinit success\n");
 }
