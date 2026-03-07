@@ -1,5 +1,6 @@
 #include "mppEncoder.h"
 #include "mpp_meta.h"
+#include "rk_mpi_cmd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,7 +97,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "prep:hor_stride", enc->hor_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:ver_stride", enc->ver_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP);
-
+    /* Rate Control(RC)模块 */
     mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0);
@@ -105,11 +106,15 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_flex", 0);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_num", enc->fps);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_denorm", 1);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_target", enc->bitrate);
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_target", enc->bitrate); /* 设置码率 */
     mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_max", enc->bitrate * 17 / 16);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16);
 
     mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC);
+    // 低延迟思路：
+    // RTSP 推流链路按 Annex-B 拆 NALU 发包，强制编码器输出 Annex-B，
+    // 避免格式不一致导致的解析/重组等待。
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", 100);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:level", 40);
     mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", 1);
@@ -196,6 +201,16 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
 
     // 投喂一帧并拉取对应编码包（部分情况下可能暂时取不到 packet）。
+    // 低延迟思路：
+    // 周期性强制 IDR，确保播放器不会长时间“等关键帧”，
+    // 尤其是客户端中途接入或网络抖动后的恢复速度会明显更快。
+    if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
+        MPP_RET idr_ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);
+        if (idr_ret != MPP_OK) {
+            mpp_log_error("MPP_ENC_SET_IDR_FRAME failed", idr_ret);
+        }
+    }
+
     mpp_frame_set_pts(enc->frame, enc->pts++);
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
     if (ret != MPP_OK) {
