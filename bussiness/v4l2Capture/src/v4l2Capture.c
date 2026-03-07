@@ -64,7 +64,10 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
-    req.count = 4;
+    // 低延迟思路：
+    // V4L2 缓冲越多，采集到应用层的帧可能越“旧”。
+    // 这里把队列深度从 4 降到 2，减少采集侧排队时延（代价是抗抖动能力略降）。
+    req.count = 2;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
 
@@ -184,7 +187,8 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len
     memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
     *frame_data = ctx->frame_cache;
     *frame_len = (int)planes[0].bytesused;
-    printf("[INFO] capture frame %d: len=%d\n", buf.index, *frame_len);
+    // 低延迟思路：
+    // 避免每帧打印日志，串口/控制台 IO 会显著拖慢实时链路。
 
     // 原始驱动缓冲在数据复制完成后即可立即回队，继续参与下一轮采集。
     if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
