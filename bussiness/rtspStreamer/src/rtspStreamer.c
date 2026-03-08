@@ -29,6 +29,12 @@ static uint64_t get_now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+static uint64_t get_realtime_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 static int start_code_len(const uint8_t *data, size_t len) {
     if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
         return 4;
@@ -77,12 +83,12 @@ static int send_h264_annexb(void *session,
 
     nalu_log[0] = '\0';
     {
-        uint64_t ts = get_now_us();
+        uint64_t ts = get_realtime_us();
         if (send_video_before_ts_us) {
             *send_video_before_ts_us = ts;
         }
-        printf("[TRACE] frame=%" PRIu64 " step=before_sessionSendVideoData ts_us=%" PRIu64 "\n",
-               frame_id, ts);
+        // printf("[TRACE] frame=%" PRIu64 " step=before_sessionSendVideoData realtime_us=%" PRIu64 "\n",
+        //        frame_id, ts);
     }
 
     // 这里按“单个 NALU”发送给 rtsp_server。

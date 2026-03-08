@@ -12,6 +12,80 @@ static uint64_t get_now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+static uint64_t get_realtime_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+static int glyph5x7(char c, uint8_t rows[7]) {
+    switch (c) {
+        case '0': { uint8_t r[7] = {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}; memcpy(rows, r, 7); return 1; }
+        case '1': { uint8_t r[7] = {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E}; memcpy(rows, r, 7); return 1; }
+        case '2': { uint8_t r[7] = {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F}; memcpy(rows, r, 7); return 1; }
+        case '3': { uint8_t r[7] = {0x1E,0x01,0x01,0x0E,0x01,0x01,0x1E}; memcpy(rows, r, 7); return 1; }
+        case '4': { uint8_t r[7] = {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02}; memcpy(rows, r, 7); return 1; }
+        case '5': { uint8_t r[7] = {0x1F,0x10,0x10,0x1E,0x01,0x01,0x1E}; memcpy(rows, r, 7); return 1; }
+        case '6': { uint8_t r[7] = {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E}; memcpy(rows, r, 7); return 1; }
+        case '7': { uint8_t r[7] = {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}; memcpy(rows, r, 7); return 1; }
+        case '8': { uint8_t r[7] = {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}; memcpy(rows, r, 7); return 1; }
+        case '9': { uint8_t r[7] = {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}; memcpy(rows, r, 7); return 1; }
+        case 't': { uint8_t r[7] = {0x04,0x04,0x1F,0x04,0x04,0x04,0x03}; memcpy(rows, r, 7); return 1; }
+        case 'f': { uint8_t r[7] = {0x06,0x08,0x08,0x1E,0x08,0x08,0x08}; memcpy(rows, r, 7); return 1; }
+        case '=': { uint8_t r[7] = {0x00,0x1F,0x00,0x00,0x1F,0x00,0x00}; memcpy(rows, r, 7); return 1; }
+        case ' ': { uint8_t r[7] = {0,0,0,0,0,0,0}; memcpy(rows, r, 7); return 1; }
+        default: return 0;
+    }
+}
+
+static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y, const char *text, int scale) {
+    int cursor_x = x;
+    uint8_t glyph[7];
+    uint8_t *y_plane = nv12;
+    int glyph_w = 5 * scale;
+    int glyph_h = 7 * scale;
+    int gap = scale;
+    int total_h = glyph_h + 2 * scale;
+
+    if (!nv12 || !text || width <= 0 || height <= 0 || scale <= 0) {
+        return;
+    }
+
+    for (const char *p = text; *p; ++p) {
+        if (!glyph5x7(*p, glyph)) {
+            cursor_x += glyph_w + gap;
+            continue;
+        }
+
+        // black background for readability
+        for (int yy = y - scale; yy < y + total_h - scale; ++yy) {
+            if (yy < 0 || yy >= height) continue;
+            for (int xx = cursor_x - scale; xx < cursor_x + glyph_w + scale; ++xx) {
+                if (xx < 0 || xx >= width) continue;
+                y_plane[yy * width + xx] = 16;
+            }
+        }
+
+        for (int row = 0; row < 7; ++row) {
+            for (int col = 0; col < 5; ++col) {
+                if ((glyph[row] >> (4 - col)) & 0x01) {
+                    for (int sy = 0; sy < scale; ++sy) {
+                        for (int sx = 0; sx < scale; ++sx) {
+                            int px = cursor_x + col * scale + sx;
+                            int py = y + row * scale + sy;
+                            if (px < 0 || py < 0 || px >= width || py >= height) {
+                                continue;
+                            }
+                            y_plane[py * width + px] = 235;
+                        }
+                    }
+                }
+            }
+        }
+        cursor_x += glyph_w + gap;
+    }
+}
+
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     if (!ctx) {
         fprintf(stderr, "[ERROR] ctx is NULL\n");
@@ -183,12 +257,12 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     {
         uint64_t driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
         *driver_to_dqbuf_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
-        printf("[TRACE] step=driver_timestamp driver_ts_us=%" PRIu64
-               " driver_to_dqbuf_us=%" PRIu64
-               " ts_flags=0x%x\n",
-               driver_ts_us,
-               *driver_to_dqbuf_us,
-               (unsigned)(buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK));
+        // printf("[TRACE] step=driver_timestamp driver_ts_us=%" PRIu64
+        //        " driver_to_dqbuf_us=%" PRIu64
+        //        " ts_flags=0x%x\n",
+        //        driver_ts_us,
+        //        *driver_to_dqbuf_us,
+        //        (unsigned)(buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK));
     }
 
     ctx->frame_id++;
@@ -215,6 +289,15 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
     // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
     memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
+    {
+        char line1[64];
+        char line2[64];
+        uint64_t realtime_us = get_realtime_us();
+        snprintf(line1, sizeof(line1), "rt=%" PRIu64, realtime_us);
+        snprintf(line2, sizeof(line2), "f=%" PRIu64, *frame_id);
+        draw_text_nv12_y(ctx->frame_cache, CAPTURE_WIDTH, CAPTURE_HEIGHT, 24, 24, line1, 3);
+        draw_text_nv12_y(ctx->frame_cache, CAPTURE_WIDTH, CAPTURE_HEIGHT, 24, 24 + 30, line2, 3);
+    }
     *frame_data = ctx->frame_cache;
     *frame_len = (int)planes[0].bytesused;
     // 低延迟思路：
