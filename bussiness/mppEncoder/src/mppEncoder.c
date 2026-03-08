@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
+#include <time.h>
 
 #define MPP_ALIGN(x, a) (((x) + (a)-1) & ~((a)-1))
 
@@ -27,6 +29,12 @@ static int ensure_packet_cache(MppEncoderCtx *enc, size_t need_size) {
     enc->packet_cache = new_buf;
     enc->packet_cache_size = need_size;
     return 0;
+}
+
+static uint64_t get_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
 static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint8_t *src) {
@@ -177,9 +185,12 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
 int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              const uint8_t *nv12_data,
                              size_t nv12_len,
+                             uint64_t frame_id,
                              uint8_t **h264_data,
                              size_t *h264_len,
-                             int *is_key_frame) {
+                             int *is_key_frame,
+                             uint64_t *encode_put_ts_us,
+                             uint64_t *encode_get_ts_us) {
     if (!enc || !enc->ctx || !nv12_data || !h264_data || !h264_len) {
         return -1;
     }
@@ -211,6 +222,14 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         }
     }
 
+    {
+        uint64_t ts = get_now_us();
+        if (encode_put_ts_us) {
+            *encode_put_ts_us = ts;
+        }
+        printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
+               frame_id, ts);
+    }
     mpp_frame_set_pts(enc->frame, enc->pts++);
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
     if (ret != MPP_OK) {
@@ -220,6 +239,14 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
     MppPacket packet = NULL;
     ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
+    {
+        uint64_t ts = get_now_us();
+        if (encode_get_ts_us) {
+            *encode_get_ts_us = ts;
+        }
+        printf("[TRACE] frame=%" PRIu64 " step=after_encode_get_packet ts_us=%" PRIu64 " ret=%d has_packet=%d\n",
+               frame_id, ts, ret, packet ? 1 : 0);
+    }
     if (ret != MPP_OK) {
         mpp_log_error("encode_get_packet failed", ret);
         return -1;

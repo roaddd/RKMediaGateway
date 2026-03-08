@@ -3,6 +3,8 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <inttypes.h>
+#include <time.h>
 
 #include "rtsp_server_api.h"
 
@@ -20,6 +22,12 @@ typedef struct {
     RtspStreamerCtx *ctx;
     int ret;
 } RtspServerThreadArgs;
+
+static uint64_t get_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
 
 static int start_code_len(const uint8_t *data, size_t len) {
     if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
@@ -55,7 +63,11 @@ static const char *h264_nalu_type_name(uint8_t nalu_type) {
     }
 }
 
-static int send_h264_annexb(void *session, uint8_t *data, size_t len) {
+static int send_h264_annexb(void *session,
+                            uint8_t *data,
+                            size_t len,
+                            uint64_t frame_id,
+                            uint64_t *send_video_before_ts_us) {
     static unsigned long long frame_seq = 0;
     size_t nalu_start = 0;
     int code_len = 0;
@@ -64,6 +76,14 @@ static int send_h264_annexb(void *session, uint8_t *data, size_t len) {
     size_t nalu_log_len = 0;
 
     nalu_log[0] = '\0';
+    {
+        uint64_t ts = get_now_us();
+        if (send_video_before_ts_us) {
+            *send_video_before_ts_us = ts;
+        }
+        printf("[TRACE] frame=%" PRIu64 " step=before_sessionSendVideoData ts_us=%" PRIu64 "\n",
+               frame_id, ts);
+    }
 
     // 这里按“单个 NALU”发送给 rtsp_server。
     // 原因是 MPP 输出通常是 Annex-B，一个缓冲里可能带多个 NALU。
@@ -282,6 +302,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     RtspServerThreadArgs thread_args;
     uint8_t *raw_frame = NULL;
     int raw_len = 0;
+    uint64_t frame_id = 0;
     int ret = 0;
 
     memset(&thread_args, 0, sizeof(thread_args));
@@ -302,13 +323,23 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     while (ctx->running) {
         uint8_t *h264_data = NULL;
         size_t h264_len = 0;
+        uint64_t dqbuf_ts_us = 0;
+        uint64_t driver_to_dqbuf_us = 0;
+        uint64_t encode_put_ts_us = 0;
+        uint64_t encode_get_ts_us = 0;
+        uint64_t send_video_before_ts_us = 0;
 
         // 这里依赖 v4l2_capture_frame() 的生命周期修复：
         // raw_frame 现在是复制到用户态 frame_cache 的稳定数据，
         // 不是驱动那块会被循环复用的 mmap 原始缓冲。
         // 所以即使底层缓冲已经重新 QBUF 回驱动，
         // 当前这份 raw_frame 在本轮编码结束前仍然可安全读取，不会被新帧覆盖。
-        if (v4l2_capture_frame(&ctx->capture, &raw_frame, &raw_len) < 0) {
+        if (v4l2_capture_frame(&ctx->capture,
+                               &raw_frame,
+                               &raw_len,
+                               &frame_id,
+                               &dqbuf_ts_us,
+                               &driver_to_dqbuf_us) < 0) {
             ret = -1;
             break;
         }
@@ -316,9 +347,12 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         if (mpp_encoder_encode_frame(&ctx->encoder,
                                      raw_frame,
                                      (size_t)raw_len,
+                                     frame_id,
                                      &h264_data,
                                      &h264_len,
-                                     NULL) < 0) {
+                                     NULL,
+                                     &encode_put_ts_us,
+                                     &encode_get_ts_us) < 0) {
             ret = -1;
             break;
         }
@@ -328,10 +362,27 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
             continue;
         }
 
-        if (send_h264_annexb(ctx->rtsp_session, h264_data, h264_len) < 0) {
+        if (send_h264_annexb(ctx->rtsp_session,
+                             h264_data,
+                             h264_len,
+                             frame_id,
+                             &send_video_before_ts_us) < 0) {
             ret = -1;
             break;
         }
+
+        printf("[TRACE_SUM] frame=%" PRIu64
+               " driver_to_dqbuf=%" PRIu64 "us"
+               " dqbuf_to_put=%" PRIu64 "us"
+               " put_to_get=%" PRIu64 "us"
+               " get_to_send=%" PRIu64 "us"
+               " dqbuf_to_send=%" PRIu64 "us\n",
+               frame_id,
+               driver_to_dqbuf_us,
+               (encode_put_ts_us >= dqbuf_ts_us) ? (encode_put_ts_us - dqbuf_ts_us) : 0,
+               (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0,
+               (send_video_before_ts_us >= encode_get_ts_us) ? (send_video_before_ts_us - encode_get_ts_us) : 0,
+               (send_video_before_ts_us >= dqbuf_ts_us) ? (send_video_before_ts_us - dqbuf_ts_us) : 0);
     }
 
     ctx->running = 0;

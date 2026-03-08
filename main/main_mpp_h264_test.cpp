@@ -23,6 +23,9 @@ int main() {
 
     uint8_t *raw_frame = NULL;
     int raw_frame_len = 0;
+    uint64_t frame_id = 0;
+    uint64_t dqbuf_ts_us = 0;
+    uint64_t driver_to_dqbuf_us = 0;
     int frame_count = 0;
 
     // 1) 初始化采集端（V4L2）与编码端（MPP H264）。
@@ -49,7 +52,12 @@ int main() {
     // 3) 主循环：采集 NV12 帧 -> MPP 编码 -> 写入 H264 码流。
     printf("[INFO] start capture + encode %d frames\n", ENCODE_FRAME_COUNT);
     while (frame_count < ENCODE_FRAME_COUNT) {
-        if (v4l2_capture_frame(&cap_ctx, &raw_frame, &raw_frame_len) < 0) {
+        if (v4l2_capture_frame(&cap_ctx,
+                               &raw_frame,
+                               &raw_frame_len,
+                               &frame_id,
+                               &dqbuf_ts_us,
+                               &driver_to_dqbuf_us) < 0) {
             fprintf(stderr, "[ERROR] v4l2_capture_frame failed\n");
             break;
         }
@@ -61,9 +69,12 @@ int main() {
         if (mpp_encoder_encode_frame(&enc_ctx,
                                      raw_frame,
                                      (size_t)raw_frame_len,
+                                     frame_id,
                                      &h264_data,
                                      &h264_len,
-                                     &is_key) < 0) {
+                                     &is_key,
+                                     NULL,
+                                     NULL) < 0) {
             fprintf(stderr, "[ERROR] mpp_encoder_encode_frame failed\n");
             break;
         }

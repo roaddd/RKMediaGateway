@@ -47,9 +47,12 @@ void mpp_encoder_deinit(MppEncoderCtx *enc);
 int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              const uint8_t *nv12_data,
                              size_t nv12_len,
+                             uint64_t frame_id,
                              uint8_t **h264_data,
                              size_t *h264_len,
-                             int *is_key_frame);
+                             int *is_key_frame,
+                             uint64_t *encode_put_ts_us,
+                             uint64_t *encode_get_ts_us);
 
 #ifdef __cplusplus
 }

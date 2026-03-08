@@ -1,7 +1,15 @@
 #include "v4l2Capture.h"
+#include <inttypes.h>
+#include <time.h>
 
 static void print_v4l2_error(const char *msg, int ret) {
     fprintf(stderr, "[ERROR] %s: %s (errno=%d)\n", msg, strerror(-ret), ret);
+}
+
+static uint64_t get_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
@@ -145,8 +153,13 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     return 0;
 }
 
-int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len) {
-    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len) {
+int v4l2_capture_frame(V4L2CaptureCtx *ctx,
+                       uint8_t **frame_data,
+                       int *frame_len,
+                       uint64_t *frame_id,
+                       uint64_t *dqbuf_ts_us,
+                       uint64_t *driver_to_dqbuf_us) {
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us) {
         return -1;
     }
 
@@ -165,6 +178,23 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len
         fprintf(stderr, "[ERROR] dqbuf failed: %s (errno=%d)\n", strerror(errno), errno);
         return -1;
     }
+
+    *dqbuf_ts_us = get_now_us();
+    {
+        uint64_t driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
+        *driver_to_dqbuf_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
+        printf("[TRACE] step=driver_timestamp driver_ts_us=%" PRIu64
+               " driver_to_dqbuf_us=%" PRIu64
+               " ts_flags=0x%x\n",
+               driver_ts_us,
+               *driver_to_dqbuf_us,
+               (unsigned)(buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK));
+    }
+
+    ctx->frame_id++;
+    *frame_id = ctx->frame_id;
+    printf("[TRACE] frame=%" PRIu64 " step=after_vidioc_dqbuf ts_us=%" PRIu64 "\n",
+           *frame_id, *dqbuf_ts_us);
 
     // 某些驱动上 bytesused 可能大于初始预估值，这里按需扩容，避免越界。
     if ((int)planes[0].bytesused > ctx->frame_cache_len) {

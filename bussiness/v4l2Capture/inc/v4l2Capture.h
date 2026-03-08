@@ -27,8 +27,9 @@ typedef struct {
     void *buf[4];
     int buf_len[4];
     int buf_count;
-    uint8_t *frame_cache;  // 复制一份出队帧，避免 QBUF 后底层缓冲被驱动复用
-    int frame_cache_len;   // frame_cache 当前容量，按实际 bytesused 动态扩容
+    uint64_t frame_id;
+    uint8_t *frame_cache;
+    int frame_cache_len;
 } V4L2CaptureCtx;
 
 #ifdef __cplusplus
@@ -37,7 +38,12 @@ extern "C" {
 
 int v4l2_capture_init(V4L2CaptureCtx *ctx);
 void v4l2_capture_deinit(V4L2CaptureCtx *ctx);
-int v4l2_capture_frame(V4L2CaptureCtx *ctx, uint8_t **frame_data, int *frame_len);
+int v4l2_capture_frame(V4L2CaptureCtx *ctx,
+                       uint8_t **frame_data,
+                       int *frame_len,
+                       uint64_t *frame_id,
+                       uint64_t *dqbuf_ts_us,
+                       uint64_t *driver_to_dqbuf_us);
 
 #ifdef __cplusplus
 }
