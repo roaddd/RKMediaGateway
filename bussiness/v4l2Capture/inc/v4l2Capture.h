@@ -20,7 +20,7 @@
 #define SAVE_FRAME_COUNT 300
 #define OUTPUT_FILE "capture_nv12.yuv"
 
-#define VIDEO_MAX_PLANES 1
+#define V4L2_CAPTURE_MAX_PLANES 1
 
 typedef struct {
     int fd;

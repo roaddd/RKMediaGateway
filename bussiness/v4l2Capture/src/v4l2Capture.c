@@ -91,7 +91,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 
     for (int i = 0; i < ctx->buf_count; i++) {
         struct v4l2_buffer buf;
-        struct v4l2_plane planes[VIDEO_MAX_PLANES];
+        struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
 
         memset(&buf, 0, sizeof(buf));
         memset(planes, 0, sizeof(planes));
@@ -99,7 +99,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
         buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
-        buf.length = VIDEO_MAX_PLANES;
+        buf.length = V4L2_CAPTURE_MAX_PLANES;
         buf.m.planes = planes;
 
         if (ioctl(ctx->fd, VIDIOC_QUERYBUF, &buf) < 0) {
@@ -164,14 +164,14 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     }
 
     struct v4l2_buffer buf;
-    struct v4l2_plane planes[VIDEO_MAX_PLANES];
+    struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
 
     memset(&buf, 0, sizeof(buf));
     memset(planes, 0, sizeof(planes));
 
     buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     buf.memory = V4L2_MEMORY_MMAP;
-    buf.length = VIDEO_MAX_PLANES;
+    buf.length = V4L2_CAPTURE_MAX_PLANES;
     buf.m.planes = planes;
 
     if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
