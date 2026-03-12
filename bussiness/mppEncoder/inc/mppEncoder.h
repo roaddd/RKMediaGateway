@@ -32,12 +32,20 @@ typedef struct {
     size_t packet_cache_size;
 } MppEncoderCtx;
 
-// 初始化 RK MPP H264 编码器
-// width/height: 输入图像分辨率（与采集一致）
-// fps: 目标帧率
-// bitrate: 目标码率（bit/s）
-// gop: I 帧间隔（通常为 fps 的 1~2 倍）
-int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop);
+typedef struct {
+    int rc_mode;        // MPP_ENC_RC_MODE_*��<=0 means default CBR
+    int h264_profile;   // 66/77/100��<=0 means default 100
+    int h264_level;     // e.g. 40��<=0 means default 40
+    int h264_cabac_en;  // 0/1��<0 means default 1
+} MppEncoderOptions;
+
+int mpp_encoder_init(MppEncoderCtx *enc,
+                     int width,
+                     int height,
+                     int fps,
+                     int bitrate,
+                     int gop,
+                     const MppEncoderOptions *options);
 void mpp_encoder_deinit(MppEncoderCtx *enc);
 
 // 编码一帧 NV12 数据，输出 Annex-B H264 码流

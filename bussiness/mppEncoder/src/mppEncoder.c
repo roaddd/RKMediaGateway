@@ -60,7 +60,7 @@ static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint
     }
 }
 
-int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop) {
+int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop, const MppEncoderOptions *options) {
     if (!enc || width <= 0 || height <= 0 || fps <= 0 || bitrate <= 0 || gop <= 0) {
         fprintf(stderr, "[ERROR] invalid encoder init parameters\n");
         return -1;
@@ -106,7 +106,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "prep:ver_stride", enc->ver_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP);
     /* Rate Control(RC)模块 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", (options && options->rc_mode > 0) ? options->rc_mode : MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_num", enc->fps);
@@ -123,9 +123,9 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     // RTSP 推流链路按 Annex-B 拆 NALU 发包，强制编码器输出 Annex-B，
     // 避免格式不一致导致的解析/重组等待。
     mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", 100);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:level", 40);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", 1);
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", (options && options->h264_profile > 0) ? options->h264_profile : 100);
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:level", (options && options->h264_level > 0) ? options->h264_level : 40);
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", (options && options->h264_cabac_en >= 0) ? options->h264_cabac_en : 1);
 
     ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_CFG, enc->cfg);
     if (ret != MPP_OK) {

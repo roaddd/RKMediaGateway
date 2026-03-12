@@ -1,4 +1,5 @@
 #include "v4l2Capture.h"
+
 #include <inttypes.h>
 #include <time.h>
 
@@ -30,6 +31,7 @@ static int glyph5x7(char c, uint8_t rows[7]) {
         case '7': { uint8_t r[7] = {0x1F,0x01,0x02,0x04,0x08,0x08,0x08}; memcpy(rows, r, 7); return 1; }
         case '8': { uint8_t r[7] = {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E}; memcpy(rows, r, 7); return 1; }
         case '9': { uint8_t r[7] = {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C}; memcpy(rows, r, 7); return 1; }
+        case 'r': { uint8_t r[7] = {0x00,0x00,0x16,0x19,0x10,0x10,0x10}; memcpy(rows, r, 7); return 1; }
         case 't': { uint8_t r[7] = {0x04,0x04,0x1F,0x04,0x04,0x04,0x03}; memcpy(rows, r, 7); return 1; }
         case 'f': { uint8_t r[7] = {0x06,0x08,0x08,0x1E,0x08,0x08,0x08}; memcpy(rows, r, 7); return 1; }
         case '=': { uint8_t r[7] = {0x00,0x1F,0x00,0x00,0x1F,0x00,0x00}; memcpy(rows, r, 7); return 1; }
@@ -146,7 +148,6 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
-    // 低延迟思路：
     // V4L2 缓冲越多，采集到应用层的帧可能越“旧”。
     // 这里把队列深度从 4 降到 2，减少采集侧排队时延（代价是抗抖动能力略降）。
     req.count = 2;
