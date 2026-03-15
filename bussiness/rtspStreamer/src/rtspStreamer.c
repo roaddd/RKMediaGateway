@@ -69,7 +69,7 @@ static int reset_encoder(RtspStreamerCtx *ctx) {
         ctx->encoder_ready = 0;
     }
 
-    // 锟斤拷锟斤拷说锟斤拷锟斤拷锟斤拷锟斤拷失锟杰猴拷执锟斤拷锟斤拷锟截斤拷锟斤拷锟斤拷锟斤拷锟斤拷锟叫讹拷 RTSP 锟斤拷锟斤拷锟竭程★拷
+    // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰け閿熸澃鐚存嫹鎵ч敓鏂ゆ嫹閿熸枻鎷烽敓鎴枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鍙鎷� RTSP 閿熸枻鎷烽敓鏂ゆ嫹閿熺绋嬧槄鎷�
     if (mpp_encoder_init(&ctx->encoder,
                          CAPTURE_WIDTH,
                          CAPTURE_HEIGHT,
@@ -133,10 +133,10 @@ static int send_h264_annexb(void *session,
 
     nalu_log[0] = '\0';
 
-    // 杩欓噷鎸夆€滃崟涓� NALU鈥濆彂閫佺粰 rtsp_server銆�
-    // 鍘熷洜鏄� MPP 杈撳嚭閫氬父鏄� Annex-B锛屼竴涓紦鍐查噷鍙兘甯﹀涓� NALU銆�
-    // 濡傛灉鏁村潡鐩存帴閫佷笅鍘伙紝搴曞眰鍙兘鎸夊崟涓� NALU 澶勭悊锛屽鑷� RTP 鎵撳寘杈圭晫閿欒銆�
-    // 鍥犳鍏堟媶鍖咃紝鍐嶉€愪釜璋冪敤 sessionSendVideoData()锛屽吋瀹规€ф洿绋炽€�
+    // 鏉╂瑩鍣烽幐澶嗏偓婊冨礋娑擄拷 NALU閳ユ繂褰傞柅浣虹舶 rtsp_server閵嗭拷
+    // 閸樼喎娲滈弰锟� MPP 鏉堟挸鍤柅姘埗閺勶拷 Annex-B閿涘奔绔存稉顏嗙处閸愭煡鍣烽崣顖濆厴鐢箑顦挎稉锟� NALU閵嗭拷
+    // 婵″倹鐏夐弫鏉戞健閻╁瓨甯撮柅浣风瑓閸樹紮绱濇惔鏇炵湴閸欘垵鍏橀幐澶婂礋娑擄拷 NALU 婢跺嫮鎮婇敍灞筋嚤閼凤拷 RTP 閹垫挸瀵樻潏鍦櫕闁挎瑨顕ら妴锟�
+    // 閸ョ姵顒濋崗鍫熷閸栧拑绱濋崘宥夆偓鎰嚋鐠嬪啰鏁� sessionSendVideoData()閿涘苯鍚嬬€硅鈧勬纯缁嬬偨鈧拷
     if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
         uint8_t nalu_type = (len > 0) ? (data[0] & 0x1F) : 0;
         int should_log = (nalu_type == 5 || nalu_type == 7 || nalu_type == 8 ||
@@ -149,7 +149,7 @@ static int send_h264_annexb(void *session,
             fprintf(stderr, "[ERROR] sessionSendVideoData failed\n");
             return -1;
         }
-        // 楂橀鏃ュ織浼氶樆濉炲疄鏃剁嚎绋嬶紝榛樿浠呮墦鍗板叧閿抚/SPS/PPS鍜屽懆鏈熸€ч噰鏍锋棩蹇椼€�
+        // 妤傛﹢顣堕弮銉ョ箶娴兼岸妯嗘繅鐐茬杽閺冨墎鍤庣粙瀣剁礉姒涙ǹ顓绘禒鍛ⅵ閸楁澘鍙ч柨顔兼姎/SPS/PPS閸滃苯鎳嗛張鐔糕偓褔鍣伴弽閿嬫）韫囨ぜ鈧拷
         if (should_log && !low_latency_mode) {
             printf("[H264] frame=%llu nalu_count=%d types=%s\n", frame_seq, nalu_count, nalu_log);
         }
@@ -210,7 +210,7 @@ static int send_h264_annexb(void *session,
                       (strstr(nalu_log, "8(PPS)") != NULL);
         int should_log = has_key || ((frame_seq % H264_NAL_LOG_EVERY_N_FRAMES) == 0);
         if (should_log && !low_latency_mode) {
-            // 鍙繚鐣欏叧閿瘖鏂棩蹇楋紝閬垮厤 I/O 鎶㈠崰缂栫爜/鍙戦€佹椂闂寸墖銆�
+            // 閸欘亙绻氶悾娆忓彠闁款喛鐦栭弬顓熸）韫囨绱濋柆鍨帳 I/O 閹躲垹宕扮紓鏍垳/閸欐垿鈧焦妞傞梻瀵稿閵嗭拷
             printf("[H264] frame=%llu nalu_count=%d types=%s\n",
                    frame_seq, nalu_count, nalu_count > 0 ? nalu_log : "none");
         }
@@ -235,8 +235,8 @@ static void fill_default_config(RtspStreamerConfig *dst, const RtspStreamerConfi
         *dst = *src;
     }
 
-    // 瀵瑰鍏佽鍙紶鈥滈儴鍒嗛厤缃€濓紝杩欓噷鎶婃湭濉啓瀛楁琛ユ垚榛樿鍊笺€�
-    // 杩欐牱涓婂眰浼犱竴涓浂鍒濆鍖栫粨鏋勪綋锛屼篃鑳藉厛璺戦€氭渶灏忔帹娴侀摼璺€�
+    // 鐎电懓顦婚崗浣筋啅閸欘亙绱堕垾婊堝劥閸掑棝鍘ょ純顔光偓婵撶礉鏉╂瑩鍣烽幎濠冩弓婵夘偄鍟撶€涙顔岀悰銉﹀灇姒涙ǹ顓婚崐绗衡偓锟�
+    // 鏉╂瑦鐗辨稉濠傜湴娴肩姳绔存稉顏堟祩閸掓繂顫愰崠鏍波閺嬪嫪缍嬮敍灞肩瘍閼宠棄鍘涚捄鎴︹偓姘付鐏忓繑甯瑰ù渚€鎽肩捄顖樷偓锟�
     if (!dst->session_name) {
         dst->session_name = DEFAULT_RTSP_SESSION;
     }
@@ -297,8 +297,8 @@ static void *rtsp_server_thread(void *arg) {
     RtspServerThreadArgs *thread_args = (RtspServerThreadArgs *)arg;
     RtspStreamerCtx *ctx = thread_args->ctx;
 
-    // rtspStartServer() 鍐呴儴浼氶樆濉炲湪鐩戝惉/accept 寰幆閲岋紝
-    // 鎵€浠ユ斁鍦ㄧ嚎绋嬮噷锛岄伩鍏嶅崱浣忎富绾跨▼鐨勯噰闆嗗拰缂栫爜銆�
+    // rtspStartServer() 閸愬懘鍎存导姘舵▎婵夌偛婀惄鎴濇儔/accept 瀵邦亞骞嗛柌宀嬬礉
+    // 閹碘偓娴犮儲鏂侀崷銊у殠缁嬪鍣烽敍宀勪缉閸忓秴宕辨担蹇庡瘜缁捐法鈻奸惃鍕櫚闂嗗棗鎷扮紓鏍垳閵嗭拷
     thread_args->ret = rtspStartServer(ctx->config.auth_enable,
                                        ctx->config.server_ip,
                                        ctx->config.server_port,
@@ -316,8 +316,8 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
 
-    // 绗竴姝ワ細鍏堝垵濮嬪寲閲囬泦绔€�
-    // 鍚庣画缂栫爜鍜屾帹娴侀兘渚濊禆閲囬泦鍒扮殑 NV12 鍘熷甯э紝鎵€浠ラ噰闆嗗繀椤诲厛鍙敤銆�
+    // 缁楊兛绔村銉窗閸忓牆鍨垫慨瀣闁插洭娉︾粩顖樷偓锟�
+    // 閸氬海鐢荤紓鏍垳閸滃本甯瑰ù渚€鍏樻笟婵婄闁插洭娉﹂崚鎵畱 NV12 閸樼喎顫愮敮褝绱濋幍鈧禒銉╁櫚闂嗗棗绻€妞よ鍘涢崣顖滄暏閵嗭拷
     if (v4l2_capture_init(&ctx->capture) < 0) {
         fprintf(stderr, "[ERROR] v4l2_capture_init failed\n");
         goto fail;
@@ -325,8 +325,8 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     ctx->capture_ready = 1;
 
     {
-        // 绗簩姝ワ細鍒濆鍖� MPP 缂栫爜鍣ㄣ€�
-        // 杩欓噷鍥哄畾浣跨敤涓庨噰闆嗕竴鑷寸殑鍒嗚鲸鐜囷紝閬垮厤灏哄涓嶄竴鑷存椂鍑虹幇 stride 閿欒鎴栬緭鍏ヤ笉鍖归厤銆�
+        // 缁楊兛绨╁銉窗閸掓繂顫愰崠锟� MPP 缂傛牜鐖滈崳銊ｂ偓锟�
+        // 鏉╂瑩鍣烽崶鍝勭暰娴ｈ法鏁ゆ稉搴ㄥ櫚闂嗗棔绔撮懛瀵告畱閸掑棜椴搁悳鍥风礉闁灝鍘ょ亸鍝勵嚟娑撳秳绔撮懛瀛樻閸戣櫣骞� stride 闁挎瑨顕ら幋鏍翻閸忋儰绗夐崠褰掑帳閵嗭拷
         MppEncoderOptions options;
         build_encoder_options(&ctx->config, &options);
         if (mpp_encoder_init(&ctx->encoder,
@@ -342,29 +342,29 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     }
     ctx->encoder_ready = 1;
 
-    // 绗笁姝ワ細鍒濆鍖� RTSP 妯″潡銆�
-    // 鏀惧湪閲囬泦鍜岀紪鐮佷箣鍚庯紝閬垮厤鍓嶉潰澶辫触鏃剁暀涓嬩竴涓笉鍙敤鐨� RTSP 鏈嶅姟鐘舵€併€�
+    // 缁楊兛绗佸銉窗閸掓繂顫愰崠锟� RTSP 濡€虫健閵嗭拷
+    // 閺€鎯ф躬闁插洭娉﹂崪宀€绱惍浣风閸氬函绱濋柆鍨帳閸撳秹娼版径杈Е閺冨墎鏆€娑撳绔存稉顏冪瑝閸欘垳鏁ら惃锟� RTSP 閺堝秴濮熼悩鑸碘偓浣碘偓锟�
     if (rtspModuleInit() < 0) {
         fprintf(stderr, "[ERROR] rtspModuleInit failed\n");
         goto fail;
     }
     ctx->rtsp_module_ready = 1;
 
-    // 鍒涘缓鑷畾涔� session锛屽鎴风閫氳繃 rtsp://ip:port/session_name 鎷夋祦銆�
+    // 閸掓稑缂撻懛顏勭暰娑旓拷 session閿涘苯顓归幋椋庮伂闁俺绻� rtsp://ip:port/session_name 閹峰绁﹂妴锟�
     ctx->rtsp_session = rtspAddSession(ctx->config.session_name);
     if (!ctx->rtsp_session) {
         fprintf(stderr, "[ERROR] rtspAddSession failed\n");
         goto fail;
     }
 
-    // 褰撳墠閾捐矾鍙帹 H264 瑙嗛锛屾墍浠ヨ繖閲屽彧娉ㄥ唽瑙嗛濯掍綋绫诲瀷銆�
+    // 瑜版挸澧犻柧鎹愮熅閸欘亝甯� H264 鐟欏棝顣堕敍灞惧娴犮儴绻栭柌灞藉涧濞夈劌鍞界憴鍡涱暥婵帊缍嬬猾璇茬€烽妴锟�
     if (sessionAddVideo(ctx->rtsp_session, VIDEO_H264) < 0) {
         fprintf(stderr, "[ERROR] sessionAddVideo failed\n");
         goto fail;
     }
 
     if (ctx->config.record_file_path && ctx->config.record_file_path[0] != '\0') {
-        // 锟斤拷锟斤拷说锟斤拷锟斤拷锟斤拷锟斤拷录锟斤拷锟斤拷帽锟斤拷锟斤拷 Annex-B 锟斤拷锟斤拷直写锟斤拷锟斤拷锟解开锟斤拷小锟斤拷
+        // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰綍閿熸枻鎷烽敓鏂ゆ嫹甯介敓鏂ゆ嫹閿熸枻鎷� Annex-B 閿熸枻鎷烽敓鏂ゆ嫹鐩村啓閿熸枻鎷烽敓鏂ゆ嫹閿熻В寮€閿熸枻鎷峰皬閿熸枻鎷�
         ctx->record_fp = fopen(ctx->config.record_file_path, "ab");
         if (!ctx->record_fp) {
             fprintf(stderr, "[ERROR] open record file failed: %s (errno=%d)\n",
@@ -386,8 +386,8 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     return 0;
 
 fail:
-    // 缁熶竴璧颁竴涓け璐ユ竻鐞嗗嚭鍙ｏ紝閬垮厤姣忎釜澶辫触鍒嗘敮閮芥墜鍐欓噴鏀鹃€昏緫銆�
-    // 杩欐牱鍚庣画缁х画鎵╁睍鍔熻兘鏃讹紝涓嶅鏄撴紡璧勬簮銆�
+    // 缂佺喍绔寸挧棰佺娑擃亜銇戠拹銉︾閻炲棗鍤崣锝忕礉闁灝鍘ゅВ蹇庨嚋婢惰精瑙﹂崚鍡樻暜闁姤澧滈崘娆撳櫞閺€楣冣偓鏄忕帆閵嗭拷
+    // 鏉╂瑦鐗遍崥搴ｇ敾缂佈呯敾閹碘晛鐫嶉崝鐔诲厴閺冭绱濇稉宥咁啇閺勬挻绱＄挧鍕爱閵嗭拷
     rtsp_streamer_deinit(ctx);
     return -1;
 }
@@ -409,18 +409,18 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     memset(&thread_args, 0, sizeof(thread_args));
     thread_args.ctx = ctx;
 
-    // RTSP 鏈嶅姟绾跨▼璐熻矗鐩戝惉瀹㈡埛绔繛鎺ャ€�
-    // 涓荤嚎绋嬪彧璐熻矗鈥滈噰闆� -> 缂栫爜 -> 閫佹祦鈥濓紝鑱岃矗鏇存竻鏅帮紝涔熼伩鍏嶄簰鐩搁樆濉炪€�
+    // RTSP 閺堝秴濮熺痪璺ㄢ柤鐠愮喕鐭楅惄鎴濇儔鐎广垺鍩涚粩顖濈箾閹恒儯鈧拷
+    // 娑撹崵鍤庣粙瀣涧鐠愮喕鐭楅垾婊堝櫚闂嗭拷 -> 缂傛牜鐖� -> 闁焦绁﹂垾婵撶礉閼卞矁鐭楅弴瀛樼閺呭府绱濇稊鐔间缉閸忓秳绨伴惄鎼佹▎婵夌偑鈧拷
     ret = pthread_create(&server_tid, NULL, rtsp_server_thread, &thread_args);
     if (ret != 0) {
         fprintf(stderr, "[ERROR] pthread_create rtsp server failed: %d\n", ret);
         return -1;
     }
 
-    // 涓婚摼璺細
-    // 1. 浠� V4L2 鎶撳彇 NV12 鍘熷甯�
-    // 2. 閫佸叆 MPP 缂栫爜鎴� H264 Annex-B
-    // 3. 鎷嗘垚 NALU 鍚庢帹缁� RTSP session
+    // 娑撳鎽肩捄顖ょ窗
+    // 1. 娴狅拷 V4L2 閹舵挸褰� NV12 閸樼喎顫愮敮锟�
+    // 2. 闁礁鍙� MPP 缂傛牜鐖滈幋锟� H264 Annex-B
+    // 3. 閹峰棙鍨� NALU 閸氬孩甯圭紒锟� RTSP session
     while (ctx->running) {
         uint8_t *h264_data = NULL;
         size_t h264_len = 0;
@@ -430,11 +430,11 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         uint64_t encode_get_ts_us = 0;
         uint64_t send_video_before_ts_us = 0;
 
-        // 杩欓噷渚濊禆 v4l2_capture_frame() 鐨勭敓鍛藉懆鏈熶慨澶嶏細
-        // raw_frame 鐜板湪鏄鍒跺埌鐢ㄦ埛鎬� frame_cache 鐨勭ǔ瀹氭暟鎹紝
-        // 涓嶆槸椹卞姩閭ｅ潡浼氳寰幆澶嶇敤鐨� mmap 鍘熷缂撳啿銆�
-        // 鎵€浠ュ嵆浣垮簳灞傜紦鍐插凡缁忛噸鏂� QBUF 鍥為┍鍔紝
-        // 褰撳墠杩欎唤 raw_frame 鍦ㄦ湰杞紪鐮佺粨鏉熷墠浠嶇劧鍙畨鍏ㄨ鍙栵紝涓嶄細琚柊甯ц鐩栥€�
+        // 鏉╂瑩鍣锋笟婵婄 v4l2_capture_frame() 閻ㄥ嫮鏁撻崨钘夋噯閺堢喍鎱ㄦ径宥忕窗
+        // raw_frame 閻滄澘婀弰顖氼槻閸掕泛鍩岄悽銊﹀煕閹拷 frame_cache 閻ㄥ嫮菙鐎规碍鏆熼幑顕嗙礉
+        // 娑撳秵妲告す鍗炲З闁絽娼℃导姘愁潶瀵邦亞骞嗘径宥囨暏閻拷 mmap 閸樼喎顫愮紓鎾冲暱閵嗭拷
+        // 閹碘偓娴犮儱宓嗘担鍨俺鐏炲倻绱﹂崘鎻掑嚒缂佸繘鍣搁弬锟� QBUF 閸ョ偤鈹嶉崝顭掔礉
+        // 瑜版挸澧犳潻娆庡敜 raw_frame 閸︺劍婀版潪顔剧椽閻胶绮ㄩ弶鐔峰娴犲秶鍔ч崣顖氱暔閸忋劏顕伴崣鏍电礉娑撳秳绱扮悮顐ｆ煀鐢嗩洬閻╂牓鈧拷
         if (v4l2_capture_frame(&ctx->capture,
                                &raw_frame,
                                &raw_len,
@@ -447,7 +447,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
                 ret = -1;
                 break;
             }
-            // 锟斤拷锟斤拷说锟斤拷锟斤拷锟缴硷拷失锟杰猴拷锟斤拷锟斤拷锟斤拷卟锟斤拷锟斤拷裕锟斤拷锟斤拷锟斤拷斐ｏ拷指锟斤拷锟斤拷锟斤拷锟�
+            // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓缂寸》鎷峰け閿熸澃鐚存嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰崯閿熸枻鎷烽敓鏂ゆ嫹瑁曢敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹鏂愶綇鎷锋寚閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓锟�
             usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
             continue;
         }
@@ -476,7 +476,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         consecutive_encode_fail = 0;
 
         if (!h264_data || h264_len == 0) {
-            // 缂栫爜鍣ㄥ垰鍚姩鏃跺彲鑳戒細鏈夌煭鏆傜紦瀛橀樁娈碉紝鏆傛椂娌℃湁杈撳嚭涓嶇畻纭敊璇€�
+            // 缂傛牜鐖滈崳銊ュ灠閸氼垰濮╅弮璺哄讲閼虫垝绱伴張澶岀叚閺嗗倻绱︾€涙﹢妯佸▓纰夌礉閺嗗倹妞傚▽鈩冩箒鏉堟挸鍤稉宥囩暬绾剟鏁婄拠顖樷偓锟�
             continue;
         }
 
@@ -549,8 +549,8 @@ void rtsp_streamer_stop(RtspStreamerCtx *ctx) {
         return;
     }
 
-    // 杩欓噷鍙敼杩愯鏍囧織锛屼笉鐩存帴閲婃斁璧勬簮銆�
-    // 璧勬簮缁熶竴鍦� deinit() 涓鐞嗭紝閬垮厤澶氬骞跺彂娓呯悊銆�
+    // 鏉╂瑩鍣烽崣顏呮暭鏉╂劘顢戦弽鍥х箶閿涘奔绗夐惄瀛樺复闁插﹥鏂佺挧鍕爱閵嗭拷
+    // 鐠у嫭绨紒鐔剁閸︼拷 deinit() 娑擃厼顦╅悶鍡礉闁灝鍘ゆ径姘槱楠炶泛褰傚〒鍛倞閵嗭拷
     ctx->running = 0;
 }
 
@@ -570,8 +570,8 @@ void rtsp_streamer_deinit(RtspStreamerCtx *ctx) {
         ctx->rtsp_session = NULL;
     }
 
-    // 鎸夆€滆皝鎴愬姛鍒濆鍖栬繃锛岃皝灏遍噴鏀锯€濈殑鍘熷垯娓呯悊銆�
-    // 杩欐牱鍗充娇 init() 涓€斿け璐ワ紝涔熷彲浠ュ畨鍏ㄥ鐢ㄥ悓涓€濂楅噴鏀鹃€昏緫銆�
+    // 閹稿鈧粏鐨濋幋鎰閸掓繂顫愰崠鏍箖閿涘矁鐨濈亸閬嶅櫞閺€閿偓婵堟畱閸樼喎鍨〒鍛倞閵嗭拷
+    // 鏉╂瑦鐗遍崡鍏呭▏ init() 娑擃參鈧柨銇戠拹銉礉娑旂喎褰叉禒銉ョ暔閸忋劌顦查悽銊ユ倱娑撯偓婵傛鍣撮弨楣冣偓鏄忕帆閵嗭拷
     if (ctx->rtsp_module_ready) {
         rtspModuleDel();
         ctx->rtsp_module_ready = 0;
