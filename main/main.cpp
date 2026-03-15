@@ -9,10 +9,17 @@ int main() {
     // rtsp_streamer_init() fills in the default RTSP and encoder settings.
     RtspStreamerConfig config = {0};
 
-    // Initialization order:
-    // 1. V4L2 capture
-    // 2. MPP encoder
-    // 3. RTSP session registration
+    config.low_latency_mode = 1;
+    config.stats_interval_sec = 1;
+    config.capture_retry_ms = 5;
+    config.max_consecutive_failures = 30;
+    config.rc_mode = MPP_ENC_RC_MODE_CBR;
+    config.h264_profile = 100;
+    config.h264_level = 40;
+    config.h264_cabac_en = 1;
+    // config.record_file_path = "/tmp/record.h264";
+    config.record_flush_interval_frames = 30;
+
     if (rtsp_streamer_init(&streamer, &config) < 0) {
         return -1;
     }

@@ -34,7 +34,13 @@ int main() {
         return -1;
     }
 
-    if (mpp_encoder_init(&enc_ctx, CAPTURE_WIDTH, CAPTURE_HEIGHT, ENCODE_FPS, ENCODE_BITRATE, ENCODE_GOP) < 0) {
+    if (mpp_encoder_init(&enc_ctx,
+                         CAPTURE_WIDTH,
+                         CAPTURE_HEIGHT,
+                         ENCODE_FPS,
+                         ENCODE_BITRATE,
+                         ENCODE_GOP,
+                         NULL) < 0) {
         fprintf(stderr, "[ERROR] mpp_encoder_init failed\n");
         v4l2_capture_deinit(&cap_ctx);
         return -1;

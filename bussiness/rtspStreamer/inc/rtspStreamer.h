@@ -3,6 +3,7 @@
 
 #include "mppEncoder.h"
 #include "v4l2Capture.h"
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,16 @@ typedef struct {
     int fps;
     int bitrate;
     int gop;
+    int rc_mode;
+    int h264_profile;
+    int h264_level;
+    int h264_cabac_en;
+    int low_latency_mode;
+    int stats_interval_sec;
+    int capture_retry_ms;
+    int max_consecutive_failures;
+    const char *record_file_path;
+    int record_flush_interval_frames;
 } RtspStreamerConfig;
 
 typedef struct {
@@ -29,6 +40,10 @@ typedef struct {
     int encoder_ready;
     int rtsp_module_ready;
     int running;
+    FILE *record_fp;
+    uint64_t stat_last_ts_us;
+    uint64_t stat_frames;
+    uint64_t stat_bytes;
 } RtspStreamerCtx;
 
 int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config);
