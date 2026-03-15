@@ -227,8 +227,8 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         if (encode_put_ts_us) {
             *encode_put_ts_us = ts;
         }
-        printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
-               frame_id, ts);
+        // printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
+        //        frame_id, ts);
     }
     mpp_frame_set_pts(enc->frame, enc->pts++);
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
@@ -244,8 +244,8 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         if (encode_get_ts_us) {
             *encode_get_ts_us = ts;
         }
-        printf("[TRACE] frame=%" PRIu64 " step=after_encode_get_packet ts_us=%" PRIu64 " ret=%d has_packet=%d\n",
-               frame_id, ts, ret, packet ? 1 : 0);
+        // printf("[TRACE] frame=%" PRIu64 " step=after_encode_get_packet ts_us=%" PRIu64 " ret=%d has_packet=%d\n",
+        //        frame_id, ts, ret, packet ? 1 : 0);
     }
     if (ret != MPP_OK) {
         mpp_log_error("encode_get_packet failed", ret);

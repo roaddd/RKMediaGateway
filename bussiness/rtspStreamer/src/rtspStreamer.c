@@ -76,14 +76,6 @@ static int send_h264_annexb(void *session,
     size_t nalu_log_len = 0;
 
     nalu_log[0] = '\0';
-    {
-        uint64_t ts = get_now_us();
-        if (send_video_before_ts_us) {
-            *send_video_before_ts_us = ts;
-        }
-        printf("[TRACE] frame=%" PRIu64 " step=before_sessionSendVideoData ts_us=%" PRIu64 "\n",
-               frame_id, ts);
-    }
 
     // 这里按“单个 NALU”发送给 rtsp_server。
     // 原因是 MPP 输出通常是 Annex-B，一个缓冲里可能带多个 NALU。
@@ -171,6 +163,16 @@ static int send_h264_annexb(void *session,
         }
         frame_seq++;
     }
+
+    {
+        uint64_t ts = get_now_us();
+        if (send_video_before_ts_us) {
+            *send_video_before_ts_us = ts;
+        }
+        // printf("[TRACE] frame=%" PRIu64 " step=before_sessionSendVideoData ts_us=%" PRIu64 "\n",
+        //        frame_id, ts);
+    }
+
     return 0;
 }
 
