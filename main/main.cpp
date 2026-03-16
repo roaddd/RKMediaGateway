@@ -1,13 +1,11 @@
 extern "C" {
-#include "rtspStreamer.h"
+#include "mediaGateway.h"
 }
 
 int main() {
-    RtspStreamerCtx streamer;
+    MediaGatewayCtx gateway;
 
-    // Zero-init keeps this as the smallest possible smoke test.
-    // rtsp_streamer_init() fills in the default RTSP and encoder settings.
-    RtspStreamerConfig config = {0};
+    MediaGatewayConfig config = {0};
 
     config.low_latency_mode = 1;
     config.stats_interval_sec = 1;
@@ -17,17 +15,21 @@ int main() {
     config.h264_profile = 100;
     config.h264_level = 40;
     config.h264_cabac_en = 1;
-    // config.record_file_path = "/tmp/record.h264";
+    config.enable_rtsp = 1;
+    config.enable_rtmp = 0;
+    config.rtsp.session_name = "live";
+    config.rtsp.server_ip = "0.0.0.0";
+    config.rtsp.server_port = 8554;
+    config.rtmp.publish_url = "rtmp://127.0.0.1/live/stream";
+    config.rtmp.audio_enabled = 0;
     config.record_flush_interval_frames = 30;
 
-    if (rtsp_streamer_init(&streamer, &config) < 0) {
+    if (media_gateway_init(&gateway, &config) < 0) {
         return -1;
     }
 
-    // Run the capture -> encode -> stream loop.
-    int ret = rtsp_streamer_run(&streamer);
+    int ret = media_gateway_run(&gateway);
 
-    // Always release resources through one path.
-    rtsp_streamer_deinit(&streamer);
+    media_gateway_deinit(&gateway);
     return ret;
 }

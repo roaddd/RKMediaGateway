@@ -12,7 +12,9 @@ endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 
@@ -23,7 +25,37 @@ link_directories(${THIRDPARTY_RTSP_LIB_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
+file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
 file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c)
+file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)
+
+option(ENABLE_RTMP "Build RTMP sink skeleton" ON)
+set(RTMP_ROOT "" CACHE PATH "Root path of librtmp installation")
+
+if(ENABLE_RTMP)
+    set(_RTMP_INCLUDE_HINTS)
+    set(_RTMP_LIBRARY_HINTS)
+    if(RTMP_ROOT)
+        list(APPEND _RTMP_INCLUDE_HINTS
+            ${RTMP_ROOT}/include
+            ${RTMP_ROOT}
+        )
+        list(APPEND _RTMP_LIBRARY_HINTS
+            ${RTMP_ROOT}/lib
+            ${RTMP_ROOT}/lib64
+            ${RTMP_ROOT}
+        )
+    endif()
+
+    find_path(LIBRTMP_INCLUDE_DIR
+        NAMES librtmp/rtmp.h
+        HINTS ${_RTMP_INCLUDE_HINTS}
+    )
+    find_library(LIBRTMP_LIBRARY
+        NAMES rtmp librtmp
+        HINTS ${_RTMP_LIBRARY_HINTS}
+    )
+endif()
 
 if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(v4l2_test
@@ -49,18 +81,70 @@ if(BUILD_TARGET STREQUAL "mpp_test" OR BUILD_TARGET STREQUAL "all")
 endif()
 
 if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
+    set(GATEWAY_OUTPUT_SRC
+        ${MEDIA_GATEWAY_SRC}
+        ${RTSP_STREAMER_SRC}
+    )
+    if(ENABLE_RTMP)
+        list(APPEND GATEWAY_OUTPUT_SRC ${RTMP_STREAMER_SRC})
+    endif()
+
     add_executable(rtsp_gateway
         ${PROJECT_SOURCE_DIR}/main/main.cpp
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
-        ${RTSP_STREAMER_SRC}
+        ${GATEWAY_OUTPUT_SRC}
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server pthread m)
+    if(ENABLE_RTMP)
+        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_SINK=1)
+        if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
+            target_include_directories(rtsp_gateway PRIVATE ${LIBRTMP_INCLUDE_DIR})
+            target_link_libraries(rtsp_gateway PRIVATE ${LIBRTMP_LIBRARY})
+            target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_LIBRTMP=1)
+        else()
+            message(WARNING "ENABLE_RTMP=ON but librtmp not found; building RTMP skeleton without real transport")
+        endif()
+    endif()
     set_target_properties(rtsp_gateway PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
+    set(DUAL_OUTPUT_SRC
+        ${MEDIA_GATEWAY_SRC}
+        ${RTSP_STREAMER_SRC}
+    )
+    if(ENABLE_RTMP)
+        list(APPEND DUAL_OUTPUT_SRC ${RTMP_STREAMER_SRC})
+    endif()
+
+    add_executable(dual_output_test
+        ${PROJECT_SOURCE_DIR}/main/main_dual_output_test.cpp
+        ${V4L2_CAPTURE_SRC}
+        ${MPP_ENCODER_SRC}
+        ${DUAL_OUTPUT_SRC}
+    )
+    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server pthread m)
+    if(ENABLE_RTMP)
+        target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_SINK=1)
+        if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
+            target_include_directories(dual_output_test PRIVATE ${LIBRTMP_INCLUDE_DIR})
+            target_link_libraries(dual_output_test PRIVATE ${LIBRTMP_LIBRARY})
+            target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_LIBRTMP=1)
+        else()
+            message(WARNING "ENABLE_RTMP=ON but librtmp not found; building dual_output_test without real RTMP transport")
+        endif()
+    endif()
+    set_target_properties(dual_output_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 message(STATUS "BUILD_TARGET=${BUILD_TARGET}")
+message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
+message(STATUS "LIBRTMP_INCLUDE_DIR=${LIBRTMP_INCLUDE_DIR}")
+message(STATUS "LIBRTMP_LIBRARY=${LIBRTMP_LIBRARY}")
 message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 message(STATUS "C compiler=${CMAKE_C_COMPILER}")

@@ -10,10 +10,22 @@
 
 #define MPP_ALIGN(x, a) (((x) + (a)-1) & ~((a)-1))
 
+/**
+ * @description: 输出 MPP 接口错误日志
+ * @param {const char *} msg
+ * @param {MPP_RET} ret
+ * @return {static void}
+ */
 static void mpp_log_error(const char *msg, MPP_RET ret) {
     fprintf(stderr, "[ERROR] %s: ret=%d\n", msg, ret);
 }
 
+/**
+ * @description: 确保编码输出缓存空间足够
+ * @param {MppEncoderCtx *} enc
+ * @param {size_t} need_size
+ * @return {static int}
+ */
 static int ensure_packet_cache(MppEncoderCtx *enc, size_t need_size) {
     // 输出码流长度会波动，按需扩容缓存，避免每帧都 malloc/free。
     if (enc->packet_cache_size >= need_size) {
@@ -31,12 +43,23 @@ static int ensure_packet_cache(MppEncoderCtx *enc, size_t need_size) {
     return 0;
 }
 
+/**
+ * @description: 获取当前单调时钟时间，单位微秒
+ * @return {static uint64_t}
+ */
 static uint64_t get_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 将 NV12 数据拷贝到 MPP 输入缓冲区
+ * @param {MppEncoderCtx *} enc
+ * @param {uint8_t *} dst
+ * @param {const uint8_t *} src
+ * @return {static void}
+ */
 static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint8_t *src) {
     size_t y_src_stride = (size_t)enc->width;
     size_t uv_src_stride = (size_t)enc->width;
@@ -60,6 +83,17 @@ static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint
     }
 }
 
+/**
+ * @description: 初始化 MPP 编码器
+ * @param {MppEncoderCtx *} enc
+ * @param {int} width
+ * @param {int} height
+ * @param {int} fps
+ * @param {int} bitrate
+ * @param {int} gop
+ * @param {const MppEncoderOptions *} options
+ * @return {int}
+ */
 int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop, const MppEncoderOptions *options) {
     if (!enc || width <= 0 || height <= 0 || fps <= 0 || bitrate <= 0 || gop <= 0) {
         fprintf(stderr, "[ERROR] invalid encoder init parameters\n");
@@ -182,6 +216,19 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     return 0;
 }
 
+/**
+ * @description: 编码一帧原始图像为 H264 数据
+ * @param {MppEncoderCtx *} enc
+ * @param {const uint8_t *} nv12_data
+ * @param {size_t} nv12_len
+ * @param {uint64_t} frame_id
+ * @param {uint8_t **} h264_data
+ * @param {size_t *} h264_len
+ * @param {int *} is_key_frame
+ * @param {uint64_t *} encode_put_ts_us
+ * @param {uint64_t *} encode_get_ts_us
+ * @return {int}
+ */
 int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              const uint8_t *nv12_data,
                              size_t nv12_len,
@@ -298,6 +345,11 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     return 0;
 }
 
+/**
+ * @description: 释放 MPP 编码器资源
+ * @param {MppEncoderCtx *} enc
+ * @return {void}
+ */
 void mpp_encoder_deinit(MppEncoderCtx *enc) {
     if (!enc) {
         return;
@@ -334,3 +386,4 @@ void mpp_encoder_deinit(MppEncoderCtx *enc) {
     }
     enc->packet_cache_size = 0;
 }
+

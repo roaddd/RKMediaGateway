@@ -11,32 +11,32 @@ extern "C" {
 #endif
 
 typedef struct {
-    MppCtx ctx;
-    MppApi *mpi;
-    MppEncCfg cfg;
+    MppCtx ctx;                 /* MPP 编码上下文句柄。 */
+    MppApi *mpi;                /* MPP 提供的接口函数表。 */
+    MppEncCfg cfg;              /* 编码配置对象。 */
 
-    MppBufferGroup frame_group;
-    MppBuffer frame_buffer;
-    MppFrame frame;
+    MppBufferGroup frame_group; /* 输入帧缓冲组。 */
+    MppBuffer frame_buffer;     /* 当前输入帧对应的 MPP Buffer。 */
+    MppFrame frame;             /* 当前送入编码器的帧对象。 */
 
-    int width;
-    int height;
-    int hor_stride;
-    int ver_stride;
-    int fps;
-    int bitrate;
-    int gop;
-    int64_t pts;
+    int width;                  /* 输入图像宽度。 */
+    int height;                 /* 输入图像高度。 */
+    int hor_stride;             /* 水平 stride。 */
+    int ver_stride;             /* 垂直 stride。 */
+    int fps;                    /* 编码帧率。 */
+    int bitrate;                /* 目标码率。 */
+    int gop;                    /* GOP 长度。 */
+    int64_t pts;                /* 送入 MPP 的时间戳计数。 */
 
-    uint8_t *packet_cache;
-    size_t packet_cache_size;
+    uint8_t *packet_cache;      /* 编码输出缓存，保存导出的 Annex-B 码流。 */
+    size_t packet_cache_size;   /* packet_cache 当前容量。 */
 } MppEncoderCtx;
 
 typedef struct {
-    int rc_mode;        // MPP_ENC_RC_MODE_*��<=0 means default CBR
-    int h264_profile;   // 66/77/100��<=0 means default 100
-    int h264_level;     // e.g. 40��<=0 means default 40
-    int h264_cabac_en;  // 0/1��<0 means default 1
+    int rc_mode;        /* MPP_ENC_RC_MODE_*；<=0 表示使用默认 CBR。 */
+    int h264_profile;   /* H264 profile，例如 66/77/100；<=0 表示默认 100。 */
+    int h264_level;     /* H264 level，例如 40；<=0 表示默认 40。 */
+    int h264_cabac_en;  /* 是否启用 CABAC；<0 表示默认 1。 */
 } MppEncoderOptions;
 
 int mpp_encoder_init(MppEncoderCtx *enc,

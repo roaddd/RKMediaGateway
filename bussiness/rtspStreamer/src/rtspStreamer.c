@@ -30,22 +30,36 @@
 #define H264_NAL_LOG_EVERY_N_FRAMES 60
 
 typedef struct {
-    RtspStreamerCtx *ctx;
-    int ret;
+    RtspStreamerCtx *ctx;  /* 回指主 RTSP streamer 上下文，供服务线程读取配置。 */
+    int ret;               /* 服务线程退出时保存 rtspStartServer() 返回值。 */
 } RtspServerThreadArgs;
 
+/**
+ * @description: 获取当前单调时钟时间，单位微秒
+ * @return {static uint64_t}
+ */
 static uint64_t get_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 获取当前实时时钟时间，单位微秒
+ * @return {static uint64_t}
+ */
 static uint64_t get_realtime_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 将业务配置转换为编码器参数
+ * @param {const RtspStreamerConfig *} cfg
+ * @param {MppEncoderOptions *} opt
+ * @return {static void}
+ */
 static void build_encoder_options(const RtspStreamerConfig *cfg, MppEncoderOptions *opt) {
     if (!cfg || !opt) {
         return;
@@ -57,6 +71,11 @@ static void build_encoder_options(const RtspStreamerConfig *cfg, MppEncoderOptio
     opt->h264_cabac_en = cfg->h264_cabac_en;
 }
 
+/**
+ * @description: 重新初始化编码器实例
+ * @param {RtspStreamerCtx *} ctx
+ * @return {static int}
+ */
 static int reset_encoder(RtspStreamerCtx *ctx) {
     MppEncoderOptions options;
     if (!ctx) {
@@ -69,7 +88,7 @@ static int reset_encoder(RtspStreamerCtx *ctx) {
         ctx->encoder_ready = 0;
     }
 
-    // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰け閿熸澃鐚存嫹鎵ч敓鏂ゆ嫹閿熸枻鎷烽敓鎴枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓鍙鎷� RTSP 閿熸枻鎷烽敓鏂ゆ嫹閿熺绋嬧槄鎷�
+    // 编码器异常后在这里重建，尽量沿用当前配置，避免 RTSP 主流程直接退出。
     if (mpp_encoder_init(&ctx->encoder,
                          CAPTURE_WIDTH,
                          CAPTURE_HEIGHT,
@@ -84,6 +103,12 @@ static int reset_encoder(RtspStreamerCtx *ctx) {
     return 0;
 }
 
+/**
+ * @description: 判断当前位置是否为 H264 起始码并返回长度
+ * @param {const uint8_t *} data
+ * @param {size_t} len
+ * @return {static int}
+ */
 static int start_code_len(const uint8_t *data, size_t len) {
     if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
         return 4;
@@ -94,6 +119,15 @@ static int start_code_len(const uint8_t *data, size_t len) {
     return 0;
 }
 
+/**
+ * @description: 查找下一个 H264 起始码位置
+ * @param {const uint8_t *} data
+ * @param {size_t} len
+ * @param {size_t} offset
+ * @param {size_t *} pos
+ * @param {int *} code_len
+ * @return {static int}
+ */
 static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_t *pos, int *code_len) {
     for (size_t i = offset; i + 3 <= len; ++i) {
         int cur_len = start_code_len(data + i, len - i);
@@ -106,6 +140,11 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
     return -1;
 }
 
+/**
+ * @description: 返回 H264 NALU 类型名称
+ * @param {uint8_t} nalu_type
+ * @return {static const char *}
+ */
 static const char *h264_nalu_type_name(uint8_t nalu_type) {
     switch (nalu_type) {
         case 1: return "NON_IDR";
@@ -118,6 +157,16 @@ static const char *h264_nalu_type_name(uint8_t nalu_type) {
     }
 }
 
+/**
+ * @description: 拆分并发送 H264 Annex-B 码流
+ * @param {void *} session
+ * @param {uint8_t *} data
+ * @param {size_t} len
+ * @param {uint64_t} frame_id
+ * @param {uint64_t *} send_video_before_ts_us
+ * @param {int} low_latency_mode
+ * @return {static int}
+ */
 static int send_h264_annexb(void *session,
                             uint8_t *data,
                             size_t len,
@@ -133,10 +182,10 @@ static int send_h264_annexb(void *session,
 
     nalu_log[0] = '\0';
 
-    // 鏉╂瑩鍣烽幐澶嗏偓婊冨礋娑擄拷 NALU閳ユ繂褰傞柅浣虹舶 rtsp_server閵嗭拷
-    // 閸樼喎娲滈弰锟� MPP 鏉堟挸鍤柅姘埗閺勶拷 Annex-B閿涘奔绔存稉顏嗙处閸愭煡鍣烽崣顖濆厴鐢箑顦挎稉锟� NALU閵嗭拷
-    // 婵″倹鐏夐弫鏉戞健閻╁瓨甯撮柅浣风瑓閸樹紮绱濇惔鏇炵湴閸欘垵鍏橀幐澶婂礋娑擄拷 NALU 婢跺嫮鎮婇敍灞筋嚤閼凤拷 RTP 閹垫挸瀵樻潏鍦櫕闁挎瑨顕ら妴锟�
-    // 閸ョ姵顒濋崗鍫熷閸栧拑绱濋崘宥夆偓鎰嚋鐠嬪啰鏁� sessionSendVideoData()閿涘苯鍚嬬€硅鈧勬纯缁嬬偨鈧拷
+    // 这里把 Annex-B 码流拆成独立 NALU 后逐个送给 rtsp_server。
+    // MPP 输出的是带起始码的 H264 Annex-B，需要先找到每个 NALU 的边界。
+    // 发送时去掉起始码，只把真正的 NALU payload 交给 RTP 打包模块。
+    // 如果没有找到起始码，就退化为把整块数据直接送给 sessionSendVideoData()。
     if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
         uint8_t nalu_type = (len > 0) ? (data[0] & 0x1F) : 0;
         int should_log = (nalu_type == 5 || nalu_type == 7 || nalu_type == 8 ||
@@ -149,7 +198,7 @@ static int send_h264_annexb(void *session,
             fprintf(stderr, "[ERROR] sessionSendVideoData failed\n");
             return -1;
         }
-        // 妤傛﹢顣堕弮銉ョ箶娴兼岸妯嗘繅鐐茬杽閺冨墎鍤庣粙瀣剁礉姒涙ǹ顓绘禒鍛ⅵ閸楁澘鍙ч柨顔兼姎/SPS/PPS閸滃苯鎳嗛張鐔糕偓褔鍣伴弽閿嬫）韫囨ぜ鈧拷
+        // 单 NALU 场景下也保留关键帧日志，便于确认 IDR/SPS/PPS 是否正常输出。
         if (should_log && !low_latency_mode) {
             printf("[H264] frame=%llu nalu_count=%d types=%s\n", frame_seq, nalu_count, nalu_log);
         }
@@ -210,7 +259,7 @@ static int send_h264_annexb(void *session,
                       (strstr(nalu_log, "8(PPS)") != NULL);
         int should_log = has_key || ((frame_seq % H264_NAL_LOG_EVERY_N_FRAMES) == 0);
         if (should_log && !low_latency_mode) {
-            // 閸欘亙绻氶悾娆忓彠闁款喛鐦栭弬顓熸）韫囨绱濋柆鍨帳 I/O 閹躲垹宕扮紓鏍垳/閸欐垿鈧焦妞傞梻瀵稿閵嗭拷
+            // 日志打印本身有 I/O 开销，只在关键帧或抽样帧输出，避免刷屏。
             printf("[H264] frame=%llu nalu_count=%d types=%s\n",
                    frame_seq, nalu_count, nalu_count > 0 ? nalu_log : "none");
         }
@@ -229,14 +278,20 @@ static int send_h264_annexb(void *session,
     return 0;
 }
 
+/**
+ * @description: 填充默认配置项
+ * @param {RtspStreamerConfig *} dst
+ * @param {const RtspStreamerConfig *} src
+ * @return {static void}
+ */
 static void fill_default_config(RtspStreamerConfig *dst, const RtspStreamerConfig *src) {
     memset(dst, 0, sizeof(*dst));
     if (src) {
         *dst = *src;
     }
 
-    // 鐎电懓顦婚崗浣筋啅閸欘亙绱堕垾婊堝劥閸掑棝鍘ょ純顔光偓婵撶礉鏉╂瑩鍣烽幎濠冩弓婵夘偄鍟撶€涙顔岀悰銉﹀灇姒涙ǹ顓婚崐绗衡偓锟�
-    // 鏉╂瑦鐗辨稉濠傜湴娴肩姳绔存稉顏堟祩閸掓繂顫愰崠鏍波閺嬪嫪缍嬮敍灞肩瘍閼宠棄鍘涚捄鎴︹偓姘付鐏忓繑甯瑰ù渚€鎽肩捄顖樷偓锟�
+    // 先复制用户传入配置，再把空值或非法值补成默认值。
+    // 这样调用方可以只覆盖少数字段，剩余参数保持稳定可用。
     if (!dst->session_name) {
         dst->session_name = DEFAULT_RTSP_SESSION;
     }
@@ -293,12 +348,17 @@ static void fill_default_config(RtspStreamerConfig *dst, const RtspStreamerConfi
     }
 }
 
+/**
+ * @description: RTSP 服务线程入口函数
+ * @param {void *} arg
+ * @return {static void *}
+ */
 static void *rtsp_server_thread(void *arg) {
     RtspServerThreadArgs *thread_args = (RtspServerThreadArgs *)arg;
     RtspStreamerCtx *ctx = thread_args->ctx;
 
-    // rtspStartServer() 閸愬懘鍎存导姘舵▎婵夌偛婀惄鎴濇儔/accept 瀵邦亞骞嗛柌宀嬬礉
-    // 閹碘偓娴犮儲鏂侀崷銊у殠缁嬪鍣烽敍宀勪缉閸忓秴宕辨担蹇庡瘜缁捐法鈻奸惃鍕櫚闂嗗棗鎷扮紓鏍垳閵嗭拷
+    // rtspStartServer() 会阻塞在内部循环/accept 上，因此放到独立线程中运行。
+    // 主线程继续负责采集、编码和推流，避免整个流程被服务端启动逻辑卡住。
     thread_args->ret = rtspStartServer(ctx->config.auth_enable,
                                        ctx->config.server_ip,
                                        ctx->config.server_port,
@@ -307,6 +367,12 @@ static void *rtsp_server_thread(void *arg) {
     return NULL;
 }
 
+/**
+ * @description: 初始化 RTSP 推流模块
+ * @param {RtspStreamerCtx *} ctx
+ * @param {const RtspStreamerConfig *} config
+ * @return {int}
+ */
 int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     if (!ctx) {
         fprintf(stderr, "[ERROR] rtsp streamer ctx is NULL\n");
@@ -316,8 +382,8 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
 
-    // 缁楊兛绔村銉窗閸忓牆鍨垫慨瀣闁插洭娉︾粩顖樷偓锟�
-    // 閸氬海鐢荤紓鏍垳閸滃本甯瑰ù渚€鍏樻笟婵婄闁插洭娉﹂崚鎵畱 NV12 閸樼喎顫愮敮褝绱濋幍鈧禒銉╁櫚闂嗗棗绻€妞よ鍘涢崣顖滄暏閵嗭拷
+    // 先初始化采集模块。
+    // 当前流程默认从摄像头取出 NV12 原始帧，后续直接送入编码器。
     if (v4l2_capture_init(&ctx->capture) < 0) {
         fprintf(stderr, "[ERROR] v4l2_capture_init failed\n");
         goto fail;
@@ -325,8 +391,8 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     ctx->capture_ready = 1;
 
     {
-        // 缁楊兛绨╁銉窗閸掓繂顫愰崠锟� MPP 缂傛牜鐖滈崳銊ｂ偓锟�
-        // 鏉╂瑩鍣烽崶鍝勭暰娴ｈ法鏁ゆ稉搴ㄥ櫚闂嗗棔绔撮懛瀵告畱閸掑棜椴搁悳鍥风礉闁灝鍘ょ亸鍝勵嚟娑撳秳绔撮懛瀛樻閸戣櫣骞� stride 闁挎瑨顕ら幋鏍翻閸忋儰绗夐崠褰掑帳閵嗭拷
+        // 再初始化 MPP 编码器。
+        // 这里使用固定采集分辨率，编码参数由配置控制；stride 等底层细节交给编码模块处理。
         MppEncoderOptions options;
         build_encoder_options(&ctx->config, &options);
         if (mpp_encoder_init(&ctx->encoder,
@@ -342,29 +408,29 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     }
     ctx->encoder_ready = 1;
 
-    // 缁楊兛绗佸銉窗閸掓繂顫愰崠锟� RTSP 濡€虫健閵嗭拷
-    // 閺€鎯ф躬闁插洭娉﹂崪宀€绱惍浣风閸氬函绱濋柆鍨帳閸撳秹娼版径杈Е閺冨墎鏆€娑撳绔存稉顏冪瑝閸欘垳鏁ら惃锟� RTSP 閺堝秴濮熼悩鑸碘偓浣碘偓锟�
+    // 初始化 RTSP 模块。
+    // 只有模块初始化成功后，后面的 session 创建和推流接口才可用。
     if (rtspModuleInit() < 0) {
         fprintf(stderr, "[ERROR] rtspModuleInit failed\n");
         goto fail;
     }
     ctx->rtsp_module_ready = 1;
 
-    // 閸掓稑缂撻懛顏勭暰娑旓拷 session閿涘苯顓归幋椋庮伂闁俺绻� rtsp://ip:port/session_name 閹峰绁﹂妴锟�
+    // 创建推流 session，客户端最终通过 rtsp://ip:port/session_name 访问。
     ctx->rtsp_session = rtspAddSession(ctx->config.session_name);
     if (!ctx->rtsp_session) {
         fprintf(stderr, "[ERROR] rtspAddSession failed\n");
         goto fail;
     }
 
-    // 瑜版挸澧犻柧鎹愮熅閸欘亝甯� H264 鐟欏棝顣堕敍灞惧娴犮儴绻栭柌灞藉涧濞夈劌鍞界憴鍡涱暥婵帊缍嬬猾璇茬€烽妴锟�
+    // 声明当前 session 的视频类型为 H264，便于 RTSP 侧生成正确描述信息。
     if (sessionAddVideo(ctx->rtsp_session, VIDEO_H264) < 0) {
         fprintf(stderr, "[ERROR] sessionAddVideo failed\n");
         goto fail;
     }
 
     if (ctx->config.record_file_path && ctx->config.record_file_path[0] != '\0') {
-        // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰綍閿熸枻鎷烽敓鏂ゆ嫹甯介敓鏂ゆ嫹閿熸枻鎷� Annex-B 閿熸枻鎷烽敓鏂ゆ嫹鐩村啓閿熸枻鎷烽敓鏂ゆ嫹閿熻В寮€閿熸枻鎷峰皬閿熸枻鎷�
+        // 如果启用了本地录制，就把编码后的 Annex-B 码流原样追加写入文件。
         ctx->record_fp = fopen(ctx->config.record_file_path, "ab");
         if (!ctx->record_fp) {
             fprintf(stderr, "[ERROR] open record file failed: %s (errno=%d)\n",
@@ -386,12 +452,17 @@ int rtsp_streamer_init(RtspStreamerCtx *ctx, const RtspStreamerConfig *config) {
     return 0;
 
 fail:
-    // 缂佺喍绔寸挧棰佺娑擃亜銇戠拹銉︾閻炲棗鍤崣锝忕礉闁灝鍘ゅВ蹇庨嚋婢惰精瑙﹂崚鍡樻暜闁姤澧滈崘娆撳櫞閺€楣冣偓鏄忕帆閵嗭拷
-    // 鏉╂瑦鐗遍崥搴ｇ敾缂佈呯敾閹碘晛鐫嶉崝鐔诲厴閺冭绱濇稉宥咁啇閺勬挻绱＄挧鍕爱閵嗭拷
+    // 初始化任一步骤失败都统一走这里清理，避免资源半初始化后泄漏。
+    // deinit() 按 ready 标记逆序释放，所以可以安全处理部分初始化成功的情况。
     rtsp_streamer_deinit(ctx);
     return -1;
 }
 
+/**
+ * @description: 运行 RTSP 推流主循环
+ * @param {RtspStreamerCtx *} ctx
+ * @return {int}
+ */
 int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     if (!ctx || !ctx->running || !ctx->rtsp_session) {
         return -1;
@@ -409,18 +480,18 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     memset(&thread_args, 0, sizeof(thread_args));
     thread_args.ctx = ctx;
 
-    // RTSP 閺堝秴濮熺痪璺ㄢ柤鐠愮喕鐭楅惄鎴濇儔鐎广垺鍩涚粩顖濈箾閹恒儯鈧拷
-    // 娑撹崵鍤庣粙瀣涧鐠愮喕鐭楅垾婊堝櫚闂嗭拷 -> 缂傛牜鐖� -> 闁焦绁﹂垾婵撶礉閼卞矁鐭楅弴瀛樼閺呭府绱濇稊鐔间缉閸忓秳绨伴惄鎼佹▎婵夌偑鈧拷
+    // RTSP 服务线程先启动起来，确保客户端连接时服务端已经就绪。
+    // 主循环随后执行完整链路：采集 -> 编码 -> 拆包发送，形成持续推流。
     ret = pthread_create(&server_tid, NULL, rtsp_server_thread, &thread_args);
     if (ret != 0) {
         fprintf(stderr, "[ERROR] pthread_create rtsp server failed: %d\n", ret);
         return -1;
     }
 
-    // 娑撳鎽肩捄顖ょ窗
-    // 1. 娴狅拷 V4L2 閹舵挸褰� NV12 閸樼喎顫愮敮锟�
-    // 2. 闁礁鍙� MPP 缂傛牜鐖滈幋锟� H264 Annex-B
-    // 3. 閹峰棙鍨� NALU 閸氬孩甯圭紒锟� RTSP session
+    // 主循环流程：
+    // 1. 从 V4L2 获取 NV12 原始帧
+    // 2. 送入 MPP 编码成 H264 Annex-B
+    // 3. 按 NALU 拆分后发送到 RTSP session
     while (ctx->running) {
         uint8_t *h264_data = NULL;
         size_t h264_len = 0;
@@ -430,11 +501,11 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         uint64_t encode_get_ts_us = 0;
         uint64_t send_video_before_ts_us = 0;
 
-        // 鏉╂瑩鍣锋笟婵婄 v4l2_capture_frame() 閻ㄥ嫮鏁撻崨钘夋噯閺堢喍鎱ㄦ径宥忕窗
-        // raw_frame 閻滄澘婀弰顖氼槻閸掕泛鍩岄悽銊﹀煕閹拷 frame_cache 閻ㄥ嫮菙鐎规碍鏆熼幑顕嗙礉
-        // 娑撳秵妲告す鍗炲З闁絽娼℃导姘愁潶瀵邦亞骞嗘径宥囨暏閻拷 mmap 閸樼喎顫愮紓鎾冲暱閵嗭拷
-        // 閹碘偓娴犮儱宓嗘担鍨俺鐏炲倻绱﹂崘鎻掑嚒缂佸繘鍣搁弬锟� QBUF 閸ョ偤鈹嶉崝顭掔礉
-        // 瑜版挸澧犳潻娆庡敜 raw_frame 閸︺劍婀版潪顔剧椽閻胶绮ㄩ弶鐔峰娴犲秶鍔ч崣顖氱暔閸忋劏顕伴崣鏍电礉娑撳秳绱扮悮顐ｆ煀鐢嗩洬閻╂牓鈧拷
+        // v4l2_capture_frame() 返回一帧可直接编码的采集数据。
+        // raw_frame 指向 capture 模块内部的 frame_cache，不需要这里额外申请或释放。
+        // 采集模块内部已经处理了 mmap 缓冲区的出队与回队。
+        // 调用方只需要消费结果，不需要自己再做 QBUF。
+        // 如果采集失败，通常是暂时性抖动，稍等片刻后重试即可。
         if (v4l2_capture_frame(&ctx->capture,
                                &raw_frame,
                                &raw_len,
@@ -447,7 +518,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
                 ret = -1;
                 break;
             }
-            // 閿熸枻鎷烽敓鏂ゆ嫹璇撮敓鏂ゆ嫹閿熸枻鎷烽敓缂寸》鎷峰け閿熸澃鐚存嫹閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷峰崯閿熸枻鎷烽敓鏂ゆ嫹瑁曢敓鏂ゆ嫹閿熸枻鎷烽敓鏂ゆ嫹鏂愶綇鎷锋寚閿熸枻鎷烽敓鏂ゆ嫹閿熸枻鎷烽敓锟�
+            // 采集失败先短暂退避，避免设备异常时空转占满 CPU。
             usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
             continue;
         }
@@ -476,7 +547,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         consecutive_encode_fail = 0;
 
         if (!h264_data || h264_len == 0) {
-            // 缂傛牜鐖滈崳銊ュ灠閸氼垰濮╅弮璺哄讲閼虫垝绱伴張澶岀叚閺嗗倻绱︾€涙﹢妯佸▓纰夌礉閺嗗倹妞傚▽鈩冩箒鏉堟挸鍤稉宥囩暬绾剟鏁婄拠顖樷偓锟�
+            // 某些帧可能暂时拿不到有效输出，直接跳过，等待下一帧即可。
             continue;
         }
 
@@ -544,16 +615,26 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
     return ret;
 }
 
+/**
+ * @description: 请求停止 RTSP 推流主循环
+ * @param {RtspStreamerCtx *} ctx
+ * @return {void}
+ */
 void rtsp_streamer_stop(RtspStreamerCtx *ctx) {
     if (!ctx) {
         return;
     }
 
-    // 鏉╂瑩鍣烽崣顏呮暭鏉╂劘顢戦弽鍥х箶閿涘奔绗夐惄瀛樺复闁插﹥鏂佺挧鍕爱閵嗭拷
-    // 鐠у嫭绨紒鐔剁閸︼拷 deinit() 娑擃厼顦╅悶鍡礉闁灝鍘ゆ径姘槱楠炶泛褰傚〒鍛倞閵嗭拷
+    // 这里只设置停止标志，让主循环自然退出。
+    // 真正的资源释放留给 deinit()，避免并发清理带来竞态。
     ctx->running = 0;
 }
 
+/**
+ * @description: 释放 RTSP 推流模块资源
+ * @param {RtspStreamerCtx *} ctx
+ * @return {void}
+ */
 void rtsp_streamer_deinit(RtspStreamerCtx *ctx) {
     if (!ctx) {
         return;
@@ -570,8 +651,8 @@ void rtsp_streamer_deinit(RtspStreamerCtx *ctx) {
         ctx->rtsp_session = NULL;
     }
 
-    // 閹稿鈧粏鐨濋幋鎰閸掓繂顫愰崠鏍箖閿涘矁鐨濈亸閬嶅櫞閺€閿偓婵堟畱閸樼喎鍨〒鍛倞閵嗭拷
-    // 鏉╂瑦鐗遍崡鍏呭▏ init() 娑擃參鈧柨銇戠拹銉礉娑旂喎褰叉禒銉ョ暔閸忋劌顦查悽銊ユ倱娑撯偓婵傛鍣撮弨楣冣偓鏄忕帆閵嗭拷
+    // 按与初始化相反的顺序释放资源，保证依赖关系正确。
+    // 结合各 ready 标记，即使 init() 中途失败也能安全执行这里的清理。
     if (ctx->rtsp_module_ready) {
         rtspModuleDel();
         ctx->rtsp_module_ready = 0;
@@ -593,3 +674,4 @@ void rtsp_streamer_deinit(RtspStreamerCtx *ctx) {
     ctx->stat_frames = 0;
     ctx->stat_bytes = 0;
 }
+

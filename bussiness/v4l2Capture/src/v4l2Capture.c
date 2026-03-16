@@ -3,22 +3,42 @@
 #include <inttypes.h>
 #include <time.h>
 
+/**
+ * @description: 输出 V4L2 接口错误日志
+ * @param {const char *} msg
+ * @param {int} ret
+ * @return {static void}
+ */
 static void print_v4l2_error(const char *msg, int ret) {
     fprintf(stderr, "[ERROR] %s: %s (errno=%d)\n", msg, strerror(-ret), ret);
 }
 
+/**
+ * @description: 获取当前单调时钟时间，单位微秒
+ * @return {static uint64_t}
+ */
 static uint64_t get_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 获取当前实时时钟时间，单位微秒
+ * @return {static uint64_t}
+ */
 static uint64_t get_realtime_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 获取字符对应的 5x7 点阵数据
+ * @param {char} c
+ * @param {uint8_t} rows
+ * @return {static int}
+ */
 static int glyph5x7(char c, uint8_t rows[7]) {
     switch (c) {
         case '0': { uint8_t r[7] = {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E}; memcpy(rows, r, 7); return 1; }
@@ -39,6 +59,17 @@ static int glyph5x7(char c, uint8_t rows[7]) {
     }
 }
 
+/**
+ * @description: 在 NV12 图像亮度平面绘制文本
+ * @param {uint8_t *} nv12
+ * @param {int} width
+ * @param {int} height
+ * @param {int} x
+ * @param {int} y
+ * @param {const char *} text
+ * @param {int} scale
+ * @return {static void}
+ */
 static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y, const char *text, int scale) {
     int cursor_x = x;
     uint8_t glyph[7];
@@ -87,6 +118,11 @@ static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y,
     }
 }
 
+/**
+ * @description: 初始化 V4L2 采集模块
+ * @param {V4L2CaptureCtx *} ctx
+ * @return {int}
+ */
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     if (!ctx) {
         fprintf(stderr, "[ERROR] ctx is NULL\n");
@@ -227,6 +263,16 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     return 0;
 }
 
+/**
+ * @description: 采集一帧图像数据
+ * @param {V4L2CaptureCtx *} ctx
+ * @param {uint8_t **} frame_data
+ * @param {int *} frame_len
+ * @param {uint64_t *} frame_id
+ * @param {uint64_t *} dqbuf_ts_us
+ * @param {uint64_t *} driver_to_dqbuf_us
+ * @return {int}
+ */
 int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        uint8_t **frame_data,
                        int *frame_len,
@@ -312,6 +358,11 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     return 0;
 }
 
+/**
+ * @description: 释放 V4L2 采集模块资源
+ * @param {V4L2CaptureCtx *} ctx
+ * @return {void}
+ */
 void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
     if (!ctx) {
         return;
@@ -342,3 +393,4 @@ void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
     ctx->fd = -1;
     printf("[INFO] v4l2 capture deinit success\n");
 }
+
