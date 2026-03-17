@@ -20,7 +20,7 @@ int main() {
     config.rtsp.session_name = "live";
     config.rtsp.server_ip = "0.0.0.0";
     config.rtsp.server_port = 8554;
-    config.rtmp.publish_url = "rtmp://127.0.0.1/live/stream";
+    config.rtmp.publish_url = "rtmp://192.168.1.2/live/stream";
     config.rtmp.audio_enabled = 0;
     config.record_flush_interval_frames = 30;
 

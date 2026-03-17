@@ -31,7 +31,7 @@ int main() {
     /* RTMP side pushes the same encoded stream to an ingest server.
      * Replace the URL below with the real publish endpoint in your lab environment.
      */
-    config.rtmp.publish_url = "rtmp://127.0.0.1/live/stream";
+    config.rtmp.publish_url = "rtmp://192.168.1.2/live/stream";
     config.rtmp.queue_capacity = 64;
     config.rtmp.audio_enabled = 0;
 
