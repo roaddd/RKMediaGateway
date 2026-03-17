@@ -39,29 +39,42 @@ set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp install
 
 if(ENABLE_RTMP)
     set(LIBRTMP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/rtmp_include)
-    set(_RTMP_INCLUDE_HINTS)
-    set(_RTMP_LIBRARY_HINTS)
-    if(RTMP_ROOT)
-        list(APPEND _RTMP_INCLUDE_HINTS
-            ${RTMP_ROOT}/include
-            ${RTMP_ROOT}/inc
-            ${RTMP_ROOT}
-        )
-        list(APPEND _RTMP_LIBRARY_HINTS
-            ${RTMP_ROOT}/lib
-            ${RTMP_ROOT}/lib64
-            ${RTMP_ROOT}
-        )
+    unset(LIBRTMP_INCLUDE_DIR CACHE)
+    unset(LIBRTMP_LIBRARY CACHE)
+
+    if(EXISTS ${THIRDPARTY_RTMP_INC_DIR}/rtmp.h)
+        set(LIBRTMP_INCLUDE_DIR ${THIRDPARTY_RTMP_INC_DIR})
     endif()
 
-    find_path(LIBRTMP_INCLUDE_DIR
-        NAMES librtmp/rtmp.h
-        HINTS ${_RTMP_INCLUDE_HINTS}
-    )
-    find_library(LIBRTMP_LIBRARY
-        NAMES rtmp librtmp
-        HINTS ${_RTMP_LIBRARY_HINTS}
-    )
+    if(EXISTS ${THIRDPARTY_RTMP_LIB_DIR}/librtmp.so)
+        set(LIBRTMP_LIBRARY ${THIRDPARTY_RTMP_LIB_DIR}/librtmp.so)
+    elseif(EXISTS ${THIRDPARTY_RTMP_LIB_DIR}/librtmp.a)
+        set(LIBRTMP_LIBRARY ${THIRDPARTY_RTMP_LIB_DIR}/librtmp.a)
+    else()
+        set(_RTMP_INCLUDE_HINTS)
+        set(_RTMP_LIBRARY_HINTS)
+        if(RTMP_ROOT)
+            list(APPEND _RTMP_INCLUDE_HINTS
+                ${RTMP_ROOT}/include
+                ${RTMP_ROOT}/inc
+                ${RTMP_ROOT}
+            )
+            list(APPEND _RTMP_LIBRARY_HINTS
+                ${RTMP_ROOT}/lib
+                ${RTMP_ROOT}/lib64
+                ${RTMP_ROOT}
+            )
+        endif()
+
+        find_path(LIBRTMP_INCLUDE_DIR
+            NAMES rtmp.h librtmp/rtmp.h
+            HINTS ${_RTMP_INCLUDE_HINTS}
+        )
+        find_library(LIBRTMP_LIBRARY
+            NAMES rtmp librtmp
+            HINTS ${_RTMP_LIBRARY_HINTS}
+        )
+    endif()
 
     if(LIBRTMP_INCLUDE_DIR)
         file(MAKE_DIRECTORY ${LIBRTMP_COMPAT_INCLUDE_DIR}/librtmp)
