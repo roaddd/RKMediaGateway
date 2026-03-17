@@ -17,10 +17,15 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
 
 set(THIRDPARTY_MPP_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/mpp/lib)
+set(THIRDPARTY_RTMP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/rtmp)
+set(THIRDPARTY_RTMP_INC_DIR ${THIRDPARTY_RTMP_ROOT}/inc)
+set(THIRDPARTY_RTMP_LIB_DIR ${THIRDPARTY_RTMP_ROOT}/lib)
 set(THIRDPARTY_RTSP_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/lib)
 link_directories(${THIRDPARTY_MPP_LIB_DIR})
+link_directories(${THIRDPARTY_RTMP_LIB_DIR})
 link_directories(${THIRDPARTY_RTSP_LIB_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
@@ -30,14 +35,16 @@ file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c
 file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP sink skeleton" ON)
-set(RTMP_ROOT "" CACHE PATH "Root path of librtmp installation")
+set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
 
 if(ENABLE_RTMP)
+    set(LIBRTMP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/rtmp_include)
     set(_RTMP_INCLUDE_HINTS)
     set(_RTMP_LIBRARY_HINTS)
     if(RTMP_ROOT)
         list(APPEND _RTMP_INCLUDE_HINTS
             ${RTMP_ROOT}/include
+            ${RTMP_ROOT}/inc
             ${RTMP_ROOT}
         )
         list(APPEND _RTMP_LIBRARY_HINTS
@@ -55,6 +62,17 @@ if(ENABLE_RTMP)
         NAMES rtmp librtmp
         HINTS ${_RTMP_LIBRARY_HINTS}
     )
+
+    if(LIBRTMP_INCLUDE_DIR)
+        file(MAKE_DIRECTORY ${LIBRTMP_COMPAT_INCLUDE_DIR}/librtmp)
+        file(COPY
+            ${LIBRTMP_INCLUDE_DIR}/rtmp.h
+            ${LIBRTMP_INCLUDE_DIR}/amf.h
+            ${LIBRTMP_INCLUDE_DIR}/http.h
+            ${LIBRTMP_INCLUDE_DIR}/log.h
+            DESTINATION ${LIBRTMP_COMPAT_INCLUDE_DIR}/librtmp
+        )
+    endif()
 endif()
 
 if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
@@ -99,7 +117,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     if(ENABLE_RTMP)
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_SINK=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
-            target_include_directories(rtsp_gateway PRIVATE ${LIBRTMP_INCLUDE_DIR})
+            target_include_directories(rtsp_gateway PRIVATE ${LIBRTMP_INCLUDE_DIR} ${LIBRTMP_COMPAT_INCLUDE_DIR})
             target_link_libraries(rtsp_gateway PRIVATE ${LIBRTMP_LIBRARY})
             target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_LIBRTMP=1)
         else()
@@ -130,7 +148,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     if(ENABLE_RTMP)
         target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_SINK=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
-            target_include_directories(dual_output_test PRIVATE ${LIBRTMP_INCLUDE_DIR})
+            target_include_directories(dual_output_test PRIVATE ${LIBRTMP_INCLUDE_DIR} ${LIBRTMP_COMPAT_INCLUDE_DIR})
             target_link_libraries(dual_output_test PRIVATE ${LIBRTMP_LIBRARY})
             target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_LIBRTMP=1)
         else()
