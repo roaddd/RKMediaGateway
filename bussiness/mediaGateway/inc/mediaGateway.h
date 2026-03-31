@@ -1,4 +1,4 @@
-#ifndef __MEDIA_GATEWAY_H__
+﻿#ifndef __MEDIA_GATEWAY_H__
 #define __MEDIA_GATEWAY_H__
 
 #include <stdio.h>
@@ -8,6 +8,7 @@
 #include "mediaSink.h"
 #include "rtspSink.h"
 #include "rtmpSink.h"
+#include "gb28181Sink.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,7 @@ extern "C" {
 typedef struct {
     int enable_rtsp;                 /* 是否启用 RTSP 输出链路。 */
     int enable_rtmp;                 /* 是否启用 RTMP 输出链路。 */
+    int enable_gb28181;              /* 是否启用 GB28181 设备输出链路。 */
     int fps;                         /* 全局编码帧率，所有输出协议共用。 */
     int bitrate;                     /* 全局编码目标码率，单位 bit/s。 */
     int gop;                         /* GOP 长度，影响关键帧间隔和恢复速度。 */
@@ -34,6 +36,7 @@ typedef struct {
     const char *config_file_path;    /* 预留的配置文件路径钩子。 */
     RtspSinkConfig rtsp;             /* RTSP 协议专用配置块。 */
     RtmpSinkConfig rtmp;             /* RTMP 协议专用配置块。 */
+    Gb28181SinkConfig gb28181;       /* GB28181/SIP+RTP 协议专用配置块。 */
 } MediaGatewayConfig;
 
 typedef struct {

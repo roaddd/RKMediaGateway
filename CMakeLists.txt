@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+﻿cmake_minimum_required(VERSION 3.10)
 project(RKMediaGateway VERSION 1.0 LANGUAGES C CXX)
 
 set(CMAKE_C_STANDARD 11)
@@ -13,24 +13,48 @@ endif()
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/gb28181/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty/osip/inc)
 
 set(THIRDPARTY_MPP_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/mpp/lib)
 set(THIRDPARTY_RTMP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/rtmp)
 set(THIRDPARTY_RTMP_INC_DIR ${THIRDPARTY_RTMP_ROOT}/inc)
 set(THIRDPARTY_RTMP_LIB_DIR ${THIRDPARTY_RTMP_ROOT}/lib)
 set(THIRDPARTY_RTSP_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/lib)
+set(THIRDPARTY_EXOSIP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/exosip)
+set(THIRDPARTY_EXOSIP_INC_DIR ${THIRDPARTY_EXOSIP_ROOT}/inc)
+set(THIRDPARTY_EXOSIP_LIB_DIR ${THIRDPARTY_EXOSIP_ROOT}/lib)
+set(THIRDPARTY_OSIP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/osip)
+set(THIRDPARTY_OSIP_LIB_DIR ${THIRDPARTY_OSIP_ROOT}/lib)
+set(THIRDPARTY_OPENSSL_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/openssl)
+set(THIRDPARTY_OPENSSL_INC_DIR ${THIRDPARTY_OPENSSL_ROOT}/inc)
+set(THIRDPARTY_OPENSSL_LIB_DIR ${THIRDPARTY_OPENSSL_ROOT}/lib)
+set(EXOSIP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/exosip_include)
+set(OPENSSL_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/openssl_include)
+
+file(MAKE_DIRECTORY ${EXOSIP_COMPAT_INCLUDE_DIR}/eXosip2)
+file(COPY ${THIRDPARTY_EXOSIP_INC_DIR}/ DESTINATION ${EXOSIP_COMPAT_INCLUDE_DIR}/eXosip2 FILES_MATCHING PATTERN "*.h")
+file(MAKE_DIRECTORY ${OPENSSL_COMPAT_INCLUDE_DIR}/openssl)
+file(COPY ${THIRDPARTY_OPENSSL_INC_DIR}/ DESTINATION ${OPENSSL_COMPAT_INCLUDE_DIR}/openssl FILES_MATCHING PATTERN "*.h")
+
+include_directories(${EXOSIP_COMPAT_INCLUDE_DIR})
+include_directories(${OPENSSL_COMPAT_INCLUDE_DIR})
 link_directories(${THIRDPARTY_MPP_LIB_DIR})
 link_directories(${THIRDPARTY_RTMP_LIB_DIR})
 link_directories(${THIRDPARTY_RTSP_LIB_DIR})
+link_directories(${THIRDPARTY_EXOSIP_LIB_DIR})
+link_directories(${THIRDPARTY_OSIP_LIB_DIR})
+link_directories(${THIRDPARTY_OPENSSL_LIB_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
+file(GLOB GB28181_SRC ${PROJECT_SOURCE_DIR}/bussiness/gb28181/src/*.c)
 file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c)
 file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)
 
@@ -115,6 +139,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     set(GATEWAY_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
         ${RTSP_STREAMER_SRC}
+        ${GB28181_SRC}
     )
     if(ENABLE_RTMP)
         list(APPEND GATEWAY_OUTPUT_SRC ${RTMP_STREAMER_SRC})
@@ -126,7 +151,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${MPP_ENCODER_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
-    target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server pthread m)
+    target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
     if(ENABLE_RTMP)
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_SINK=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
@@ -146,6 +171,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     set(DUAL_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
         ${RTSP_STREAMER_SRC}
+        ${GB28181_SRC}
     )
     if(ENABLE_RTMP)
         list(APPEND DUAL_OUTPUT_SRC ${RTMP_STREAMER_SRC})
@@ -157,7 +183,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${MPP_ENCODER_SRC}
         ${DUAL_OUTPUT_SRC}
     )
-    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server pthread m)
+    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
     if(ENABLE_RTMP)
         target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_SINK=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
@@ -173,9 +199,32 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "gb28181_device" OR BUILD_TARGET STREQUAL "all")
+    add_executable(gb28181_device
+        ${PROJECT_SOURCE_DIR}/main/main_gb28181_device.cpp
+        ${V4L2_CAPTURE_SRC}
+        ${MPP_ENCODER_SRC}
+        ${MEDIA_GATEWAY_SRC}
+        ${RTSP_STREAMER_SRC}
+        ${GB28181_SRC}
+    )
+    target_link_libraries(gb28181_device PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
+    target_include_directories(gb28181_device PRIVATE
+        ${THIRDPARTY_OSIP_ROOT}/inc
+        ${EXOSIP_COMPAT_INCLUDE_DIR}
+        ${OPENSSL_COMPAT_INCLUDE_DIR}
+    )
+    set_target_properties(gb28181_device PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 message(STATUS "BUILD_TARGET=${BUILD_TARGET}")
 message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
 message(STATUS "LIBRTMP_INCLUDE_DIR=${LIBRTMP_INCLUDE_DIR}")
 message(STATUS "LIBRTMP_LIBRARY=${LIBRTMP_LIBRARY}")
+message(STATUS "EXOSIP_COMPAT_INCLUDE_DIR=${EXOSIP_COMPAT_INCLUDE_DIR}")
+message(STATUS "OPENSSL_COMPAT_INCLUDE_DIR=${OPENSSL_COMPAT_INCLUDE_DIR}")
 message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 message(STATUS "C compiler=${CMAKE_C_COMPILER}")
+

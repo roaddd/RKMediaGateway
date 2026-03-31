@@ -1,4 +1,4 @@
-#include "mediaGateway.h"
+﻿#include "mediaGateway.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -46,7 +46,7 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
     }
 
     /* If the caller leaves both protocol toggles unset, keep RTSP enabled as the legacy default. */
-    if (dst->enable_rtsp == 0 && dst->enable_rtmp == 0) {
+    if (dst->enable_rtsp == 0 && dst->enable_rtmp == 0 && dst->enable_gb28181 == 0) {
         dst->enable_rtsp = DEFAULT_ENABLE_RTSP;
     }
     if (dst->fps <= 0) {
@@ -176,6 +176,15 @@ static int setup_sinks(MediaGatewayCtx *ctx) {
 #else
         fprintf(stderr, "[WARN] RTMP config ignored because ENABLE_RTMP is OFF at build time\n");
 #endif
+    }
+    if (ctx->config.enable_gb28181) {
+        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+            return -1;
+        }
+        if (gb28181_sink_setup(&ctx->sinks[ctx->sink_count], &ctx->config.gb28181) != 0) {
+            return -1;
+        }
+        ctx->sink_count++;
     }
     return (ctx->sink_count > 0) ? 0 : -1;
 }
@@ -425,7 +434,6 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                 fflush(ctx->record_fp);
             }
         }
-
         ctx->stat_frames++;
         ctx->stat_bytes += h264_len;
         /* 这里释放主线程手里的那一份引用；此后只剩各 sink 队列中的引用。 */
@@ -521,4 +529,9 @@ void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *
         throughput->bitrate_kbps = (double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec;
     }
 }
+
+
+
+
+
 
