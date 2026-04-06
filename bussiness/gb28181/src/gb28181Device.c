@@ -76,6 +76,20 @@ static long long get_now_ms(void)
     return (long long)tv.tv_sec * 1000LL + (long long)(tv.tv_usec / 1000);
 }
 
+/* 周期性 re-REGISTER：在过期前预留 5 秒；最小不低于失败重试周期。 */
+static long long get_register_refresh_interval_ms(const Gb28181DeviceCtx *ctx)
+{
+    int refresh_sec = 1;
+    if (!ctx)
+        return 1000LL;
+    refresh_sec = ctx->config.register_expires - 5;
+    if (refresh_sec < ctx->config.register_retry_interval_sec)
+        refresh_sec = ctx->config.register_retry_interval_sec;
+    if (refresh_sec <= 0)
+        refresh_sec = 1;
+    return (long long)refresh_sec * 1000LL;
+}
+
 /* 字符串兜底：当 value 为空时返回 fallback。 */
 static const char *safe_str(const char *value, const char *fallback)
 {
@@ -797,6 +811,7 @@ static void *media_thread_main(void *arg)
                 continue;
             if (build_ps_frame(h264_data, h264_len, is_key_frame, dqbuf_ts_us, &ps_buffer) != 0)
                 continue;
+            /* PTS 主要给解复用/解码链路用；RTP timestamp 主要给网络抖动缓冲和同步排序用。 */
             rtp_timestamp = (uint32_t)((dqbuf_ts_us * 90ULL / 1000ULL) & 0xFFFFFFFFU);
             if (send_ps_over_rtp(&session_snapshot, ps_buffer.data, ps_buffer.size, rtp_timestamp) != 0)
             {
@@ -908,10 +923,14 @@ static void process_event(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     switch (event->type)
     {
     case EXOSIP_REGISTRATION_SUCCESS:
+    {
+        long long now_ms = get_now_ms();
         ctx->registered_ok = 1;
-        ctx->next_keepalive_ms = get_now_ms() + (long long)ctx->config.keepalive_interval_sec * 1000LL;
+        ctx->next_keepalive_ms = now_ms + (long long)ctx->config.keepalive_interval_sec * 1000LL;
+        ctx->next_register_retry_ms = now_ms + get_register_refresh_interval_ms(ctx);
         printf("[GB28181] register success rid=%d\n", event->rid);
         break;
+    }
     case EXOSIP_REGISTRATION_FAILURE:
         ctx->registered_ok = 0;
         ctx->next_register_retry_ms = get_now_ms() + (long long)ctx->config.register_retry_interval_sec * 1000LL;
@@ -1076,6 +1095,7 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
         gb28181_device_deinit(ctx);
         return -1;
     }
+    ctx->next_register_retry_ms = get_now_ms() + get_register_refresh_interval_ms(ctx);
     printf("[GB28181] start server=%s:%d device=%s domain=%s bind=%s:%d contact_ip=%s media_ip=%s:%d fps=%d bitrate=%d gop=%d\n",
            ctx->config.server_ip, ctx->config.server_port, ctx->config.device_id, ctx->config.server_domain,
            ctx->config.bind_ip, ctx->config.local_sip_port, ctx->config.sip_contact_ip,
@@ -1090,6 +1110,7 @@ int gb28181_device_run(Gb28181DeviceCtx *ctx)
         return -1;
     while (ctx->running)
     {
+        long long now_ms = get_now_ms();
         eXosip_event_t *event = eXosip_event_wait(ctx->sip_context, 0, 200);
         while (event)
         {
@@ -1100,15 +1121,22 @@ int gb28181_device_run(Gb28181DeviceCtx *ctx)
         eXosip_lock(ctx->sip_context);
         eXosip_automatic_action(ctx->sip_context);
         eXosip_unlock(ctx->sip_context);
-        if (ctx->registered_ok && get_now_ms() >= ctx->next_keepalive_ms)
+        now_ms = get_now_ms();
+        if (ctx->registered_ok && now_ms >= ctx->next_keepalive_ms)
         {
             if (send_keepalive(ctx) == 0)
-                ctx->next_keepalive_ms = get_now_ms() + (long long)ctx->config.keepalive_interval_sec * 1000LL;
+                ctx->next_keepalive_ms = now_ms + (long long)ctx->config.keepalive_interval_sec * 1000LL;
         }
-        if (!ctx->registered_ok && get_now_ms() >= ctx->next_register_retry_ms)
+        if (now_ms >= ctx->next_register_retry_ms)
         {
+            int was_registered = ctx->registered_ok;
             if (send_register_request(ctx, ctx->config.register_expires) == 0)
-                ctx->next_register_retry_ms = get_now_ms() + (long long)ctx->config.register_retry_interval_sec * 1000LL;
+            {
+                if (was_registered)
+                    ctx->next_register_retry_ms = now_ms + get_register_refresh_interval_ms(ctx);
+                else
+                    ctx->next_register_retry_ms = now_ms + (long long)ctx->config.register_retry_interval_sec * 1000LL;
+            }
         }
     }
     return 0;
@@ -1249,5 +1277,3 @@ void gb28181_device_get_media_session(const Gb28181DeviceCtx *ctx, Gb28181MediaS
     *session = ctx->media_session;
     pthread_mutex_unlock((pthread_mutex_t *)&ctx->session_lock);
 }
-
-

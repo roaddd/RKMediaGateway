@@ -23,7 +23,7 @@
 #define DEFAULT_RECORD_FLUSH_INTERVAL_FRAMES 30
 
 /**
- * @description: 获取当前单调时钟时间，单位微秒
+ * @description: Get current monotonic timestamp in microseconds
  * @return {static uint64_t}
  */
 static uint64_t get_now_us(void) {
@@ -33,7 +33,7 @@ static uint64_t get_now_us(void) {
 }
 
 /**
- * @description: 填充默认配置项
+ * @description: Fill default config fields
  * @param {MediaGatewayConfig *} dst
  * @param {const MediaGatewayConfig *} src
  * @return {static void}
@@ -108,7 +108,7 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
 }
 
 /**
- * @description: 将业务配置转换为编码器参数
+ * @description: Convert gateway config to encoder options
  * @param {const MediaGatewayConfig *} cfg
  * @param {MppEncoderOptions *} opt
  * @return {static void}
@@ -119,10 +119,15 @@ static void build_encoder_options(const MediaGatewayConfig *cfg, MppEncoderOptio
     opt->h264_profile = cfg->h264_profile;
     opt->h264_level = cfg->h264_level;
     opt->h264_cabac_en = cfg->h264_cabac_en;
+    opt->qp_init = cfg->qp_init;
+    opt->qp_min = cfg->qp_min;
+    opt->qp_max = cfg->qp_max;
+    opt->qp_min_i = cfg->qp_min_i;
+    opt->qp_max_i = cfg->qp_max_i;
+    opt->qp_max_step = cfg->qp_max_step;
 }
-
 /**
- * @description: 重新初始化编码器实例
+ * @description: Reinitialize encoder instance
  * @param {MediaGatewayCtx *} ctx
  * @return {static int}
  */
@@ -149,7 +154,7 @@ static int reset_encoder(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 设置不同的推流协议链路
+ * @description: Setup output protocol sinks
  * @param {MediaGatewayCtx} *ctx
  * @return {*}
  */
@@ -190,7 +195,7 @@ static int setup_sinks(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 启动全部推流通道
+ * @description: Start all sink channels
  * @param {MediaGatewayCtx *} ctx
  * @return {static int}
  */
@@ -207,7 +212,7 @@ static int start_sinks(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 停止全部推流通道
+ * @description: Stop all sink channels
  * @param {MediaGatewayCtx *} ctx
  * @return {static void}
  */
@@ -221,7 +226,7 @@ static void stop_sinks(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 释放全部推流通道资源
+ * @description: Release all sink resources
  * @param {MediaGatewayCtx *} ctx
  * @return {static void}
  */
@@ -238,7 +243,7 @@ static void deinit_sinks(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 输出各推流通道统计信息
+ * @description: Print per-sink statistics
  * @param {MediaGatewayCtx *} ctx
  * @return {static void}
  */
@@ -263,7 +268,7 @@ static void log_sink_stats(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 初始化媒体网关上下文
+ * @description: Initialize media gateway context
  * @param {MediaGatewayCtx *} ctx
  * @param {const MediaGatewayConfig *} config
  * @return {int}
@@ -283,7 +288,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     if (v4l2_capture_init(&ctx->capture) < 0) {
         goto fail;
     }
-    ctx->capture_ready = 1; /* 设置v4l2开始捕获标志 */
+    ctx->capture_ready = 1; /* Mark v4l2 capture as initialized */
 
     build_encoder_options(&ctx->config, &options);
     /* The encoder is a shared producer. All output protocols fan out from the encoded H.264 stream. */
@@ -296,7 +301,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
                          &options) < 0) {
         goto fail;
     }
-    ctx->encoder_ready = 1; /* 设置MPP初始化完成标志 */
+    ctx->encoder_ready = 1; /* Mark MPP encoder as initialized */
 
     /* Create protocol sinks before entering the run loop so runtime hot path stays simple. */
     if (setup_sinks(ctx) != 0) {
@@ -329,7 +334,7 @@ fail:
 }
 
 /**
- * @description: 运行媒体网关主循环
+ * @description: Run media gateway main loop
  * @param {MediaGatewayCtx *} ctx
  * @return {int}
  */
@@ -355,7 +360,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         size_t h264_len = 0;
         int is_key_frame = 0;
         MediaBuffer *buffer = NULL;
-        MediaPacket packet; /* 局部栈变量，每帧只重置内容，不单独 malloc/free。 */
+        MediaPacket packet; /* Stack-local packet descriptor; reset content per frame without extra heap alloc/free. */
         int i;
         uint64_t dqbuf_ts_us = 0;
         uint64_t driver_to_dqbuf_us = 0;
@@ -403,10 +408,10 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             continue;
         }
         /* The shared MediaBuffer lets every sink keep its own queue entry with only metadata copies. */
-        /* 引用计数生命周期示例：create=1，RTSP 入队=2，RTMP 入队=3。 */
-        /* 现在每一帧都会为 MediaBuffer 和 buffer->data 做一次申请，最后由引用计数归零时释放。 */
-        /* 按当前默认 30fps / 2Mbps / 2 路 sink 来看，这部分开销通常还能接受，优点是实现简单、共享清晰。 */
-        /* 真正需要考虑内存池的场景通常是更高码率、更高帧率、更多路输出，或者长时间运行下对抖动和碎片更敏感。 */
+        /* Refcount lifecycle example: create=1, RTSP enqueue=2, RTMP enqueue=3. */
+        /* Each frame allocates MediaBuffer and payload; both are freed when refcount returns to zero. */
+        /* With default 30fps / 2Mbps / 2 sinks, this overhead is usually acceptable and keeps ownership simple. */
+        /* Consider a memory pool for higher bitrate/fps, more sinks, or long-running jitter/fragmentation sensitivity. */
         if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
             return -1;
         }
@@ -436,8 +441,8 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         }
         ctx->stat_frames++;
         ctx->stat_bytes += h264_len;
-        /* 这里释放主线程手里的那一份引用；此后只剩各 sink 队列中的引用。 */
-        /* 当所有 sink 线程都处理完成并各自 reset 后，引用计数最终回到 0。 */
+        /* Release the main-thread reference; only sink-queue references remain afterwards. */
+        /* Refcount returns to zero after all sink threads finish and reset their packets. */
         media_packet_reset(&packet);
 
         {
@@ -462,7 +467,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 请求停止媒体网关主循环
+ * @description: Request to stop media gateway main loop
  * @param {MediaGatewayCtx *} ctx
  * @return {void}
  */
@@ -474,7 +479,7 @@ void media_gateway_stop(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 释放媒体网关相关资源
+ * @description: Release media gateway resources
  * @param {MediaGatewayCtx *} ctx
  * @return {void}
  */
@@ -505,7 +510,7 @@ void media_gateway_deinit(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 获取当前网关吞吐统计信息
+ * @description: Get current gateway throughput stats
  * @param {MediaGatewayCtx *} ctx
  * @param {MediaGatewayThroughput *} throughput
  * @return {void}
@@ -529,6 +534,9 @@ void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *
         throughput->bitrate_kbps = (double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec;
     }
 }
+
+
+
 
 
 

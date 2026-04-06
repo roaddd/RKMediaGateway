@@ -27,6 +27,12 @@ typedef struct {
     int h264_profile;                /* H264 profile 配置，例如 66/77/100。 */
     int h264_level;                  /* H264 level 配置，例如 40。 */
     int h264_cabac_en;               /* 是否启用 CABAC。 */
+    int qp_init;                     /* 初始 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min;                      /* P/B 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max;                      /* P/B 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min_i;                    /* I 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_i;                    /* I 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_step;                 /* 相邻帧最大 QP 变化步长；<=0 表示使用 MPP 默认值。 */
     int low_latency_mode;            /* 低延时模式开关，主要影响调试和日志输出策略。 */
     int stats_interval_sec;          /* 统计信息输出周期，单位秒。 */
     int capture_retry_ms;            /* 采集失败后的重试间隔，单位毫秒。 */

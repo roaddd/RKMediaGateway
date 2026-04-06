@@ -34,11 +34,17 @@ int main()
     config.stats_interval_sec = 1;
     config.capture_retry_ms = 5;
     config.max_consecutive_failures = 30;
-    config.rc_mode = MPP_ENC_RC_MODE_CBR;
+    config.rc_mode = MPP_ENC_RC_MODE_CBR; /* Constant bitrate mode */
     config.h264_profile = 100;
     config.h264_level = 40;
     config.h264_cabac_en = 1;
-
+    /* 在CBR模式下，QP会根据内容复杂度动态调整以维持恒定码率。当场景复杂时，QP值增大以降低码率；当场景简单时，QP值减小以提高质量 */
+    config.qp_init = 30;
+    config.qp_min = 22;
+    config.qp_max = 44;
+    config.qp_min_i = 20;
+    config.qp_max_i = 40;
+    config.qp_max_step = 8; 
     config.enable_rtsp = 1;
     config.enable_rtmp = 0;
     config.enable_gb28181 = env_or_default_int("GB28181_ENABLE", 1);
@@ -88,3 +94,6 @@ int main()
     media_gateway_deinit(&gateway);
     return ret;
 }
+
+
+

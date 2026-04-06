@@ -1,4 +1,4 @@
-#ifndef __MPP_ENCODER_H__
+﻿#ifndef __MPP_ENCODER_H__
 #define __MPP_ENCODER_H__
 
 #include <stddef.h>
@@ -37,6 +37,12 @@ typedef struct {
     int h264_profile;   /* H264 profile，例如 66/77/100；<=0 表示默认 100。 */
     int h264_level;     /* H264 level，例如 40；<=0 表示默认 40。 */
     int h264_cabac_en;  /* 是否启用 CABAC；<0 表示默认 1。 */
+    int qp_init;        /* 初始 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min;         /* P/B 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max;         /* P/B 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min_i;       /* I 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_i;       /* I 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_step;    /* 相邻帧最大 QP 变化步长；<=0 表示使用 MPP 默认值。 */
 } MppEncoderOptions;
 
 int mpp_encoder_init(MppEncoderCtx *enc,
@@ -48,10 +54,12 @@ int mpp_encoder_init(MppEncoderCtx *enc,
                      const MppEncoderOptions *options);
 void mpp_encoder_deinit(MppEncoderCtx *enc);
 
-// 编码一帧 NV12 数据，输出 Annex-B H264 码流
-// nv12_data/nv12_len: 输入原始帧
-// h264_data/h264_len: 输出码流指针和长度（内存由编码器内部管理，下次调用可能被覆盖）
-// is_key_frame: 是否关键帧（可选，传 NULL 则不关心）
+/*
+ * 编码一帧 NV12 数据，输出 Annex-B H264 码流。
+ * nv12_data/nv12_len: 输入原始帧数据。
+ * h264_data/h264_len: 输出码流指针和长度（内存由编码器内部管理，下次调用可能被覆盖）。
+ * is_key_frame: 是否关键帧（可选，传 NULL 表示不关心）。
+ */
 int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              const uint8_t *nv12_data,
                              size_t nv12_len,

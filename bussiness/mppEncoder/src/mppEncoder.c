@@ -1,4 +1,4 @@
-#include "mppEncoder.h"
+﻿#include "mppEncoder.h"
 #include "mpp_meta.h"
 #include "rk_mpi_cmd.h"
 
@@ -139,7 +139,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "prep:hor_stride", enc->hor_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:ver_stride", enc->ver_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP);
-    /* Rate Control(RC)模块 */
+    /* Rate Control(RC) 模块 */
     mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", (options && options->rc_mode > 0) ? options->rc_mode : MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0);
@@ -152,8 +152,28 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_max", enc->bitrate * 17 / 16);
     mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16);
 
+    if (options) {
+        if (options->qp_init > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_init", options->qp_init);
+        }
+        if (options->qp_min > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min", options->qp_min);
+        }
+        if (options->qp_max > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max", options->qp_max);
+        }
+        if (options->qp_min_i > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min_i", options->qp_min_i);
+        }
+        if (options->qp_max_i > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_i", options->qp_max_i);
+        }
+        if (options->qp_max_step > 0) {
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_step", options->qp_max_step);
+        }
+    }
     mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC);
-    // 低延迟思路：
+    // 低延时思路：
     // RTSP 推流链路按 Annex-B 拆 NALU 发包，强制编码器输出 Annex-B，
     // 避免格式不一致导致的解析/重组等待。
     mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
@@ -168,7 +188,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
         return -1;
     }
 
-    // 每个 IDR 前输出 SPS/PPS，便于后续 RTSP/网络场景中间加入观看端。
+    // 每个 IDR 前输出 SPS/PPS，便于后续 RTSP/网络场景中途加入观看端。
     MppEncHeaderMode header_mode = MPP_ENC_HEADER_MODE_EACH_IDR;
     ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_HEADER_MODE, &header_mode);
     if (ret != MPP_OK) {
@@ -177,7 +197,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
         return -1;
     }
 
-    // 3) 申请输入帧缓冲。优先 DRM，失败回退 ION（不同系统配置兼容）。
+    // 3) 申请输入帧缓冲。优先 DRM，失败回退 ION（兼容不同系统配置）。
     ret = mpp_buffer_group_get_internal(&enc->frame_group, MPP_BUFFER_TYPE_DRM);
     if (ret != MPP_OK) {
         ret = mpp_buffer_group_get_internal(&enc->frame_group, MPP_BUFFER_TYPE_ION);
@@ -259,7 +279,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
 
     // 投喂一帧并拉取对应编码包（部分情况下可能暂时取不到 packet）。
-    // 低延迟思路：
+    // 低延时思路：
     // 周期性强制 IDR，确保播放器不会长时间“等关键帧”，
     // 尤其是客户端中途接入或网络抖动后的恢复速度会明显更快。
     if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
@@ -386,4 +406,3 @@ void mpp_encoder_deinit(MppEncoderCtx *enc) {
     }
     enc->packet_cache_size = 0;
 }
-
