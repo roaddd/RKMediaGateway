@@ -23,7 +23,7 @@ static int env_or_default_int(const char *name, int fallback) {
 int main() {
     MediaGatewayCtx gateway;
     MediaGatewayConfig config = {0};
-    const char *local_ip = env_or_default("GB28181_LOCAL_IP", "192.168.1.1");
+    const char *local_ip = env_or_default("GB28181_LOCAL_IP", "192.168.1.3");
 
     config.low_latency_mode = 1;
     config.stats_interval_sec = 1;
@@ -43,11 +43,11 @@ int main() {
 
     config.gb28181.server_ip = env_or_default("GB28181_SERVER_IP", "192.168.1.1");
     config.gb28181.server_port = env_or_default_int("GB28181_SERVER_PORT", 5060);
-    config.gb28181.server_domain = env_or_default("GB28181_SERVER_DOMAIN", "3402000000");
-    config.gb28181.server_id = env_or_default("GB28181_SERVER_ID", "34020000002000000001");
+    config.gb28181.server_domain = env_or_default("GB28181_SERVER_DOMAIN", "4401020049");
+    config.gb28181.server_id = env_or_default("GB28181_SERVER_ID", "44010200492000000001");
     config.gb28181.device_id = env_or_default("GB28181_DEVICE_ID", "34020000001320000001");
     config.gb28181.device_domain = env_or_default("GB28181_DEVICE_DOMAIN", config.gb28181.server_domain);
-    config.gb28181.device_password = env_or_default("GB28181_DEVICE_PASSWORD", "12345678");
+    config.gb28181.device_password = env_or_default("GB28181_DEVICE_PASSWORD", "admin123");
     config.gb28181.bind_ip = env_or_default("GB28181_BIND_IP", "0.0.0.0");
     config.gb28181.local_sip_port = env_or_default_int("GB28181_LOCAL_SIP_PORT", 5060);
     config.gb28181.sip_contact_ip = env_or_default("GB28181_CONTACT_IP", local_ip);

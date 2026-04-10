@@ -69,6 +69,63 @@ typedef struct
     uint8_t type;
 } Gb28181NaluUnit;
 
+static const char *h264_nalu_type_name(uint8_t type)
+{
+    switch (type)
+    {
+    case 1:
+        return "NON_IDR";
+    case 5:
+        return "IDR";
+    case 6:
+        return "SEI";
+    case 7:
+        return "SPS";
+    case 8:
+        return "PPS";
+    case 9:
+        return "AUD";
+    default:
+        return "OTHER";
+    }
+}
+
+static void log_h264_nalu_summary(const Gb28181NaluUnit *nalus, size_t nalu_count, int is_key_frame, uint64_t pts_us, uint64_t pts_90k)
+{
+    char type_log[512];
+    size_t pos = 0;
+    size_t i = 0;
+    if (!nalus)
+        return;
+    type_log[0] = '\0';
+    for (i = 0; i < nalu_count; ++i)
+    {
+        int written = 0;
+        if (i > 0 && pos < sizeof(type_log) - 1)
+            type_log[pos++] = ',';
+        written = snprintf(type_log + pos,
+                           sizeof(type_log) - pos,
+                           "%u(%s)",
+                           (unsigned int)nalus[i].type,
+                           h264_nalu_type_name(nalus[i].type));
+        if (written < 0)
+            break;
+        if ((size_t)written >= sizeof(type_log) - pos)
+        {
+            pos = sizeof(type_log) - 1;
+            break;
+        }
+        pos += (size_t)written;
+    }
+    type_log[sizeof(type_log) - 1] = '\0';
+    printf("[GB28181][H264] pts_us=%llu pts_90k=%llu key=%d nalu_count=%zu types=%s\n",
+           (unsigned long long)pts_us,
+           (unsigned long long)pts_90k,
+           is_key_frame ? 1 : 0,
+           nalu_count,
+           (type_log[0] != '\0') ? type_log : "N/A");
+}
+
 /* 获取当前毫秒时间戳（单调递增相对时间）。 */
 static long long get_now_ms(void)
 {
@@ -486,6 +543,7 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
      */
     if (parse_annexb_nalus(annexb_data, annexb_len, nalus, 64, &nalu_count) != 0)
         return -1;
+    log_h264_nalu_summary(nalus, nalu_count, is_key_frame, pts_us, pts_90k);
     if (ps_write_pack_header(ps_buffer, pts_90k) != 0)
         return -1;
     if (is_key_frame)
