@@ -283,9 +283,8 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     // 周期性强制 IDR，确保播放器不会长时间“等关键帧”，
     // 尤其是客户端中途接入或网络抖动后的恢复速度会明显更快。
     if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
-        MPP_RET idr_ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);
-        if (idr_ret != MPP_OK) {
-            mpp_log_error("MPP_ENC_SET_IDR_FRAME failed", idr_ret);
+        if (mpp_encoder_request_idr(enc) != 0) {
+            fprintf(stderr, "[WARN] periodic IDR request failed\n");
         }
     }
 
@@ -362,6 +361,19 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     mpp_packet_deinit(&packet);
+    return 0;
+}
+
+int mpp_encoder_request_idr(MppEncoderCtx *enc) {
+    MPP_RET ret;
+    if (!enc || !enc->ctx || !enc->mpi) {
+        return -1;
+    }
+    ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);
+    if (ret != MPP_OK) {
+        mpp_log_error("MPP_ENC_SET_IDR_FRAME failed", ret);
+        return -1;
+    }
     return 0;
 }
 

@@ -86,6 +86,7 @@ typedef struct {
     int registered_ok;                /* 最近一次注册是否成功。 */
     int capture_ready;                /* capture 是否已成功初始化。 */
     int encoder_ready;                /* encoder 是否已成功初始化。 */
+    int pending_force_idr;            /* ACK 建立后待执行的一次性 IDR 请求标记。 */
     int sync_ready;                   /* 互斥锁/条件变量是否可用。 */
     int media_thread_started;         /* 媒体线程是否已创建。 */
     unsigned int xml_sn;              /* XML 消息流水号。 */

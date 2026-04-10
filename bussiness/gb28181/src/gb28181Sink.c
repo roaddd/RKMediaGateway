@@ -219,7 +219,8 @@ int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config) {
     sink_config.name = impl->config.name;
     sink_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 64;
     sink_config.reconnect_interval_ms = 1000;
-    sink_config.drop_until_keyframe_after_reconnect = 0;
+    /* 点播建立后先等关键帧，确保首批对外发送就是可解码起点。 */
+    sink_config.drop_until_keyframe_after_reconnect = 1;
 
     if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
         free(impl);

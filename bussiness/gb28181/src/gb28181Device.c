@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <osipparser2/osip_message.h>
 #include <osipparser2/osip_parser.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -248,6 +249,37 @@ static void generate_local_ssrc(Gb28181MediaSession *session)
     snprintf(session->local_ssrc, sizeof(session->local_ssrc), "%010u", value);
 }
 
+/* 优先使用 INVITE SDP 的 y= 作为发送 SSRC，失败时回退随机 SSRC。 */
+static int use_invite_ssrc_if_valid(Gb28181MediaSession *session)
+{
+    const char *p = NULL;
+    char *end = NULL;
+    unsigned long long value = 0;
+    if (!session)
+        return -1;
+    if (session->remote_ssrc[0] == '\0')
+        return -1;
+
+    p = session->remote_ssrc;
+    while (*p == ' ' || *p == '\t')
+        p++;
+    if (*p == '\0')
+        return -1;
+
+    value = strtoull(p, &end, 10);
+    if (end == p)
+        return -1;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
+        end++;
+    if (*end != '\0' || value == 0)
+        return -1;
+
+    /* RTP SSRC 头字段是 32bit，这里按低 32bit 写入。 */
+    session->rtp_ssrc = (unsigned int)(value & 0xFFFFFFFFULL);
+    snprintf(session->local_ssrc, sizeof(session->local_ssrc), "%s", session->remote_ssrc);
+    return 0;
+}
+
 /* 初始化可增长缓存。 */
 static int gb_buffer_init(Gb28181Buffer *buffer, size_t initial_capacity)
 {
@@ -447,7 +479,11 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
     if (!annexb_data || annexb_len == 0 || !ps_buffer)
         return -1;
     gb_buffer_reset(ps_buffer);
-    /* 鎶婁竴甯?Annex-B 鎷嗘垚 NALU 鍚庡啀灏佽鎴?PS銆?     * 鍏抽敭甯у墠闄勫甫 system header + PSM锛屼究浜?WVP/涓嬫父鏇村揩璇嗗埆娴佺被鍨嬨€?     * 姣忎釜 NALU 鍗曠嫭浣滀负涓€涓?PES锛岄€昏緫绠€鍗曪紝涔熻兘瑙勯伩澶у抚瀵艰嚧鐨?PES 闀垮害涓婇檺闂銆?     */
+    /*
+     * 把一帧 Annex-B 拆成 NALU 后再封装成 PS。
+     * 关键帧前附带 system header + PSM，便于 WVP/下游更快识别流类型。
+     * 每个 NALU 独立作为一个 PES，逻辑简单，也能规避大帧导致的 PES 长度上限问题。
+     */
     if (parse_annexb_nalus(annexb_data, annexb_len, nalus, 64, &nalu_count) != 0)
         return -1;
     if (ps_write_pack_header(ps_buffer, pts_90k) != 0)
@@ -488,11 +524,15 @@ static int send_ps_over_rtp(Gb28181MediaSession *session, const uint8_t *ps_data
     remote_addr.sin_port = htons((uint16_t)session->remote_port);
     if (inet_aton(session->remote_ip, &remote_addr.sin_addr) == 0)
         return -1;
-    /* GB28181 杩欓噷璧版渶甯歌鐨?PS over RTP銆?     * 涓€涓?PS 甯т細琚媶鎴愬涓?RTP 鍖咃紝鏈€鍚庝竴涓寘鎵?marker=1銆?     */
+    /*
+     * GB28181 这里走最常见的 PS over RTP。
+     * 一帧 PS 会被拆成多个 RTP 包，最后一个包带 marker=1。
+     */
     while (offset < ps_len)
     {
         uint8_t packet[12 + GB28181_RTP_MAX_PAYLOAD];
         size_t chunk = ps_len - offset;
+        unsigned short seq = session->rtp_sequence;
         int marker = 0;
         ssize_t sent = 0;
         if (chunk > GB28181_RTP_MAX_PAYLOAD)
@@ -511,9 +551,18 @@ static int send_ps_over_rtp(Gb28181MediaSession *session, const uint8_t *ps_data
         packet[10] = (uint8_t)((session->rtp_ssrc >> 8) & 0xFF);
         packet[11] = (uint8_t)(session->rtp_ssrc & 0xFF);
         memcpy(packet + 12, ps_data + offset, chunk);
+        if (seq == 0)
+        {
+            printf("[GB28181][RTP] first_packet remote=%s:%d ps_len=%zu chunk=%zu seq=%u ts=%u ssrc=%u marker=%d\n",
+                   session->remote_ip, session->remote_port, ps_len, chunk, seq, rtp_timestamp, session->rtp_ssrc, marker);
+        }
         sent = sendto(session->rtp_socket_fd, packet, (int)(12 + chunk), 0, (const struct sockaddr *)&remote_addr, sizeof(remote_addr));
         if (sent < 0)
+        {
+            fprintf(stderr, "[GB28181][RTP] sendto failed remote=%s:%d seq=%u ts=%u errno=%d(%s)\n",
+                    session->remote_ip, session->remote_port, seq, rtp_timestamp, errno, strerror(errno));
             return -1;
+        }
         session->rtp_sequence++;
         offset += chunk;
     }
@@ -767,7 +816,7 @@ static void *media_thread_main(void *arg)
     while (ctx->running)
     {
         Gb28181MediaSession session_snapshot;
-        /* 娌℃湁鐐规挱浼氳瘽鏃剁嚎绋嬩紤鐪狅紝閬垮厤绌鸿浆鍗?CPU銆?*/
+        /* 没有点播会话时线程休眠，避免空转占用 CPU。 */
         pthread_mutex_lock(&ctx->session_lock);
         while (ctx->running && (!ctx->media_session.active || !ctx->media_session.established))
             pthread_cond_wait(&ctx->session_cond, &ctx->session_lock);
@@ -789,6 +838,7 @@ static void *media_thread_main(void *arg)
             size_t h264_len = 0;
             int is_key_frame = 0;
             uint32_t rtp_timestamp = 0;
+            int request_idr_now = 0;
             pthread_mutex_lock(&ctx->session_lock);
             if (!ctx->media_session.active || !ctx->media_session.established)
             {
@@ -796,10 +846,33 @@ static void *media_thread_main(void *arg)
                 break;
             }
             session_snapshot = ctx->media_session;
+            if (ctx->pending_force_idr)
+            {
+                request_idr_now = 1;
+                ctx->pending_force_idr = 0;
+            }
             pthread_mutex_unlock(&ctx->session_lock);
+            if (request_idr_now)
+            {
+                if (mpp_encoder_request_idr(ctx->encoder) == 0)
+                {
+                    printf("[GB28181] request IDR after call established (internal mode)\n");
+                }
+                else
+                {
+                    fprintf(stderr, "[GB28181] request IDR failed, will retry next frame\n");
+                    pthread_mutex_lock(&ctx->session_lock);
+                    ctx->pending_force_idr = 1;
+                    pthread_mutex_unlock(&ctx->session_lock);
+                }
+            }
             /*
-             * 濯掍綋涓昏矾寰勶細
-             * 1. 浠庢憚鍍忓ご鎶撲竴甯?NV12銆?             * 2. 閫佺粰 MPP 杈撳嚭 Annex-B H.264銆?             * 3. 鎶婅甯у皝鎴?PS銆?             * 4. 鍐嶅垏鎴?RTP 鍖呭彂寰€骞冲彴銆?             */
+             * 媒体主路径：
+             * 1. 从摄像头抓一帧 NV12；
+             * 2. 送给 MPP 输出 Annex-B H.264；
+             * 3. 将该帧封装成 PS；
+             * 4. 再切成 RTP 包发往平台。
+             */
             if (v4l2_capture_frame(ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us) != 0)
             {
                 usleep(10000);
@@ -843,6 +916,7 @@ static void stop_media_session(Gb28181DeviceCtx *ctx)
         return;
     }
     pthread_mutex_lock(&ctx->session_lock);
+    ctx->pending_force_idr = 0;
     close_rtp_socket(&ctx->media_session);
     reset_media_session(&ctx->media_session);
     pthread_mutex_unlock(&ctx->session_lock);
@@ -866,8 +940,14 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     reset_media_session(&new_session);
     if (osip_message_get_body(event->request, 0, &body) != 0 || !body || !body->body)
         return answer_call_request(ctx, event, 400);
+    printf("[GB28181][INVITE] raw_sdp_begin\n%s\n[GB28181][INVITE] raw_sdp_end\n", body->body);
     if (parse_invite_sdp(body->body, &new_session) != 0)
         return answer_call_request(ctx, event, 488);
+    printf("[GB28181][INVITE] parsed remote=%s:%d transport=%s y=%s\n",
+           new_session.remote_ip,
+           new_session.remote_port,
+           new_session.transport[0] ? new_session.transport : "N/A",
+           new_session.remote_ssrc[0] ? new_session.remote_ssrc : "N/A");
     if (strstr(new_session.transport, "RTP/AVP") == NULL)
         return answer_call_request(ctx, event, 488);
     pthread_mutex_lock(&ctx->session_lock);
@@ -877,7 +957,10 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
         return answer_call_request(ctx, event, 486);
     }
     pthread_mutex_unlock(&ctx->session_lock);
-    generate_local_ssrc(&new_session);
+    if (use_invite_ssrc_if_valid(&new_session) == 0)
+        printf("[GB28181] use invite ssrc=%s rtp_ssrc=%u\n", new_session.local_ssrc, new_session.rtp_ssrc);
+    else
+        generate_local_ssrc(&new_session);
     if (setup_rtp_socket(&new_session, &ctx->config) != 0)
         return answer_call_request(ctx, event, 500);
     new_session.active = 1;
@@ -886,7 +969,9 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     new_session.did = event->did;
     new_session.tid = event->tid;
     /*
-     * 褰撳墠璁惧瀵瑰澹版槑鑷繁鍙戦€佺殑鏄?PS/90000銆?     * 杩欏拰鍚庨潰鐨勭湡瀹炲彂娴佹牸寮忎繚鎸佷竴鑷达紝閬垮厤 SIP/濯掍綋闈笉涓€鑷淬€?     */
+     * 当前设备对外声明自己发送的是 PS/90000。
+     * 这和后面的实际发送格式保持一致，避免 SIP/媒体面不一致。
+     */
     snprintf(sdp_body, sizeof(sdp_body),
              "v=0\r\no=%s 0 0 IN IP4 %s\r\ns=Play\r\nc=IN IP4 %s\r\nt=0 0\r\nm=video %d RTP/AVP 96\r\na=sendonly\r\na=rtpmap:96 PS/90000\r\ny=%s\r\n",
              ctx->config.device_id, ctx->config.media_ip, ctx->config.media_ip, ctx->config.media_port, new_session.local_ssrc);
@@ -945,8 +1030,13 @@ static void process_event(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
         if (ctx->media_session.cid == event->cid)
         {
             ctx->media_session.established = 1;
+            ctx->pending_force_idr = 1;
             pthread_cond_signal(&ctx->session_cond);
             printf("[GB28181] call established cid=%d did=%d remote=%s:%d\n", ctx->media_session.cid, ctx->media_session.did, ctx->media_session.remote_ip, ctx->media_session.remote_port);
+            if (ctx->config.external_media_input)
+            {
+                printf("[GB28181] external mode: mark pending IDR request, wait keyframe from upstream\n");
+            }
         }
         pthread_mutex_unlock(&ctx->session_lock);
         break;
@@ -961,6 +1051,7 @@ static void process_event(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
         if (ctx->media_session.cid == event->cid)
         {
             printf("[GB28181] call closed cid=%d did=%d\n", event->cid, event->did);
+            ctx->pending_force_idr = 0;
             close_rtp_socket(&ctx->media_session);
             reset_media_session(&ctx->media_session);
         }
@@ -999,7 +1090,7 @@ static int init_media_modules(Gb28181DeviceCtx *ctx)
     MppEncoderOptions options;
     if (!ctx)
         return -1;
-    /* SIP 娉ㄥ唽鎴愬姛鍓嶅氨鎶婇噰闆?缂栫爜閾捐矾鍑嗗濂斤紝杩欐牱 INVITE 寤虹珛鍚庡彲浠ュ敖蹇紑濮嬮€佹祦銆?*/
+    /* SIP 注册成功前就把采集+编码链路准备好，这样 INVITE 建立后可以尽快开始送流。 */
     if (v4l2_capture_init(ctx->capture) != 0)
         return -1;
     ctx->capture_ready = 1;
@@ -1168,6 +1259,11 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
     {
         pthread_mutex_unlock(&ctx->session_lock);
         return 0;
+    }
+    if (ctx->pending_force_idr && is_key_frame)
+    {
+        ctx->pending_force_idr = 0;
+        printf("[GB28181] pending IDR request satisfied by upstream keyframe\n");
     }
     session_snapshot = ctx->media_session;
     pthread_mutex_unlock(&ctx->session_lock);

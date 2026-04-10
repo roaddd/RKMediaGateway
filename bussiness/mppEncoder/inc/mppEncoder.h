@@ -70,6 +70,12 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              uint64_t *encode_put_ts_us,
                              uint64_t *encode_get_ts_us);
 
+/*
+ * 请求编码器将下一帧编码为 IDR。
+ * 常用于会话刚建立时快速给下游提供可解码起点。
+ */
+int mpp_encoder_request_idr(MppEncoderCtx *enc);
+
 #ifdef __cplusplus
 }
 #endif
