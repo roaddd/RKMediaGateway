@@ -502,7 +502,8 @@ static void ps_write_pts_field(uint8_t *dst, uint8_t prefix, uint64_t pts)
 static int ps_write_video_pes(Gb28181Buffer *buffer, const uint8_t *payload, size_t payload_len, uint64_t pts_90k)
 {
     uint8_t header[14];
-    size_t pes_packet_length = payload_len + 8;
+    static const uint8_t annexb_start_code[4] = {0x00, 0x00, 0x00, 0x01};
+    size_t pes_packet_length = payload_len + sizeof(annexb_start_code) + 8;
     if (!buffer || !payload || payload_len == 0)
         return -1;
     if (pes_packet_length > 0xFFFF)
@@ -519,6 +520,12 @@ static int ps_write_video_pes(Gb28181Buffer *buffer, const uint8_t *payload, siz
     header[8] = 0x05;
     ps_write_pts_field(header + 9, 0x02, pts_90k);
     if (gb_buffer_append(buffer, header, sizeof(header)) != 0)
+        return -1;
+    /*
+     * 为提升下游 PS 解复用兼容性，这里输出 H264 字节流格式：
+     * 每个 NAL 前补 00 00 00 01 起始码，再写 NAL payload。
+     */
+    if (gb_buffer_append(buffer, annexb_start_code, sizeof(annexb_start_code)) != 0)
         return -1;
     return gb_buffer_append(buffer, payload, payload_len);
 }
