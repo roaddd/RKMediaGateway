@@ -126,6 +126,24 @@ static void build_encoder_options(const MediaGatewayConfig *cfg, MppEncoderOptio
     opt->qp_max_i = cfg->qp_max_i;
     opt->qp_max_step = cfg->qp_max_step;
 }
+
+static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx) {
+    int idx = -1;
+    if (!ctx) {
+        return;
+    }
+    idx = ctx->gb28181_sink_index;
+    if (idx < 0 || idx >= ctx->sink_count) {
+        return;
+    }
+    if (gb28181_sink_consume_external_idr_request(&ctx->sinks[idx])) {
+        if (mpp_encoder_request_idr(&ctx->encoder) == 0) {
+            printf("[GB28181] requested IDR from shared encoder (external mode)\n");
+        } else {
+            fprintf(stderr, "[GB28181] failed to request IDR from shared encoder\n");
+        }
+    }
+}
 /**
  * @description: Reinitialize encoder instance
  * @param {MediaGatewayCtx *} ctx
@@ -189,6 +207,7 @@ static int setup_sinks(MediaGatewayCtx *ctx) {
         if (gb28181_sink_setup(&ctx->sinks[ctx->sink_count], &ctx->config.gb28181) != 0) {
             return -1;
         }
+        ctx->gb28181_sink_index = ctx->sink_count;
         ctx->sink_count++;
     }
     return (ctx->sink_count > 0) ? 0 : -1;
@@ -283,6 +302,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     /* One-time init for the whole gateway. Every module below uses the same normalized config snapshot. */
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
+    ctx->gb28181_sink_index = -1;
 
     /* Capture comes first because width/height and frame availability drive the rest of the pipeline. */
     if (v4l2_capture_init(&ctx->capture) < 0) {
@@ -382,6 +402,9 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             continue;
         }
         consecutive_capture_fail = 0;
+
+        /* external gb28181 会话建立后，由主线程触发一次共享编码器 IDR。 */
+        trigger_external_idr_if_needed(ctx);
 
         /* MPP may transiently fail, so repeated errors trigger an encoder rebuild instead of full exit. */
         if (mpp_encoder_encode_frame(&ctx->encoder,

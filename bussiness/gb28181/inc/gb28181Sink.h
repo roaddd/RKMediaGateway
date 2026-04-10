@@ -35,6 +35,9 @@ typedef struct {
 
 int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config);
 
+/* external 模式下供 mediaGateway 轮询：是否需要立刻请求一次 IDR。 */
+int gb28181_sink_consume_external_idr_request(MediaSink *sink);
+
 #ifdef __cplusplus
 }
 #endif

@@ -58,6 +58,7 @@ typedef struct {
     MediaSink sinks[MEDIA_GATEWAY_MAX_SINKS];  /* 已启用的输出通道集合。 */
     int sink_count;                            /* 当前启用的 sink 数量。 */
     MediaGatewayConfig config;                 /* 归一化后的网关配置副本。 */
+    int gb28181_sink_index;                    /* gb28181 sink 在 sinks[] 中的索引，-1 表示未启用。 */
     int capture_ready;                         /* 采集模块是否已初始化成功。 */
     int encoder_ready;                         /* 编码模块是否已初始化成功。 */
     int running;                               /* 主循环是否正在运行。 */

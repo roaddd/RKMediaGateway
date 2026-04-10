@@ -228,3 +228,15 @@ int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config) {
     }
     return 0;
 }
+
+int gb28181_sink_consume_external_idr_request(MediaSink *sink) {
+    Gb28181SinkImpl *impl = NULL;
+    if (!sink) {
+        return 0;
+    }
+    impl = (Gb28181SinkImpl *)sink->impl;
+    if (!impl || !impl->started) {
+        return 0;
+    }
+    return gb28181_device_consume_external_idr_request(&impl->device_ctx);
+}

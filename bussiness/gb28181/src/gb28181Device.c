@@ -975,6 +975,7 @@ static void stop_media_session(Gb28181DeviceCtx *ctx)
     }
     pthread_mutex_lock(&ctx->session_lock);
     ctx->pending_force_idr = 0;
+    ctx->external_idr_requested = 0;
     close_rtp_socket(&ctx->media_session);
     reset_media_session(&ctx->media_session);
     pthread_mutex_unlock(&ctx->session_lock);
@@ -1089,11 +1090,12 @@ static void process_event(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
         {
             ctx->media_session.established = 1;
             ctx->pending_force_idr = 1;
+            ctx->external_idr_requested = 0;
             pthread_cond_signal(&ctx->session_cond);
             printf("[GB28181] call established cid=%d did=%d remote=%s:%d\n", ctx->media_session.cid, ctx->media_session.did, ctx->media_session.remote_ip, ctx->media_session.remote_port);
             if (ctx->config.external_media_input)
             {
-                printf("[GB28181] external mode: mark pending IDR request, wait keyframe from upstream\n");
+                printf("[GB28181] external mode: pending upstream IDR request armed\n");
             }
         }
         pthread_mutex_unlock(&ctx->session_lock);
@@ -1110,6 +1112,7 @@ static void process_event(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
         {
             printf("[GB28181] call closed cid=%d did=%d\n", event->cid, event->did);
             ctx->pending_force_idr = 0;
+            ctx->external_idr_requested = 0;
             close_rtp_socket(&ctx->media_session);
             reset_media_session(&ctx->media_session);
         }
@@ -1318,9 +1321,15 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
         pthread_mutex_unlock(&ctx->session_lock);
         return 0;
     }
+    if (ctx->pending_force_idr && !is_key_frame)
+    {
+        pthread_mutex_unlock(&ctx->session_lock);
+        return 0;
+    }
     if (ctx->pending_force_idr && is_key_frame)
     {
         ctx->pending_force_idr = 0;
+        ctx->external_idr_requested = 0;
         printf("[GB28181] pending IDR request satisfied by upstream keyframe\n");
     }
     session_snapshot = ctx->media_session;
@@ -1358,6 +1367,26 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
     }
     pthread_mutex_unlock(&ctx->session_lock);
     return 0;
+}
+
+int gb28181_device_consume_external_idr_request(Gb28181DeviceCtx *ctx)
+{
+    int need_request = 0;
+    if (!ctx)
+        return 0;
+
+    pthread_mutex_lock(&ctx->session_lock);
+    if (ctx->config.external_media_input &&
+        ctx->media_session.active &&
+        ctx->media_session.established &&
+        ctx->pending_force_idr &&
+        !ctx->external_idr_requested)
+    {
+        ctx->external_idr_requested = 1;
+        need_request = 1;
+    }
+    pthread_mutex_unlock(&ctx->session_lock);
+    return need_request;
 }
 
 /* 请求停止运行。 */

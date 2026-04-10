@@ -87,6 +87,7 @@ typedef struct {
     int capture_ready;                /* capture 是否已成功初始化。 */
     int encoder_ready;                /* encoder 是否已成功初始化。 */
     int pending_force_idr;            /* ACK 建立后待执行的一次性 IDR 请求标记。 */
+    int external_idr_requested;       /* external 模式下该请求是否已转交上游编码器。 */
     int sync_ready;                   /* 互斥锁/条件变量是否可用。 */
     int media_thread_started;         /* 媒体线程是否已创建。 */
     unsigned int xml_sn;              /* XML 消息流水号。 */
@@ -151,6 +152,12 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
                              size_t h264_len,
                              int is_key_frame,
                              uint64_t pts_us);
+
+/*
+ * external 模式下：查询并“消费”一次 ACK 触发的 IDR 请求。
+ * 返回 1 表示上游应立即请求一次 IDR；返回 0 表示当前无需请求。
+ */
+int gb28181_device_consume_external_idr_request(Gb28181DeviceCtx *ctx);
 
 #ifdef __cplusplus
 }
