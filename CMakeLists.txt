@@ -199,22 +199,22 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
-if(BUILD_TARGET STREQUAL "gb28181_device" OR BUILD_TARGET STREQUAL "all")
-    add_executable(gb28181_device
-        ${PROJECT_SOURCE_DIR}/main/main_gb28181_device.cpp
+if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device" OR BUILD_TARGET STREQUAL "all")
+    add_executable(all_services
+        ${PROJECT_SOURCE_DIR}/main/main_all_services.cpp
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_GATEWAY_SRC}
         ${RTSP_STREAMER_SRC}
         ${GB28181_SRC}
     )
-    target_link_libraries(gb28181_device PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
-    target_include_directories(gb28181_device PRIVATE
+    target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
+    target_include_directories(all_services PRIVATE
         ${THIRDPARTY_OSIP_ROOT}/inc
         ${EXOSIP_COMPAT_INCLUDE_DIR}
         ${OPENSSL_COMPAT_INCLUDE_DIR}
     )
-    set_target_properties(gb28181_device PROPERTIES
+    set_target_properties(all_services PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()
