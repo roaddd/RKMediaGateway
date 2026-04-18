@@ -15,20 +15,52 @@
 #define DEFAULT_RTSP_PASSWORD "123456"
 
 typedef struct {
-    RtspSinkConfig config;    /* RTSP sink 自身配置的本地副本，避免依赖外部配置对象生命周期。 */
-    void *session;            /* rtspAddSession() 创建的推流会话句柄，发送视频数据时会用到。 */
-    pthread_t server_thread;  /* 后台 RTSP 服务线程，内部会阻塞在服务循环/accept。 */
-    int server_started;       /* 服务线程是否已经成功创建，便于 stop 时决定是否 join。 */
-    int server_result;        /* rtspStartServer() 的返回结果，便于后续排查服务启动失败原因。 */
-    int module_ready;         /* RTSP 模块是否已初始化成功，避免重复释放底层模块资源。 */
+    int in_use;                    /* 共享 RTSP 服务是否已被启用。 */
+    int module_ready;              /* rtspModuleInit 是否成功。 */
+    int server_started;            /* 服务线程是否创建成功。 */
+    int auth_enable;               /* 鉴权开关。 */
+    int server_port;               /* 共享服务监听端口。 */
+    char server_ip[64];            /* 共享服务监听地址。 */
+    char user[64];                 /* 鉴权用户名。 */
+    char password[64];             /* 鉴权密码。 */
+    pthread_t server_thread;       /* 共享服务线程句柄。 */
+} RtspSharedServer;
+
+typedef struct {
+    RtspSinkConfig config;         /* 当前 sink 的配置副本。 */
+    void *session;                 /* 当前 sink 绑定的 RTSP session。 */
+    int shared_server_acquired;    /* 是否已持有共享服务引用计数。 */
 } RtspSinkImpl;
 
-/**
- * @description: 判断当前位置是否为 H264 起始码并返回长度
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @return {static int}
- */
+static RtspSharedServer g_rtsp_shared_server;
+static pthread_mutex_t g_rtsp_shared_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_rtsp_shared_ref_count = 0;
+
+/* 安全复制字符串到固定长度缓冲区，保证以 '\0' 结束。 */
+static void copy_string_field(char *dst, size_t dst_size, const char *src) {
+    if (!dst || dst_size == 0) {
+        return;
+    }
+    if (!src) {
+        dst[0] = '\0';
+        return;
+    }
+    strncpy(dst, src, dst_size - 1);
+    dst[dst_size - 1] = '\0';
+}
+
+/* 比较两个字符串是否相等（支持 NULL 安全比较）。 */
+static int string_equals(const char *a, const char *b) {
+    if (!a && !b) {
+        return 1;
+    }
+    if (!a || !b) {
+        return 0;
+    }
+    return strcmp(a, b) == 0;
+}
+
+/* 判断当前位置是否为 H264 起始码，并返回起始码长度。 */
 static int start_code_len(const uint8_t *data, size_t len) {
     if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
         return 4;
@@ -39,18 +71,9 @@ static int start_code_len(const uint8_t *data, size_t len) {
     return 0;
 }
 
-/**
- * @description: 查找下一个 H264 起始码位置
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @param {size_t} offset
- * @param {size_t *} pos
- * @param {int *} code_len
- * @return {static int}
- */
+/* 在缓冲区中从 offset 开始查找下一个 H264 起始码位置。 */
 static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_t *pos, int *code_len) {
     size_t i;
-
     for (i = offset; i + 3 <= len; ++i) {
         int cur_len = start_code_len(data + i, len - i);
         if (cur_len > 0) {
@@ -62,13 +85,7 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
     return -1;
 }
 
-/**
- * @description: 将 Annex-B 码流按 NALU 发送到 RTSP 会话
- * @param {void *} session
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @return {static int}
- */
+/* 将 Annex-B 数据按 NALU 切分后发送到 RTSP session。 */
 static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
     size_t nalu_start = 0;
     int code_len = 0;
@@ -85,12 +102,9 @@ static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
         if (payload_start >= len) {
             break;
         }
-
         find_start_code(data, len, payload_start, &next_start, &next_code_len);
         if (next_start > payload_start) {
-            if (sessionSendVideoData(session,
-                                     (unsigned char *)(data + payload_start),
-                                     (int)(next_start - payload_start)) < 0) {
+            if (sessionSendVideoData(session, (unsigned char *)(data + payload_start), (int)(next_start - payload_start)) < 0) {
                 return -1;
             }
         }
@@ -100,54 +114,144 @@ static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
         nalu_start = next_start;
         code_len = next_code_len;
     }
-
     return 0;
 }
 
-/**
- * @description: RTSP 服务线程入口函数
- * @param {void *} arg
- * @return {static void *}
- */
-static void *rtsp_server_thread(void *arg) {
-    RtspSinkImpl *impl = (RtspSinkImpl *)arg;
-    /* 线程直接复用 impl 里的认证、监听地址和端口配置来启动 RTSP 服务。 */
-    impl->server_result = rtspStartServer(impl->config.auth_enable,
-                                          impl->config.server_ip,
-                                          impl->config.server_port,
-                                          impl->config.user,
-                                          impl->config.password);
+/* 共享 RTSP 服务线程入口：阻塞运行 rtspStartServer。 */
+static void *shared_rtsp_server_thread(void *arg) {
+    RtspSharedServer *shared = (RtspSharedServer *)arg;
+    rtspStartServer(shared->auth_enable,
+                    shared->server_ip,
+                    shared->server_port,
+                    shared->user,
+                    shared->password);
     return NULL;
 }
 
+/* 校验新 sink 的 server 参数是否与共享 server 一致。 */
+static int shared_rtsp_config_compatible(const RtspSinkConfig *cfg) {
+    if (!cfg) {
+        return 0;
+    }
+    if (g_rtsp_shared_server.auth_enable != cfg->auth_enable) {
+        return 0;
+    }
+    if (g_rtsp_shared_server.server_port != cfg->server_port) {
+        return 0;
+    }
+    if (!string_equals(g_rtsp_shared_server.server_ip, cfg->server_ip)) {
+        return 0;
+    }
+    if (!string_equals(g_rtsp_shared_server.user, cfg->user)) {
+        return 0;
+    }
+    if (!string_equals(g_rtsp_shared_server.password, cfg->password)) {
+        return 0;
+    }
+    return 1;
+}
+
 /**
- * @description: 启动 RTSP 推流通道
- * @param {MediaSink *} sink
- * @return {static int}
+ * @description: 管理“共享 RTSP 服务器进程内实例”
+ * 第一次调用：启动 RTSP 模块 + 起 server 线程（监听 ip:port）
+ * 后续调用：不重复启动，只增加引用计数
+ * 并检查新 sink 的 server 参数是否和已启动的一致（端口/鉴权等）
+ * 确保 main/sub 共用同一个 8554 服务端
+ * @param {RtspSinkConfig} *cfg
+ * @return {*}
  */
+
+static int shared_rtsp_server_acquire(const RtspSinkConfig *cfg) {
+    int ret = 0;
+    pthread_mutex_lock(&g_rtsp_shared_lock);
+
+    if (g_rtsp_shared_ref_count == 0) {
+        memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
+        g_rtsp_shared_server.auth_enable = cfg->auth_enable;
+        g_rtsp_shared_server.server_port = cfg->server_port;
+        copy_string_field(g_rtsp_shared_server.server_ip, sizeof(g_rtsp_shared_server.server_ip), cfg->server_ip);
+        copy_string_field(g_rtsp_shared_server.user, sizeof(g_rtsp_shared_server.user), cfg->user);
+        copy_string_field(g_rtsp_shared_server.password, sizeof(g_rtsp_shared_server.password), cfg->password);
+        /* 初始化rtspServer */
+        if (rtspModuleInit() < 0) {
+            pthread_mutex_unlock(&g_rtsp_shared_lock);
+            return -1;
+        }
+        g_rtsp_shared_server.module_ready = 1;
+        g_rtsp_shared_server.in_use = 1;
+        /* 启动rtsp服务线程 */
+        ret = pthread_create(&g_rtsp_shared_server.server_thread, NULL, shared_rtsp_server_thread, &g_rtsp_shared_server);
+        if (ret != 0) {
+            rtspModuleDel();
+            memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
+            pthread_mutex_unlock(&g_rtsp_shared_lock);
+            return -1;
+        }
+        g_rtsp_shared_server.server_started = 1;
+    } else if (!shared_rtsp_config_compatible(cfg)) {
+        fprintf(stderr, "[ERROR] RTSP shared server config conflict: expect %s:%d auth=%d user=%s\n",
+                g_rtsp_shared_server.server_ip,
+                g_rtsp_shared_server.server_port,
+                g_rtsp_shared_server.auth_enable,
+                g_rtsp_shared_server.user);
+        pthread_mutex_unlock(&g_rtsp_shared_lock);
+        return -1;
+    }
+
+    g_rtsp_shared_ref_count++;
+    pthread_mutex_unlock(&g_rtsp_shared_lock);
+    return 0;
+}
+
+/* 释放共享 RTSP server：最后一个引用释放时才停止并反初始化。 */
+static void shared_rtsp_server_release(void) {
+    pthread_mutex_lock(&g_rtsp_shared_lock);
+
+    if (g_rtsp_shared_ref_count <= 0) {
+        pthread_mutex_unlock(&g_rtsp_shared_lock);
+        return;
+    }
+
+    g_rtsp_shared_ref_count--;
+    if (g_rtsp_shared_ref_count == 0) {
+        rtspStopServer();
+        if (g_rtsp_shared_server.server_started) {
+            pthread_join(g_rtsp_shared_server.server_thread, NULL);
+        }
+        if (g_rtsp_shared_server.module_ready) {
+            rtspModuleDel();
+        }
+        memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
+    }
+
+    pthread_mutex_unlock(&g_rtsp_shared_lock);
+}
+
+/* sink 启动：挂载共享 server，并创建当前 sink 的 session。 */
 static int rtsp_sink_start(MediaSink *sink) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
 
-    /* 启动顺序：先初始化模块，再创建 session，最后拉起服务线程。 */
-    if (rtspModuleInit() < 0) {
+    if (shared_rtsp_server_acquire(&impl->config) != 0) {
         return -1;
     }
-    impl->module_ready = 1; /* 标记模块已就绪，stop() 时据此决定是否调用 rtspModuleDel。 */
+    impl->shared_server_acquired = 1;
 
-    /* session 保存在 impl->session 中，后续每帧发送都通过这个句柄写入。 */
+    /* 创建 RTSP 会话 */
     impl->session = rtspAddSession(impl->config.session_name);
     if (!impl->session) {
+        shared_rtsp_server_release();
+        impl->shared_server_acquired = 0;
         return -1;
     }
+    /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
+        rtspDelSession(impl->session);
+        impl->session = NULL;
+        shared_rtsp_server_release();
+        impl->shared_server_acquired = 0;
         return -1;
     }
-    /* 启动rtsp推流服务 */
-    if (pthread_create(&impl->server_thread, NULL, rtsp_server_thread, impl) != 0) {
-        return -1;
-    }
-        
-    impl->server_started = 1; /* 只有线程创建成功后才置位，避免 stop() 中错误 join。 */
+
     printf("[INFO] RTSP sink ready: rtsp://%s:%d/%s\n",
            impl->config.server_ip,
            impl->config.server_port,
@@ -155,74 +259,43 @@ static int rtsp_sink_start(MediaSink *sink) {
     return 0;
 }
 
-/**
- * @description: 检查 RTSP 推流通道是否可用
- * @param {MediaSink *} sink
- * @return {static int}
- */
+/* sink 连接检查：session 已就绪即可视为可用。 */
 static int rtsp_sink_connect(MediaSink *sink) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
     return impl->session ? 0 : -1;
 }
 
-/**
- * @description: 发送一个媒体包到 RTSP 通道
- * @param {MediaSink *} sink
- * @param {const MediaPacket *} packet
- * @return {static int}
- */
+/* sink 发送：将 H264 包转为 RTSP 可发送单元。 */
 static int rtsp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
-
     if (!impl || !impl->session || !packet || !packet->buffer) {
         return -1;
     }
     return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
 }
 
-/**
- * @description: 断开 RTSP 推流通道
- * @param {MediaSink *} sink
- * @return {static void}
- */
+/* 当前实现无需主动断链，保留该钩子用于接口一致性。 */
 static void rtsp_sink_disconnect(MediaSink *sink) {
     (void)sink;
 }
 
-/**
- * @description: 停止 RTSP 推流通道
- * @param {MediaSink *} sink
- * @return {static void}
- */
+/* sink 停止：先删 session，再释放共享 server 引用。 */
 static void rtsp_sink_stop(MediaSink *sink) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
-
     if (!impl) {
         return;
-    }
-
-    /* 先请求服务线程退出，再按 server_started/module_ready/session 标记逆序清理。 */
-    rtspStopServer();
-    if (impl->server_started) {
-        pthread_join(impl->server_thread, NULL);
-        impl->server_started = 0;
     }
     if (impl->session) {
         rtspDelSession(impl->session);
         impl->session = NULL;
     }
-    if (impl->module_ready) {
-        rtspModuleDel();
-        impl->module_ready = 0;
+    if (impl->shared_server_acquired) {
+        shared_rtsp_server_release();
+        impl->shared_server_acquired = 0;
     }
 }
 
-/**
- * @description: 根据配置创建 RTSP 推流通道
- * @param {MediaSink *} sink
- * @param {const RtspSinkConfig *} config
- * @return {int}
- */
+/* 构建并初始化一个 RTSP sink。 */
 int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     static const MediaSinkVTable vtable = {
         rtsp_sink_start,
@@ -238,7 +311,6 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
         return -1;
     }
 
-    /* impl 是 RTSP sink 的私有状态，整个 sink 生命周期内一直挂在 sink->impl 上。 */
     impl = (RtspSinkImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
         return -1;
@@ -278,4 +350,3 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     }
     return 0;
 }
-

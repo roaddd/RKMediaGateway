@@ -21,7 +21,7 @@ int media_buffer_create_copy(const uint8_t *data, size_t size, MediaBuffer **out
     if (!buffer) {
         return -1;
     }
-
+    /* TODO:这里每帧都要malloc吗 */
     buffer->data = (uint8_t *)malloc(size);
     if (!buffer->data) {
         free(buffer);
