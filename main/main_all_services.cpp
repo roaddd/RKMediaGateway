@@ -93,6 +93,42 @@ static void fill_stream_config(MediaGatewayStreamConfig *stream,
     stream->gb28181.queue_capacity = cfg_int("GB28181_QUEUE_CAPACITY", 64);
 }
 
+static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_config::Reader &file_config) {
+    if (!config) return;
+    printf("[MAIN_CFG] source=%s loaded=%d\n",
+           file_config.source_path().c_str(),
+           file_config.loaded() ? 1 : 0);
+    printf("[MAIN_CFG] raw GATEWAY_STREAM_COUNT=%d STREAM_MAIN_ENABLE=%d STREAM_SUB_ENABLE=%d\n",
+           file_config.get_int("GATEWAY_STREAM_COUNT", -999),
+           file_config.get_int("STREAM_MAIN_ENABLE", -999),
+           file_config.get_int("STREAM_SUB_ENABLE", -999));
+    printf("[MAIN_CFG] raw MAIN out rtsp=%d rtmp=%d gb28181=%d\n",
+           file_config.get_int("STREAM_MAIN_ENABLE_RTSP", -999),
+           file_config.get_int("STREAM_MAIN_ENABLE_RTMP", -999),
+           file_config.get_int("STREAM_MAIN_ENABLE_GB28181", -999));
+    printf("[MAIN_CFG] raw SUB  out rtsp=%d rtmp=%d gb28181=%d\n",
+           file_config.get_int("STREAM_SUB_ENABLE_RTSP", -999),
+           file_config.get_int("STREAM_SUB_ENABLE_RTMP", -999),
+           file_config.get_int("STREAM_SUB_ENABLE_GB28181", -999));
+
+    printf("[MAIN_CFG] parsed stream_count=%d\n", config->stream_count);
+    for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+        const MediaGatewayStreamConfig *s = &config->streams[i];
+        printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d)\n",
+               i,
+               s->name ? s->name : "unknown",
+               s->enabled,
+               s->width,
+               s->height,
+               s->fps,
+               s->bitrate,
+               s->rc_mode,
+               s->enable_rtsp,
+               s->enable_rtmp,
+               s->enable_gb28181);
+    }
+}
+
 int main(int argc, char **argv)
 {
     MediaGatewayCtx gateway;
@@ -155,6 +191,8 @@ int main(int argc, char **argv)
         config.streams[0].enable_rtmp = cfg_int("GATEWAY_ENABLE_RTMP", 0);
         config.streams[0].enable_gb28181 = cfg_int("GATEWAY_ENABLE_GB28181", 1);
     }
+
+    log_main_config_snapshot(&config, file_config);
 
     if (media_gateway_init(&gateway, &config) < 0)
     {

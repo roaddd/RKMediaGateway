@@ -209,10 +209,17 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
     /* Normalize one stream config: defaults, bounds and protocol sub-configs. */
     int default_width = (stream_idx == 0) ? CAPTURE_WIDTH : (CAPTURE_WIDTH / 2);
     int default_height = (stream_idx == 0) ? CAPTURE_HEIGHT : (CAPTURE_HEIGHT / 2);
+    MediaGatewayStreamConfig src_copy;
+    int has_src = 0;
+
+    if (src) {
+        src_copy = *src;
+        has_src = 1;
+    }
 
     memset(dst, 0, sizeof(*dst));
-    if (src) {
-        *dst = *src;
+    if (has_src) {
+        *dst = src_copy;
     }
 
     dst->enabled = dst->enabled ? 1 : 0;
@@ -607,6 +614,68 @@ static void log_sink_stats(MediaGatewayCtx *ctx) {
     }
 }
 
+/**
+ * @description: 打印传入的所有配置参数
+ * @param {MediaGatewayConfig} *cfg
+ * @return {*}
+ */
+static void log_effective_config(const MediaGatewayConfig *cfg) {
+    int i;
+    if (!cfg) return;
+
+    printf("[CFG] stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d\n",
+           cfg->stream_count,
+           cfg->low_latency_mode,
+           cfg->stats_interval_sec,
+           cfg->capture_retry_ms,
+           cfg->max_consecutive_failures);
+    printf("[CFG] record_file=%s record_flush_interval_frames=%d\n",
+           (cfg->record_file_path && cfg->record_file_path[0] != '\0') ? cfg->record_file_path : "(disabled)",
+           cfg->record_flush_interval_frames);
+
+    for (i = 0; i < cfg->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+        const MediaGatewayStreamConfig *s = &cfg->streams[i];
+        printf("[CFG] stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d gop=%d rc=%d\n",
+               i,
+               s->name ? s->name : "unknown",
+               s->enabled,
+               s->width,
+               s->height,
+               s->fps,
+               s->bitrate,
+               s->gop,
+               s->rc_mode);
+        printf("[CFG] stream=%d outputs rtsp=%d rtmp=%d gb28181=%d\n",
+               i,
+               s->enable_rtsp,
+               s->enable_rtmp,
+               s->enable_gb28181);
+        if (s->enable_rtsp) {
+            printf("[CFG] stream=%d rtsp url=rtsp://%s:%d/%s auth=%d\n",
+                   i,
+                   s->rtsp.server_ip ? s->rtsp.server_ip : "0.0.0.0",
+                   s->rtsp.server_port,
+                   s->rtsp.session_name ? s->rtsp.session_name : "live",
+                   s->rtsp.auth_enable);
+        }
+        if (s->enable_rtmp) {
+            printf("[CFG] stream=%d rtmp publish_url=%s\n",
+                   i,
+                   (s->rtmp.publish_url && s->rtmp.publish_url[0] != '\0') ? s->rtmp.publish_url : "(empty)");
+        }
+        if (s->enable_gb28181) {
+            printf("[CFG] stream=%d gb28181 server=%s:%d device=%s local_sip=%d media=%s:%d\n",
+                   i,
+                   s->gb28181.server_ip ? s->gb28181.server_ip : "unknown",
+                   s->gb28181.server_port,
+                   s->gb28181.device_id ? s->gb28181.device_id : "unknown",
+                   s->gb28181.local_sip_port,
+                   s->gb28181.media_ip ? s->gb28181.media_ip : "unknown",
+                   s->gb28181.media_port);
+        }
+    }
+}
+
 int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     /* Full startup: config normalize, capture/encoders/sinks, optional file record. */
     int i;
@@ -617,6 +686,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
 
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
+    log_effective_config(&ctx->config);
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         ctx->gb28181_sink_index[i] = -1;
     }
