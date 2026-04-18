@@ -468,22 +468,67 @@ static int setup_sinks_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
     if (!s->enabled) return 0;
 
     if (s->enable_rtsp) {
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) return -1;
-        if (rtsp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtsp) != 0) return -1;
+        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=rtsp max=%d\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    MEDIA_GATEWAY_MAX_SINKS);
+            return -1;
+        }
+        if (rtsp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtsp) != 0) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: rtsp_sink_setup stream=%d name=%s session=%s port=%d\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    s->rtsp.session_name ? s->rtsp.session_name : "unknown",
+                    s->rtsp.server_port);
+            return -1;
+        }
         ctx->sink_stream_index[ctx->sink_count] = stream_idx;
         ctx->sink_count++;
     }
     if (s->enable_rtmp) {
 #if defined(ENABLE_RTMP_SINK)
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) return -1;
-        if (rtmp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtmp) != 0) return -1;
+        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=rtmp max=%d\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    MEDIA_GATEWAY_MAX_SINKS);
+            return -1;
+        }
+        if (rtmp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtmp) != 0) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: rtmp_sink_setup stream=%d name=%s url=%s\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    s->rtmp.publish_url ? s->rtmp.publish_url : "");
+            return -1;
+        }
         ctx->sink_stream_index[ctx->sink_count] = stream_idx;
         ctx->sink_count++;
 #endif
     }
     if (s->enable_gb28181) {
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) return -1;
-        if (gb28181_sink_setup(&ctx->sinks[ctx->sink_count], &s->gb28181) != 0) return -1;
+        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=gb28181 max=%d\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    MEDIA_GATEWAY_MAX_SINKS);
+            return -1;
+        }
+        if (gb28181_sink_setup(&ctx->sinks[ctx->sink_count], &s->gb28181) != 0) {
+            fprintf(stderr,
+                    "[ERROR] setup_sinks_for_stream failed: gb28181_sink_setup stream=%d name=%s server=%s:%d device=%s\n",
+                    stream_idx,
+                    s->name ? s->name : "unknown",
+                    s->gb28181.server_ip ? s->gb28181.server_ip : "unknown",
+                    s->gb28181.server_port,
+                    s->gb28181.device_id ? s->gb28181.device_id : "unknown");
+            return -1;
+        }
         ctx->sink_stream_index[ctx->sink_count] = stream_idx;
         ctx->gb28181_sink_index[stream_idx] = ctx->sink_count;
         ctx->sink_count++;
@@ -496,16 +541,31 @@ static int setup_sinks(MediaGatewayCtx *ctx) {
     int i;
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         if (!ctx->stream_enabled[i]) continue;
-        if (setup_sinks_for_stream(ctx, i) != 0) return -1;
+        if (setup_sinks_for_stream(ctx, i) != 0) {
+            fprintf(stderr, "[ERROR] setup_sinks failed: stream=%d name=%s\n",
+                    i,
+                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
+            return -1;
+        }
     }
-    return (ctx->sink_count > 0) ? 0 : -1;
+    if (ctx->sink_count <= 0) {
+        fprintf(stderr, "[ERROR] setup_sinks failed: no enabled sink configured\n");
+        return -1;
+    }
+    return 0;
 }
 
 static int start_sinks(MediaGatewayCtx *ctx) {
     /* Start all sinks so enqueue can be consumed immediately. */
     int i;
     for (i = 0; i < ctx->sink_count; ++i) {
-        if (media_sink_start(&ctx->sinks[i]) != 0) return -1;
+        if (media_sink_start(&ctx->sinks[i]) != 0) {
+            fprintf(stderr, "[ERROR] start_sinks failed: idx=%d name=%s stream=%d\n",
+                    i,
+                    ctx->sinks[i].config.name ? ctx->sinks[i].config.name : "unknown",
+                    ctx->sink_stream_index[i]);
+            return -1;
+        }
     }
     return 0;
 }
@@ -550,7 +610,10 @@ static void log_sink_stats(MediaGatewayCtx *ctx) {
 int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     /* Full startup: config normalize, capture/encoders/sinks, optional file record. */
     int i;
-    if (!ctx) return -1;
+    if (!ctx) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: ctx is NULL\n");
+        return -1;
+    }
 
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
@@ -558,21 +621,42 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         ctx->gb28181_sink_index[i] = -1;
     }
 
-    if (v4l2_capture_init(&ctx->capture) < 0) goto fail;
+    if (v4l2_capture_init(&ctx->capture) < 0) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: v4l2_capture_init\n");
+        goto fail;
+    }
     ctx->capture_ready = 1;
 
     for (i = 0; i < ctx->config.stream_count; ++i) {
         if (!ctx->config.streams[i].enabled) continue;
-        if (reset_encoder(ctx, i) != 0) goto fail;
+        if (reset_encoder(ctx, i) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_init failed: reset_encoder stream=%d name=%s\n",
+                    i,
+                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
+            goto fail;
+        }
         ctx->stream_enabled[i] = 1;
     }
 
-    if (setup_sinks(ctx) != 0) goto fail;
-    if (start_sinks(ctx) != 0) goto fail;
+    if (setup_sinks(ctx) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: setup_sinks\n");
+        goto fail;
+    }
+    if (start_sinks(ctx) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: start_sinks\n");
+        goto fail;
+    }
 
     if (ctx->config.record_file_path && ctx->config.record_file_path[0] != '\0') {
         ctx->record_fp = fopen(ctx->config.record_file_path, "ab");
-        if (!ctx->record_fp) goto fail;
+        if (!ctx->record_fp) {
+            fprintf(stderr,
+                    "[ERROR] media_gateway_init failed: open record file path=%s errno=%d(%s)\n",
+                    ctx->config.record_file_path,
+                    errno,
+                    strerror(errno));
+            goto fail;
+        }
     }
 
     ctx->running = 1;
@@ -587,6 +671,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     return 0;
 
 fail:
+    fprintf(stderr, "[ERROR] media_gateway_init rollback: deinit partially initialized resources\n");
     media_gateway_deinit(ctx);
     return -1;
 }
@@ -606,7 +691,10 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     int consecutive_encode_fail[MEDIA_GATEWAY_MAX_STREAMS] = {0};
     int rga_fallback_warned[MEDIA_GATEWAY_MAX_STREAMS] = {0};
 
-    if (!ctx || !ctx->running) return -1;
+    if (!ctx || !ctx->running) {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: invalid ctx or not running\n");
+        return -1;
+    }
 
     while (ctx->running) {
         /* Per-captured-frame timing baseline from driver dequeue. */
@@ -617,7 +705,13 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         /* Retry capture with backoff; fail hard after too many consecutive errors. */
         if (v4l2_capture_frame(&ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us) < 0) {
             consecutive_capture_fail++;
-            if (consecutive_capture_fail >= ctx->config.max_consecutive_failures) return -1;
+            if (consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
+                fprintf(stderr,
+                        "[ERROR] media_gateway_run failed: capture failed continuously count=%d limit=%d\n",
+                        consecutive_capture_fail,
+                        ctx->config.max_consecutive_failures);
+                return -1;
+            }
             usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
             continue;
         }
@@ -648,6 +742,9 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                                             &encode_input,
                                             &encode_input_len,
                                             &scale_path) != 0) {
+                fprintf(stderr, "[ERROR] media_gateway_run failed: prepare_stream_encode_input stream=%d name=%s\n",
+                        stream_idx,
+                        stream_cfg->name ? stream_cfg->name : "unknown");
                 return -1;
             }
             if (scale_path == SCALE_PATH_CPU_NEAREST && !rga_fallback_warned[stream_idx]) {
@@ -671,7 +768,12 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                 /* Rebuild encoder if one stream keeps failing to encode. */
                 consecutive_encode_fail[stream_idx]++;
                 if (consecutive_encode_fail[stream_idx] >= 3) {
-                    if (reset_encoder(ctx, stream_idx) != 0) return -1;
+                    if (reset_encoder(ctx, stream_idx) != 0) {
+                        fprintf(stderr, "[ERROR] media_gateway_run failed: reset_encoder stream=%d name=%s\n",
+                                stream_idx,
+                                stream_cfg->name ? stream_cfg->name : "unknown");
+                        return -1;
+                    }
                     consecutive_encode_fail[stream_idx] = 0;
                 }
                 continue;
@@ -680,7 +782,12 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             if (!h264_data || h264_len == 0) continue;
 
             /* Copy encoded payload into shared media buffer for multi-sink fanout. */
-            if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) return -1;
+            if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
+                fprintf(stderr, "[ERROR] media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu\n",
+                        stream_idx,
+                        h264_len);
+                return -1;
+            }
 
             media_packet_init(&packet);
             packet.frame_type = MEDIA_FRAME_TYPE_VIDEO;

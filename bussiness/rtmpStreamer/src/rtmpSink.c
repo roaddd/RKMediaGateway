@@ -266,6 +266,7 @@ static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *s
     uint8_t *copy;
 
     if (!dst || !dst_len || !src || src_len == 0) {
+        fprintf(stderr, "[RTMP][ERROR] update_parameter_set invalid args\n");
         return -1;
     }
 
@@ -278,6 +279,7 @@ static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *s
 
     copy = (uint8_t *)malloc(src_len);
     if (!copy) {
+        fprintf(stderr, "[RTMP][ERROR] update_parameter_set alloc failed size=%zu\n", src_len);
         return -1;
     }
     memcpy(copy, src, src_len);
@@ -308,6 +310,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
     size_t capacity = 0;
 
     if (!data || len == 0 || !out_nalus || !out_count) {
+        fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus invalid args len=%zu\n", len);
         return -1;
     }
 
@@ -315,6 +318,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
     if (find_start_code(data, len, 0, &first, &code_len) != 0) {
         nalus = (NaluView *)calloc(1, sizeof(*nalus));
         if (!nalus) {
+            fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus alloc fallback nalu failed\n");
             return -1;
         }
         nalus[0].data = (uint8_t *)data;
@@ -341,6 +345,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
                 capacity = (capacity == 0) ? 4 : capacity * 2;
                 tmp = (NaluView *)realloc(nalus, capacity * sizeof(*nalus));
                 if (!tmp) {
+                    fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus realloc failed capacity=%zu\n", capacity);
                     free(nalus);
                     return -1;
                 }
@@ -383,6 +388,7 @@ static int rtmp_cache_parameter_sets(RtmpSinkImpl *impl, const NaluView *nalus, 
         /* SPS/PPS 可能会随着 IDR 帧重复出现，只有内容真正变化时才刷新缓存。 */
         if (nalu_type == 7) {
             if (update_parameter_set(&impl->sps, &impl->sps_len, nalus[i].data, nalus[i].size, &changed) != 0) {
+                fprintf(stderr, "[RTMP][ERROR] cache SPS failed size=%zu\n", nalus[i].size);
                 return -1;
             }
             if (changed) {
@@ -390,6 +396,7 @@ static int rtmp_cache_parameter_sets(RtmpSinkImpl *impl, const NaluView *nalus, 
             }
         } else if (nalu_type == 8) {
             if (update_parameter_set(&impl->pps, &impl->pps_len, nalus[i].data, nalus[i].size, &changed) != 0) {
+                fprintf(stderr, "[RTMP][ERROR] cache PPS failed size=%zu\n", nalus[i].size);
                 return -1;
             }
             if (changed) {
@@ -414,11 +421,13 @@ static int rtmp_send_info_body(RtmpSinkImpl *impl, const uint8_t *body, size_t b
     int ret;
 
     if (!impl || !impl->rtmp || !body || body_size == 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_info_body invalid args body_size=%zu\n", body_size);
         return -1;
     }
 
     RTMPPacket_Reset(&packet);
     if (!RTMPPacket_Alloc(&packet, (int)body_size)) {
+        fprintf(stderr, "[RTMP][ERROR] send_info_body packet alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -455,11 +464,13 @@ static int rtmp_send_video_body(RtmpSinkImpl *impl, const uint8_t *body, size_t 
     int ret;
 
     if (!impl || !impl->rtmp || !body || body_size == 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_video_body invalid args body_size=%zu\n", body_size);
         return -1;
     }
 
     RTMPPacket_Reset(&packet);
     if (!RTMPPacket_Alloc(&packet, (int)body_size)) {
+        fprintf(stderr, "[RTMP][ERROR] send_video_body packet alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -493,6 +504,7 @@ static int rtmp_send_on_metadata(RtmpSinkImpl *impl) {
     uint8_t *p = body;
 
     if (!impl) {
+        fprintf(stderr, "[RTMP][ERROR] send_on_metadata impl is NULL\n");
         return -1;
     }
 
@@ -517,6 +529,7 @@ static int rtmp_send_on_metadata(RtmpSinkImpl *impl) {
     p = amf_write_object_end(p);
 
     if (rtmp_send_info_body(impl, body, (size_t)(p - body), 0) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_on_metadata failed\n");
         return -1;
     }
 
@@ -542,12 +555,16 @@ static int rtmp_send_avc_sequence_header(RtmpSinkImpl *impl, uint32_t timestamp_
     size_t offset = 0;
 
     if (!impl || !impl->sps || !impl->pps || impl->sps_len < 4 || impl->pps_len == 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header SPS/PPS not ready sps=%zu pps=%zu\n",
+                impl ? impl->sps_len : 0,
+                impl ? impl->pps_len : 0);
         return -1;
     }
 
     body_size = 5 + 6 + 2 + impl->sps_len + 1 + 2 + impl->pps_len;
     body = (uint8_t *)malloc(body_size);
     if (!body) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -578,11 +595,14 @@ static int rtmp_send_avc_sequence_header(RtmpSinkImpl *impl, uint32_t timestamp_
     offset += impl->pps_len;
 
     if (offset != body_size) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header size mismatch offset=%zu body_size=%zu\n",
+                offset, body_size);
         free(body);
         return -1;
     }
 
     if (rtmp_send_video_body(impl, body, body_size, timestamp_ms) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header send failed ts_ms=%u\n", timestamp_ms);
         free(body);
         return -1;
     }
@@ -638,6 +658,7 @@ static int rtmp_send_avc_nalus(RtmpSinkImpl *impl,
 
     body = (uint8_t *)malloc(body_size);
     if (!body) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -664,11 +685,14 @@ static int rtmp_send_avc_nalus(RtmpSinkImpl *impl,
     }
 
     if (offset != body_size) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus size mismatch offset=%zu body_size=%zu\n",
+                offset, body_size);
         free(body);
         return -1;
     }
 
     if (rtmp_send_video_body(impl, body, body_size, timestamp_ms) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus send failed ts_ms=%u\n", timestamp_ms);
         free(body);
         return -1;
     }
@@ -733,6 +757,7 @@ static int rtmp_sink_connect(MediaSink *sink) {
      * 这样恢复逻辑更简单，也能确保服务端状态从一次完整握手开始。
      */
     if (!impl) {
+        fprintf(stderr, "[RTMP][ERROR] connect failed: impl is NULL\n");
         return -1;
     }
     if (impl->rtmp) {
@@ -743,6 +768,7 @@ static int rtmp_sink_connect(MediaSink *sink) {
 
     impl->rtmp = RTMP_Alloc();
     if (!impl->rtmp) {
+        fprintf(stderr, "[RTMP][ERROR] connect failed: RTMP_Alloc\n");
         return -1;
     }
     RTMP_Init(impl->rtmp);
@@ -807,6 +833,10 @@ static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     int ret = -1;
 
     if (!impl || !impl->connected || !packet || !packet->buffer) {
+        fprintf(stderr, "[RTMP][ERROR] send_packet invalid args connected=%d packet=%p buffer=%p\n",
+                (impl && impl->connected) ? 1 : 0,
+                (void *)packet,
+                (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
     if (packet->frame_type != MEDIA_FRAME_TYPE_VIDEO || packet->codec != MEDIA_CODEC_H264) {
@@ -818,6 +848,9 @@ static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
      * 这样不会影响其他 sink 的输入格式和处理逻辑。
      */
     if (annexb_split_nalus(packet->buffer->data, packet->buffer->size, &nalus, &nalu_count) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] send_packet split annexb failed frame=%" PRIu64 " size=%zu\n",
+                packet->frame_id,
+                packet->buffer->size);
         return -1;
     }
     if (rtmp_cache_parameter_sets(impl, nalus, nalu_count) != 0) {
@@ -860,6 +893,7 @@ done:
 #else
     (void)sink;
     (void)packet;
+    fprintf(stderr, "[RTMP][ERROR] send_packet failed: librtmp support is not compiled in\n");
     return -1;
 #endif
 }
@@ -928,11 +962,13 @@ int rtmp_sink_setup(MediaSink *sink, const RtmpSinkConfig *config) {
     RtmpSinkImpl *impl;
 
     if (!sink) {
+        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: sink is NULL\n");
         return -1;
     }
 
     impl = (RtmpSinkImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
+        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: impl alloc\n");
         return -1;
     }
 
@@ -965,9 +1001,10 @@ int rtmp_sink_setup(MediaSink *sink, const RtmpSinkConfig *config) {
     sink_config.drop_until_keyframe_after_reconnect = 1;
 
     if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: media_sink_init name=%s\n",
+                impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;
     }
     return 0;
 }
-

@@ -1,5 +1,6 @@
 ﻿#include "gb28181Sink.h"
 
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -111,6 +112,7 @@ static int gb28181_sink_start(MediaSink *sink) {
     Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
     Gb28181DeviceConfig device_config;
     if (!impl) {
+        fprintf(stderr, "[ERROR] gb28181_sink_start failed: impl is NULL\n");
         return -1;
     }
     if (impl->started) {
@@ -119,11 +121,21 @@ static int gb28181_sink_start(MediaSink *sink) {
 
     build_device_config(&impl->config, &device_config);
     if (gb28181_device_init(&impl->device_ctx, &device_config) != 0) {
+        fprintf(stderr,
+                "[ERROR] gb28181_sink_start failed: gb28181_device_init server=%s:%d device=%s local_sip=%d\n",
+                impl->config.server_ip ? impl->config.server_ip : "unknown",
+                impl->config.server_port,
+                impl->config.device_id ? impl->config.device_id : "unknown",
+                impl->config.local_sip_port);
         return -1;
     }
-    if (pthread_create(&impl->sip_thread, NULL, gb28181_sink_sip_loop, impl) != 0) {
-        gb28181_device_deinit(&impl->device_ctx);
-        return -1;
+    {
+        int ret = pthread_create(&impl->sip_thread, NULL, gb28181_sink_sip_loop, impl);
+        if (ret != 0) {
+            fprintf(stderr, "[ERROR] gb28181_sink_start failed: pthread_create ret=%d\n", ret);
+            gb28181_device_deinit(&impl->device_ctx);
+            return -1;
+        }
     }
 
     impl->sip_thread_started = 1;
@@ -146,6 +158,10 @@ static int gb28181_sink_connect(MediaSink *sink) {
 static int gb28181_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
     if (!impl || !impl->started || !packet || !packet->buffer) {
+        fprintf(stderr, "[ERROR] gb28181_sink_send_packet failed: invalid args started=%d packet=%p buffer=%p\n",
+                (impl && impl->started) ? 1 : 0,
+                (void *)packet,
+                (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
 
@@ -159,6 +175,10 @@ static int gb28181_sink_send_packet(MediaSink *sink, const MediaPacket *packet) 
                                  packet->buffer->size,
                                  packet->is_key_frame,
                                  packet->pts_us) != 0) {
+        fprintf(stderr, "[ERROR] gb28181_sink_send_packet failed: send_h264 size=%zu key=%d pts=%" PRIu64 "\n",
+                packet->buffer->size,
+                packet->is_key_frame,
+                packet->pts_us);
         return -1;
     }
     return 0;
@@ -206,11 +226,13 @@ int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config) {
     Gb28181SinkImpl *impl = NULL;
 
     if (!sink) {
+        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: sink is NULL\n");
         return -1;
     }
 
     impl = (Gb28181SinkImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
+        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: impl alloc\n");
         return -1;
     }
     fill_default_config(&impl->config, config);
@@ -223,6 +245,8 @@ int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config) {
     sink_config.drop_until_keyframe_after_reconnect = 1;
 
     if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: media_sink_init name=%s\n",
+                impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;
     }

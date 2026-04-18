@@ -230,8 +230,16 @@ static void shared_rtsp_server_release(void) {
 /* sink 启动：挂载共享 server，并创建当前 sink 的 session。 */
 static int rtsp_sink_start(MediaSink *sink) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
+    if (!impl) {
+        fprintf(stderr, "[ERROR] rtsp_sink_start failed: impl is NULL\n");
+        return -1;
+    }
 
     if (shared_rtsp_server_acquire(&impl->config) != 0) {
+        fprintf(stderr, "[ERROR] rtsp_sink_start failed: acquire shared server ip=%s port=%d session=%s\n",
+                impl->config.server_ip ? impl->config.server_ip : "unknown",
+                impl->config.server_port,
+                impl->config.session_name ? impl->config.session_name : "unknown");
         return -1;
     }
     impl->shared_server_acquired = 1;
@@ -239,12 +247,16 @@ static int rtsp_sink_start(MediaSink *sink) {
     /* 创建 RTSP 会话 */
     impl->session = rtspAddSession(impl->config.session_name);
     if (!impl->session) {
+        fprintf(stderr, "[ERROR] rtsp_sink_start failed: rtspAddSession session=%s\n",
+                impl->config.session_name ? impl->config.session_name : "unknown");
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
         return -1;
     }
     /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
+        fprintf(stderr, "[ERROR] rtsp_sink_start failed: sessionAddVideo session=%s codec=H264\n",
+                impl->config.session_name ? impl->config.session_name : "unknown");
         rtspDelSession(impl->session);
         impl->session = NULL;
         shared_rtsp_server_release();
@@ -269,6 +281,10 @@ static int rtsp_sink_connect(MediaSink *sink) {
 static int rtsp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
     if (!impl || !impl->session || !packet || !packet->buffer) {
+        fprintf(stderr, "[ERROR] rtsp_sink_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p\n",
+                (impl && impl->session) ? 1 : 0,
+                (void *)packet,
+                (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
     return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
@@ -308,11 +324,13 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     RtspSinkImpl *impl;
 
     if (!sink) {
+        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: sink is NULL\n");
         return -1;
     }
 
     impl = (RtspSinkImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
+        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: impl alloc\n");
         return -1;
     }
 
@@ -345,6 +363,9 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     sink_config.drop_until_keyframe_after_reconnect = 0;
 
     if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: media_sink_init name=%s session=%s\n",
+                impl->config.name ? impl->config.name : "unknown",
+                impl->config.session_name ? impl->config.session_name : "unknown");
         free(impl);
         return -1;
     }

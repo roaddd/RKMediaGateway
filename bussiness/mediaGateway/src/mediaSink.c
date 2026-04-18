@@ -166,6 +166,7 @@ int media_sink_init(MediaSink *sink,
                     const MediaSinkVTable *vtable,
                     void *impl) {
     if (!sink || !config || !vtable || !vtable->connect || !vtable->send_packet) {
+        fprintf(stderr, "[ERROR] media_sink_init failed: invalid arguments\n");
         return -1;
     }
 
@@ -181,6 +182,9 @@ int media_sink_init(MediaSink *sink,
     /* 环形队列存放的是 MediaPacket 引用副本，不复制底层媒体数据。 */
     sink->queue = (MediaPacket *)calloc((size_t)sink->queue_capacity, sizeof(MediaPacket));
     if (!sink->queue) {
+        fprintf(stderr, "[ERROR] media_sink_init failed: queue alloc name=%s capacity=%d\n",
+                config->name ? config->name : "unknown",
+                sink->queue_capacity);
         return -1;
     }
 
@@ -198,17 +202,22 @@ int media_sink_init(MediaSink *sink,
  */
 int media_sink_start(MediaSink *sink) {
     if (!sink) {
+        fprintf(stderr, "[ERROR] media_sink_start failed: sink is NULL\n");
         return -1;
     }
 
     /* 先让具体 sink 做自己的启动准备，再拉起通用发送线程。 */
     if (sink->vtable->start && sink->vtable->start(sink) != 0) {
+        fprintf(stderr, "[ERROR] media_sink_start failed: vtable start name=%s\n",
+                sink->config.name ? sink->config.name : "unknown");
         return -1;
     }
 
     sink->running = 1;
     if (pthread_create(&sink->thread, NULL, media_sink_thread, sink) != 0) {
         sink->running = 0;
+        fprintf(stderr, "[ERROR] media_sink_start failed: pthread_create name=%s\n",
+                sink->config.name ? sink->config.name : "unknown");
         if (sink->vtable->stop) {
             sink->vtable->stop(sink);
         }
@@ -321,4 +330,3 @@ void media_sink_get_stats(MediaSink *sink, MediaSinkStats *stats) {
     *stats = sink->stats;
     pthread_mutex_unlock(&sink->lock);
 }
-

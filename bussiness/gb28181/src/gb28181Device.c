@@ -281,7 +281,10 @@ static int parse_invite_sdp(const char *sdp_body, Gb28181MediaSession *session)
 {
     char media_line[128];
     if (!sdp_body || !session)
+    {
+        fprintf(stderr, "[GB28181][ERROR] parse_invite_sdp invalid args\n");
         return -1;
+    }
     memset(session->remote_ip, 0, sizeof(session->remote_ip));
     memset(session->remote_ssrc, 0, sizeof(session->remote_ssrc));
     memset(session->transport, 0, sizeof(session->transport));
@@ -290,10 +293,18 @@ static int parse_invite_sdp(const char *sdp_body, Gb28181MediaSession *session)
     if (extract_line_after_prefix(sdp_body, "m=video ", media_line, sizeof(media_line)) == 0)
     {
         if (sscanf(media_line, "%d %31s", &session->remote_port, session->transport) < 2)
+        {
+            fprintf(stderr, "[GB28181][ERROR] parse_invite_sdp invalid m=video line: %s\n", media_line);
             return -1;
+        }
     }
     extract_line_after_prefix(sdp_body, "y=", session->remote_ssrc, sizeof(session->remote_ssrc));
-    return (session->remote_port > 0) ? 0 : -1;
+    if (session->remote_port <= 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] parse_invite_sdp remote_port invalid: %d\n", session->remote_port);
+        return -1;
+    }
+    return 0;
 }
 
 /* 生成本端会话 SSRC（字符串与数值同时保存）。 */
@@ -341,11 +352,17 @@ static int use_invite_ssrc_if_valid(Gb28181MediaSession *session)
 static int gb_buffer_init(Gb28181Buffer *buffer, size_t initial_capacity)
 {
     if (!buffer)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_init buffer is NULL\n");
         return -1;
+    }
     memset(buffer, 0, sizeof(*buffer));
     buffer->data = (uint8_t *)malloc(initial_capacity);
     if (!buffer->data)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_init alloc failed size=%zu\n", initial_capacity);
         return -1;
+    }
     buffer->capacity = initial_capacity;
     return 0;
 }
@@ -366,7 +383,10 @@ static int gb_buffer_reserve(Gb28181Buffer *buffer, size_t append_size)
     size_t new_capacity = 0;
     uint8_t *new_data = NULL;
     if (!buffer)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_reserve buffer is NULL\n");
         return -1;
+    }
     need_size = buffer->size + append_size;
     if (need_size <= buffer->capacity)
         return 0;
@@ -375,7 +395,10 @@ static int gb_buffer_reserve(Gb28181Buffer *buffer, size_t append_size)
         new_capacity *= 2;
     new_data = (uint8_t *)realloc(buffer->data, new_capacity);
     if (!new_data)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_reserve realloc failed need=%zu cap=%zu\n", need_size, new_capacity);
         return -1;
+    }
     buffer->data = new_data;
     buffer->capacity = new_capacity;
     return 0;
@@ -385,9 +408,15 @@ static int gb_buffer_reserve(Gb28181Buffer *buffer, size_t append_size)
 static int gb_buffer_append(Gb28181Buffer *buffer, const void *data, size_t len)
 {
     if (!buffer || !data)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_append invalid args len=%zu\n", len);
         return -1;
+    }
     if (gb_buffer_reserve(buffer, len) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb_buffer_append reserve failed len=%zu\n", len);
         return -1;
+    }
     memcpy(buffer->data + buffer->size, data, len);
     buffer->size += len;
     return 0;
@@ -416,7 +445,10 @@ static int parse_annexb_nalus(const uint8_t *annexb_data, size_t annexb_len, Gb2
     size_t pos = 0;
     size_t count = 0;
     if (!annexb_data || !nalus || !nalu_count)
+    {
+        fprintf(stderr, "[GB28181][ERROR] parse_annexb_nalus invalid args len=%zu\n", annexb_len);
         return -1;
+    }
     *nalu_count = 0;
     while (pos + 3 < annexb_len)
     {
@@ -448,7 +480,12 @@ static int parse_annexb_nalus(const uint8_t *annexb_data, size_t annexb_len, Gb2
         pos = next;
     }
     *nalu_count = count;
-    return (count > 0) ? 0 : -1;
+    if (count <= 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] parse_annexb_nalus no valid NALU found len=%zu\n", annexb_len);
+        return -1;
+    }
+    return 0;
 }
 
 /* 写入 PS pack header。 */
@@ -505,7 +542,10 @@ static int ps_write_video_pes(Gb28181Buffer *buffer, const uint8_t *payload, siz
     static const uint8_t annexb_start_code[4] = {0x00, 0x00, 0x00, 0x01};
     size_t pes_packet_length = payload_len + sizeof(annexb_start_code) + 8;
     if (!buffer || !payload || payload_len == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_video_pes invalid args payload_len=%zu\n", payload_len);
         return -1;
+    }
     if (pes_packet_length > 0xFFFF)
         pes_packet_length = 0;
     memset(header, 0, sizeof(header));
@@ -520,14 +560,25 @@ static int ps_write_video_pes(Gb28181Buffer *buffer, const uint8_t *payload, siz
     header[8] = 0x05;
     ps_write_pts_field(header + 9, 0x02, pts_90k);
     if (gb_buffer_append(buffer, header, sizeof(header)) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_video_pes append header failed\n");
         return -1;
+    }
     /*
      * 为提升下游 PS 解复用兼容性，这里输出 H264 字节流格式：
      * 每个 NAL 前补 00 00 00 01 起始码，再写 NAL payload。
      */
     if (gb_buffer_append(buffer, annexb_start_code, sizeof(annexb_start_code)) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_video_pes append startcode failed\n");
         return -1;
-    return gb_buffer_append(buffer, payload, payload_len);
+    }
+    if (gb_buffer_append(buffer, payload, payload_len) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_video_pes append payload failed len=%zu\n", payload_len);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -541,7 +592,10 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
     size_t i = 0;
     uint64_t pts_90k = pts_us * 90ULL / 1000ULL;
     if (!annexb_data || annexb_len == 0 || !ps_buffer)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_frame invalid args len=%zu\n", annexb_len);
         return -1;
+    }
     gb_buffer_reset(ps_buffer);
     /*
      * 把一帧 Annex-B 拆成 NALU 后再封装成 PS。
@@ -549,16 +603,28 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
      * 每个 NALU 独立作为一个 PES，逻辑简单，也能规避大帧导致的 PES 长度上限问题。
      */
     if (parse_annexb_nalus(annexb_data, annexb_len, nalus, 64, &nalu_count) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_frame parse_annexb_nalus failed len=%zu\n", annexb_len);
         return -1;
+    }
     log_h264_nalu_summary(nalus, nalu_count, is_key_frame, pts_us, pts_90k);
     if (ps_write_pack_header(ps_buffer, pts_90k) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_frame write pack header failed\n");
         return -1;
+    }
     if (is_key_frame)
     {
         if (ps_write_system_header(ps_buffer) != 0)
+        {
+            fprintf(stderr, "[GB28181][ERROR] build_ps_frame write system header failed\n");
             return -1;
+        }
         if (ps_write_program_stream_map(ps_buffer) != 0)
+        {
+            fprintf(stderr, "[GB28181][ERROR] build_ps_frame write program stream map failed\n");
             return -1;
+        }
     }
     for (i = 0; i < nalu_count; ++i)
     {
@@ -567,9 +633,19 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
         if (nalus[i].type == 9)
             continue;
         if (ps_write_video_pes(ps_buffer, payload, payload_len, pts_90k) != 0)
+        {
+            fprintf(stderr, "[GB28181][ERROR] build_ps_frame write video PES failed nalu_type=%u len=%zu\n",
+                    (unsigned int)nalus[i].type,
+                    payload_len);
             return -1;
+        }
     }
-    return (ps_buffer->size > 0) ? 0 : -1;
+    if (ps_buffer->size <= 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_frame result is empty\n");
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -583,12 +659,19 @@ static int send_ps_over_rtp(Gb28181MediaSession *session, const uint8_t *ps_data
     struct sockaddr_in remote_addr;
     size_t offset = 0;
     if (!session || session->rtp_socket_fd < 0 || !ps_data || ps_len == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_ps_over_rtp invalid args fd=%d ps_len=%zu\n",
+                session ? session->rtp_socket_fd : -1, ps_len);
         return -1;
+    }
     memset(&remote_addr, 0, sizeof(remote_addr));
     remote_addr.sin_family = AF_INET;
     remote_addr.sin_port = htons((uint16_t)session->remote_port);
     if (inet_aton(session->remote_ip, &remote_addr.sin_addr) == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_ps_over_rtp invalid remote ip: %s\n", session->remote_ip);
         return -1;
+    }
     /*
      * GB28181 这里走最常见的 PS over RTP。
      * 一帧 PS 会被拆成多个 RTP 包，最后一个包带 marker=1。
@@ -642,12 +725,18 @@ static int setup_rtp_socket(Gb28181MediaSession *session, const Gb28181DeviceCon
     int socket_fd = -1;
     int reuse_addr = 1;
     if (!session || !config)
+    {
+        fprintf(stderr, "[GB28181][ERROR] setup_rtp_socket invalid args\n");
         return -1;
+    }
     if (session->rtp_socket_fd >= 0)
         return 0;
     socket_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (socket_fd < 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] setup_rtp_socket socket failed errno=%d(%s)\n", errno, strerror(errno));
         return -1;
+    }
     setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sin_family = AF_INET;
@@ -656,11 +745,17 @@ static int setup_rtp_socket(Gb28181MediaSession *session, const Gb28181DeviceCon
         local_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     else if (inet_aton(config->bind_ip, &local_addr.sin_addr) == 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] setup_rtp_socket invalid bind ip: %s\n", config->bind_ip);
         close(socket_fd);
         return -1;
     }
     if (bind(socket_fd, (const struct sockaddr *)&local_addr, sizeof(local_addr)) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] setup_rtp_socket bind failed %s:%d errno=%d(%s)\n",
+                config->bind_ip,
+                config->media_port,
+                errno,
+                strerror(errno));
         close(socket_fd);
         return -1;
     }
@@ -692,12 +787,16 @@ static int send_message_request(Gb28181DeviceCtx *ctx, const char *content_type,
     char server_uri[128];
     osip_message_t *message = NULL;
     if (!ctx || !ctx->sip_context || !content_type || !body)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_message_request invalid args\n");
         return -1;
+    }
     snprintf(from_uri, sizeof(from_uri), "sip:%s@%s", ctx->config.device_id, ctx->config.device_domain);
     build_server_target_uri(ctx, server_uri, sizeof(server_uri));
     eXosip_lock(ctx->sip_context);
     if (eXosip_message_build_request(ctx->sip_context, &message, "MESSAGE", server_uri, from_uri, NULL) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] send_message_request build MESSAGE failed target=%s\n", server_uri);
         eXosip_unlock(ctx->sip_context);
         return -1;
     }
@@ -705,6 +804,7 @@ static int send_message_request(Gb28181DeviceCtx *ctx, const char *content_type,
     osip_message_set_body(message, body, strlen(body));
     if (eXosip_message_send_request(ctx->sip_context, message) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] send_message_request send MESSAGE failed target=%s\n", server_uri);
         eXosip_unlock(ctx->sip_context);
         return -1;
     }
@@ -721,9 +821,15 @@ static int send_keepalive(Gb28181DeviceCtx *ctx)
                            "<Notify>\r\n  <CmdType>Keepalive</CmdType>\r\n  <SN>%u</SN>\r\n  <DeviceID>%s</DeviceID>\r\n  <Status>OK</Status>\r\n</Notify>\r\n",
                            ++ctx->xml_sn, ctx->config.device_id);
     if (written < 0 || (size_t)written >= sizeof(inner_xml))
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_keepalive build xml failed\n");
         return -1;
+    }
     if (build_xml_body(xml_body, sizeof(xml_body), inner_xml) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_keepalive build_xml_body failed\n");
         return -1;
+    }
     return send_message_request(ctx, "Application/MANSCDP+xml", xml_body);
 }
 
@@ -736,9 +842,15 @@ static int send_catalog_response(Gb28181DeviceCtx *ctx, const char *sn)
                            "<Response>\r\n  <CmdType>Catalog</CmdType>\r\n  <SN>%s</SN>\r\n  <DeviceID>%s</DeviceID>\r\n  <SumNum>1</SumNum>\r\n  <DeviceList Num=\"1\">\r\n    <Item>\r\n      <DeviceID>%s</DeviceID>\r\n      <Name>%s</Name>\r\n      <Manufacturer>%s</Manufacturer>\r\n      <Model>%s</Model>\r\n      <Owner>RKMediaGateway</Owner>\r\n      <CivilCode>%s</CivilCode>\r\n      <Address>%s</Address>\r\n      <Parental>0</Parental>\r\n      <SafetyWay>0</SafetyWay>\r\n      <RegisterWay>1</RegisterWay>\r\n      <Secrecy>0</Secrecy>\r\n      <Status>ON</Status>\r\n    </Item>\r\n  </DeviceList>\r\n</Response>\r\n",
                            sn, ctx->config.device_id, ctx->config.channel_id, ctx->config.device_name, ctx->config.manufacturer, ctx->config.model, ctx->config.device_domain, ctx->config.server_ip);
     if (written < 0 || (size_t)written >= sizeof(inner_xml))
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_catalog_response build xml failed\n");
         return -1;
+    }
     if (build_xml_body(xml_body, sizeof(xml_body), inner_xml) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_catalog_response build_xml_body failed\n");
         return -1;
+    }
     return send_message_request(ctx, "Application/MANSCDP+xml", xml_body);
 }
 
@@ -751,9 +863,15 @@ static int send_device_info_response(Gb28181DeviceCtx *ctx, const char *sn)
                            "<Response>\r\n  <CmdType>DeviceInfo</CmdType>\r\n  <SN>%s</SN>\r\n  <DeviceID>%s</DeviceID>\r\n  <DeviceName>%s</DeviceName>\r\n  <Manufacturer>%s</Manufacturer>\r\n  <Model>%s</Model>\r\n  <Firmware>%s</Firmware>\r\n  <Channel>1</Channel>\r\n</Response>\r\n",
                            sn, ctx->config.device_id, ctx->config.device_name, ctx->config.manufacturer, ctx->config.model, ctx->config.firmware);
     if (written < 0 || (size_t)written >= sizeof(inner_xml))
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_device_info_response build xml failed\n");
         return -1;
+    }
     if (build_xml_body(xml_body, sizeof(xml_body), inner_xml) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_device_info_response build_xml_body failed\n");
         return -1;
+    }
     return send_message_request(ctx, "Application/MANSCDP+xml", xml_body);
 }
 
@@ -766,7 +884,10 @@ static int send_register_request(Gb28181DeviceCtx *ctx, int expires)
     osip_message_t *register_message = NULL;
     int rid = -1;
     if (!ctx || !ctx->sip_context)
+    {
+        fprintf(stderr, "[GB28181][ERROR] send_register_request invalid ctx\n");
         return -1;
+    }
     build_register_identity(ctx, from_uri, sizeof(from_uri), proxy_uri, sizeof(proxy_uri), contact_uri, sizeof(contact_uri));
     eXosip_lock(ctx->sip_context);
     if (ctx->rid <= 0)
@@ -774,6 +895,7 @@ static int send_register_request(Gb28181DeviceCtx *ctx, int expires)
         rid = eXosip_register_build_initial_register(ctx->sip_context, from_uri, proxy_uri, contact_uri, expires, &register_message);
         if (rid <= 0 || !register_message)
         {
+            fprintf(stderr, "[GB28181][ERROR] send_register_request build initial failed rid=%d\n", rid);
             eXosip_unlock(ctx->sip_context);
             return -1;
         }
@@ -783,12 +905,14 @@ static int send_register_request(Gb28181DeviceCtx *ctx, int expires)
     {
         if (eXosip_register_build_register(ctx->sip_context, ctx->rid, expires, &register_message) != 0 || !register_message)
         {
+            fprintf(stderr, "[GB28181][ERROR] send_register_request build refresh failed rid=%d\n", ctx->rid);
             eXosip_unlock(ctx->sip_context);
             return -1;
         }
     }
     if (eXosip_register_send_register(ctx->sip_context, ctx->rid, register_message) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] send_register_request send failed rid=%d\n", ctx->rid);
         eXosip_unlock(ctx->sip_context);
         return -1;
     }
@@ -815,10 +939,14 @@ static void handle_auth_failure(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
 static int answer_simple_request(Gb28181DeviceCtx *ctx, eXosip_event_t *event, int status_code)
 {
     if (!ctx || !event)
+    {
+        fprintf(stderr, "[GB28181][ERROR] answer_simple_request invalid args\n");
         return -1;
+    }
     eXosip_lock(ctx->sip_context);
     if (eXosip_message_send_answer(ctx->sip_context, event->tid, status_code, NULL) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] answer_simple_request failed tid=%d status=%d\n", event->tid, status_code);
         eXosip_unlock(ctx->sip_context);
         return -1;
     }
@@ -830,10 +958,14 @@ static int answer_simple_request(Gb28181DeviceCtx *ctx, eXosip_event_t *event, i
 static int answer_call_request(Gb28181DeviceCtx *ctx, eXosip_event_t *event, int status_code)
 {
     if (!ctx || !event)
+    {
+        fprintf(stderr, "[GB28181][ERROR] answer_call_request invalid args\n");
         return -1;
+    }
     eXosip_lock(ctx->sip_context);
     if (eXosip_call_send_answer(ctx->sip_context, event->tid, status_code, NULL) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] answer_call_request failed tid=%d status=%d\n", event->tid, status_code);
         eXosip_unlock(ctx->sip_context);
         return -1;
     }
@@ -848,7 +980,10 @@ static int handle_query_message(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     char cmd_type[64];
     char sn[64];
     if (!ctx || !event || !event->request)
+    {
+        fprintf(stderr, "[GB28181][ERROR] handle_query_message invalid args\n");
         return -1;
+    }
     memset(cmd_type, 0, sizeof(cmd_type));
     memset(sn, 0, sizeof(sn));
     if (osip_message_get_body(event->request, 0, &body) != 0 || !body || !body->body)
@@ -859,7 +994,10 @@ static int handle_query_message(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     if (sn[0] == '\0')
         snprintf(sn, sizeof(sn), "%u", ++ctx->xml_sn);
     if (answer_simple_request(ctx, event, 200) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] handle_query_message answer 200 failed\n");
         return -1;
+    }
     if (strcmp(cmd_type, "Catalog") == 0)
         return send_catalog_response(ctx, sn);
     if (strcmp(cmd_type, "DeviceInfo") == 0)
@@ -1002,7 +1140,10 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     Gb28181MediaSession new_session;
     int ret = -1;
     if (!ctx || !event || !event->request)
+    {
+        fprintf(stderr, "[GB28181][ERROR] handle_invite invalid args\n");
         return -1;
+    }
     reset_media_session(&new_session);
     if (osip_message_get_body(event->request, 0, &body) != 0 || !body || !body->body)
         return answer_call_request(ctx, event, 400);
@@ -1045,6 +1186,7 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     eXosip_call_send_answer(ctx->sip_context, event->tid, 180, NULL);
     if (eXosip_call_build_answer(ctx->sip_context, event->tid, 200, &answer) != 0 || !answer)
     {
+        fprintf(stderr, "[GB28181][ERROR] handle_invite build 200 answer failed tid=%d\n", event->tid);
         eXosip_unlock(ctx->sip_context);
         close_rtp_socket(&new_session);
         return -1;
@@ -1055,6 +1197,7 @@ static int handle_invite(Gb28181DeviceCtx *ctx, eXosip_event_t *event)
     eXosip_unlock(ctx->sip_context);
     if (ret != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] handle_invite send 200 answer failed tid=%d ret=%d\n", event->tid, ret);
         close_rtp_socket(&new_session);
         return -1;
     }
@@ -1157,10 +1300,16 @@ static int init_media_modules(Gb28181DeviceCtx *ctx)
 {
     MppEncoderOptions options;
     if (!ctx)
+    {
+        fprintf(stderr, "[GB28181][ERROR] init_media_modules ctx is NULL\n");
         return -1;
+    }
     /* SIP 注册成功前就把采集+编码链路准备好，这样 INVITE 建立后可以尽快开始送流。 */
     if (v4l2_capture_init(ctx->capture) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] init_media_modules v4l2_capture_init failed\n");
         return -1;
+    }
     ctx->capture_ready = 1;
     memset(&options, 0, sizeof(options));
     options.rc_mode = MPP_ENC_RC_MODE_CBR;
@@ -1168,7 +1317,11 @@ static int init_media_modules(Gb28181DeviceCtx *ctx)
     options.h264_level = ctx->config.h264_level;
     options.h264_cabac_en = ctx->config.h264_cabac_en;
     if (mpp_encoder_init(ctx->encoder, CAPTURE_WIDTH, CAPTURE_HEIGHT, ctx->config.fps, ctx->config.bitrate, ctx->config.gop, &options) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] init_media_modules mpp_encoder_init failed fps=%d bitrate=%d gop=%d\n",
+                ctx->config.fps, ctx->config.bitrate, ctx->config.gop);
         return -1;
+    }
     ctx->encoder_ready = 1;
     return 0;
 }
@@ -1182,7 +1335,10 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     int use_rport = 1;
     int udp_keepalive = 25;
     if (!ctx)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_init ctx is NULL\n");
         return -1;
+    }
     memset(ctx, 0, sizeof(*ctx));
     fill_default_config(&ctx->config, config);
     /*
@@ -1195,6 +1351,7 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
         ctx->encoder = (MppEncoderCtx *)calloc(1, sizeof(MppEncoderCtx));
         if (!ctx->capture || !ctx->encoder)
         {
+            fprintf(stderr, "[GB28181][ERROR] gb28181_device_init alloc capture/encoder failed\n");
             gb28181_device_deinit(ctx);
             return -1;
         }
@@ -1211,6 +1368,7 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     {
         if (init_media_modules(ctx) != 0)
         {
+            fprintf(stderr, "[GB28181][ERROR] gb28181_device_init init_media_modules failed\n");
             gb28181_device_deinit(ctx);
             return -1;
         }
@@ -1218,11 +1376,13 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     ctx->sip_context = eXosip_malloc();
     if (!ctx->sip_context)
     {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_init eXosip_malloc failed\n");
         gb28181_device_deinit(ctx);
         return -1;
     }
     if (eXosip_init(ctx->sip_context) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_init eXosip_init failed\n");
         gb28181_device_deinit(ctx);
         return -1;
     }
@@ -1231,6 +1391,8 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     eXosip_set_option(ctx->sip_context, EXOSIP_OPT_SET_HEADER_USER_AGENT, ctx->config.user_agent);
     if (eXosip_listen_addr(ctx->sip_context, IPPROTO_UDP, ctx->config.bind_ip, ctx->config.local_sip_port, AF_INET, 0) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_init eXosip_listen_addr failed bind=%s:%d\n",
+                ctx->config.bind_ip, ctx->config.local_sip_port);
         gb28181_device_deinit(ctx);
         return -1;
     }
@@ -1244,6 +1406,7 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     {
         if (pthread_create(&ctx->media_thread, NULL, media_thread_main, ctx) != 0)
         {
+            fprintf(stderr, "[GB28181][ERROR] gb28181_device_init pthread_create media_thread failed\n");
             gb28181_device_deinit(ctx);
             return -1;
         }
@@ -1251,6 +1414,8 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
     }
     if (send_register_request(ctx, ctx->config.register_expires) != 0)
     {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_init initial register failed expires=%d\n",
+                ctx->config.register_expires);
         gb28181_device_deinit(ctx);
         return -1;
     }
@@ -1266,7 +1431,12 @@ int gb28181_device_init(Gb28181DeviceCtx *ctx, const Gb28181DeviceConfig *config
 int gb28181_device_run(Gb28181DeviceCtx *ctx)
 {
     if (!ctx || !ctx->sip_context || !ctx->running)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_run invalid state sip=%p running=%d\n",
+                (void *)(ctx ? ctx->sip_context : NULL),
+                ctx ? ctx->running : 0);
         return -1;
+    }
     while (ctx->running)
     {
         long long now_ms = get_now_ms();
@@ -1316,7 +1486,10 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
     uint32_t rtp_timestamp = 0;
 
     if (!ctx || !h264_data || h264_len == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_h264 invalid args len=%zu\n", h264_len);
         return -1;
+    }
 
     /*
      * 发送前先快照会话，避免后续 PS 封装与 RTP 发送阶段长期占用锁，
@@ -1343,7 +1516,10 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
     pthread_mutex_unlock(&ctx->session_lock);
 
     if (gb_buffer_init(&ps_buffer, GB28181_PS_BUFFER_INIT_SIZE) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_h264 ps buffer init failed\n");
         return -1;
+    }
     if (build_ps_frame(h264_data, h264_len, is_key_frame, pts_us, &ps_buffer) != 0)
     {
         gb_buffer_deinit(&ps_buffer);
@@ -1354,6 +1530,9 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
     if (send_ps_over_rtp(&session_snapshot, ps_buffer.data, ps_buffer.size, rtp_timestamp) != 0)
     {
         gb_buffer_deinit(&ps_buffer);
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_h264 send_ps_over_rtp failed cid=%d size=%zu\n",
+                session_snapshot.cid,
+                ps_buffer.size);
         /* 发送失败时主动关闭当前会话，促使上层重新拉起点播。 */
         pthread_mutex_lock(&ctx->session_lock);
         if (ctx->media_session.cid == session_snapshot.cid)
