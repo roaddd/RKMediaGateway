@@ -54,6 +54,7 @@ static void fill_stream_config(MediaGatewayStreamConfig *stream,
     stream->rtsp.user = cfg_str("RTSP_USER", "admin");
     stream->rtsp.password = cfg_str("RTSP_PASSWORD", "123456");
     stream->rtsp.queue_capacity = cfg_int("RTSP_QUEUE_CAPACITY", 32);
+    stream->rtsp.immediate_sps_pps_on_new_client = cfg_int("RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT", 0);
 
     stream->rtmp.name = cfg_str("RTMP_NAME", is_main ? "rtmp-main" : "rtmp-sub");
     stream->rtmp.publish_url = cfg_str("RTMP_PUBLISH_URL", "");
@@ -114,7 +115,7 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_co
     printf("[MAIN_CFG] parsed stream_count=%d\n", config->stream_count);
     for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         const MediaGatewayStreamConfig *s = &config->streams[i];
-        printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d)\n",
+        printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d\n",
                i,
                s->name ? s->name : "unknown",
                s->enabled,
@@ -125,7 +126,8 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_co
                s->rc_mode,
                s->enable_rtsp,
                s->enable_rtmp,
-               s->enable_gb28181);
+               s->enable_gb28181,
+               s->rtsp.immediate_sps_pps_on_new_client);
     }
 }
 
@@ -190,6 +192,8 @@ int main(int argc, char **argv)
         config.streams[0].enable_rtsp = cfg_int("GATEWAY_ENABLE_RTSP", 1);
         config.streams[0].enable_rtmp = cfg_int("GATEWAY_ENABLE_RTMP", 0);
         config.streams[0].enable_gb28181 = cfg_int("GATEWAY_ENABLE_GB28181", 1);
+        config.streams[0].rtsp.immediate_sps_pps_on_new_client =
+            cfg_int("GATEWAY_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT", 0);
     }
 
     log_main_config_snapshot(&config, file_config);

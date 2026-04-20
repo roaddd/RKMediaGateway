@@ -37,6 +37,7 @@ int sessionAddAudio(void *context, enum AUDIO_e type, int profile, int sample_ra
 
 int sessionSendVideoData(void *context, uint8_t *data, int data_len);
 int sessionSendAudioData(void *context, uint8_t *data, int data_len);
+int rtspSessionGetClientNum(void *context);
 
 #ifdef __cplusplus
 }

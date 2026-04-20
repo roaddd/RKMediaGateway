@@ -1,4 +1,4 @@
-/*** 
+﻿/*** 
  * @Author: huangkelong
  * @Date: 2026-03-12 23:18:12
  * @LastEditTime: 2026-03-15 23:13:48
@@ -31,7 +31,7 @@ typedef struct {
     uint64_t reconnect_count;   /* 成功重连的次数。 */
     uint64_t send_failures;     /* 发送失败次数。 */
     int queue_depth;            /* 当前队列深度。 */
-    int connected;              /* 当前是否已连接到底层输出端。 */
+    int connected;                       /* 当前 sink 的发送通道是否已就绪（如 session 已创建，可发送数据）。 */
     int waiting_for_keyframe;   /* 当前是否处于等待关键帧恢复发送的状态。 */
 } MediaSinkStats;
 
@@ -57,7 +57,7 @@ struct MediaSink {
     int queue_size;                      /* 当前队列中有效元素数量。 */
     int running;                         /* 发送线程是否已经启动。 */
     int stop_requested;                  /* 是否已请求发送线程退出。 */
-    int connected;                       /* 当前 sink 是否已经连接到底层输出目标。 */
+    int connected;                       /* 当前 sink 的发送通道是否已就绪（如 session 已创建，可发送数据）。 */
     int waiting_for_keyframe;            /* 重连后是否仍在等待关键帧恢复发送。 */
 };
 

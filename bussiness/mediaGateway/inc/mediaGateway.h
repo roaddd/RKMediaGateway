@@ -106,6 +106,7 @@ typedef struct {
     int sink_stream_index[MEDIA_GATEWAY_MAX_SINKS]; /* 每个 sink 绑定的 stream 下标。stream:main、sub等；sink:gb28181Sink、rtmpSink、rtspSink等 */
     int sink_count;                            /* 当前启用的 sink 数量。 */
     MediaGatewayConfig config;                 /* 归一化后的网关配置副本。 */
+    int rtsp_sink_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 rtsp sink 索引。 */
     int gb28181_sink_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 gb28181 sink 索引。 */
     int capture_ready;                         /* 采集模块是否已初始化成功。 */
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
