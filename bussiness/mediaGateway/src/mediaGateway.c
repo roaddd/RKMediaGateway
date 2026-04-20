@@ -243,6 +243,7 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
     dst->rtsp.user = safe_str(dst->rtsp.user, "admin");
     dst->rtsp.password = safe_str(dst->rtsp.password, "123456");
     if (dst->rtsp.queue_capacity <= 0) dst->rtsp.queue_capacity = 32;
+    if (dst->rtsp.immediate_sps_pps_on_new_client != 0) dst->rtsp.immediate_sps_pps_on_new_client = 1;
 
     dst->rtmp.name = safe_str(dst->rtmp.name, (stream_idx == 0) ? "rtmp-main" : "rtmp-sub");
     dst->rtmp.video_codec_name = safe_str(dst->rtmp.video_codec_name, "H264");
@@ -424,12 +425,31 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
 static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx) {
     /* Bridge external sink key-frame request to encoder IDR request. */
     int sink_idx;
+    int need_idr = 0;
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) return;
+
+    /* GB28181: 点播建立后可请求上游尽快补关键帧。 */
     sink_idx = ctx->gb28181_sink_index[stream_idx];
-    if (sink_idx < 0 || sink_idx >= ctx->sink_count) return;
-    if (gb28181_sink_consume_external_idr_request(&ctx->sinks[sink_idx])) {
+    if (sink_idx >= 0 && sink_idx < ctx->sink_count) {
+        if (gb28181_sink_consume_external_idr_request(&ctx->sinks[sink_idx])) {
+            need_idr = 1;
+        }
+    }
+
+    /*
+     * RTSP: 检测到“新客户端连入”后，也触发一次 IDR。
+     * 这样新观看端不必长时间等待下一个自然 GOP 关键帧。
+     */
+    sink_idx = ctx->rtsp_sink_index[stream_idx];
+    if (sink_idx >= 0 && sink_idx < ctx->sink_count) {
+        if (rtsp_sink_consume_external_idr_request(&ctx->sinks[sink_idx])) {
+            need_idr = 1;
+        }
+    }
+
+    if (need_idr) {
         if (mpp_encoder_request_idr(&ctx->encoders[stream_idx]) != 0) {
-            fprintf(stderr, "[GB28181] stream=%d failed to request IDR\n", stream_idx);
+            fprintf(stderr, "[WARN] stream=%d failed to request IDR from external sink event\n", stream_idx);
         }
     }
 }
@@ -493,6 +513,7 @@ static int setup_sinks_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
             return -1;
         }
         ctx->sink_stream_index[ctx->sink_count] = stream_idx;
+        ctx->rtsp_sink_index[stream_idx] = ctx->sink_count;
         ctx->sink_count++;
     }
     if (s->enable_rtmp) {
@@ -651,12 +672,13 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
                s->enable_rtmp,
                s->enable_gb28181);
         if (s->enable_rtsp) {
-            printf("[CFG] stream=%d rtsp url=rtsp://%s:%d/%s auth=%d\n",
+            printf("[CFG] stream=%d rtsp url=rtsp://%s:%d/%s auth=%d immediate_sps_pps=%d\n",
                    i,
                    s->rtsp.server_ip ? s->rtsp.server_ip : "0.0.0.0",
                    s->rtsp.server_port,
                    s->rtsp.session_name ? s->rtsp.session_name : "live",
-                   s->rtsp.auth_enable);
+                   s->rtsp.auth_enable,
+                   s->rtsp.immediate_sps_pps_on_new_client);
         }
         if (s->enable_rtmp) {
             printf("[CFG] stream=%d rtmp publish_url=%s\n",
@@ -688,6 +710,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     fill_default_config(&ctx->config, config);
     log_effective_config(&ctx->config);
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+        ctx->rtsp_sink_index[i] = -1;
         ctx->gb28181_sink_index[i] = -1;
     }
 

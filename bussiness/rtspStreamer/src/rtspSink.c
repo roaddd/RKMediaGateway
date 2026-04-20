@@ -1,9 +1,12 @@
-#include "rtspSink.h"
+﻿#include "rtspSink.h"
 
+#include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
+#include <time.h>
 
 #include "rtsp_server_api.h"
 
@@ -30,11 +33,67 @@ typedef struct {
     RtspSinkConfig config;         /* 当前 sink 的配置副本。 */
     void *session;                 /* 当前 sink 绑定的 RTSP session。 */
     int shared_server_acquired;    /* 是否已持有共享服务引用计数。 */
+    int last_client_count;         /* 上一次观察到的 RTSP 总客户端数。 */
+    atomic_int pending_external_idr;                        /* 新客户端接入后的一次性 IDR 请求标记。 */
+    atomic_int awaiting_first_keyframe_after_external_idr;  /* 已请求外部IDR，等待首个关键帧发出。 */
+    atomic_ullong new_client_detect_ts_us;                 /* 检测到新客户端接入时刻。 */
+    atomic_ullong external_idr_request_ts_us;              /* 外部IDR请求被消费并准备向编码器请求时刻。 */
+    int pending_send_cached_sps_pps;                        /* 新客户端接入后，是否待发送缓存的 SPS/PPS。 */
+    uint8_t *cached_sps;                                    /* 最近缓存的 SPS NALU（不含起始码）。 */
+    size_t cached_sps_len;
+    uint8_t *cached_pps;                                    /* 最近缓存的 PPS NALU（不含起始码）。 */
+    size_t cached_pps_len;
 } RtspSinkImpl;
 
 static RtspSharedServer g_rtsp_shared_server;
 static pthread_mutex_t g_rtsp_shared_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_rtsp_shared_ref_count = 0;
+
+/* 单调时钟微秒时间戳，用于时延统计，避免系统时间跳变带来的误差。 */
+static uint64_t now_us(void) {
+#if defined(__linux__) || defined(__linux)
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+#else
+    return 0;
+#endif
+}
+
+/* 查询当前 sink 对应 session 的客户端数，不可用时返回 -1。 */
+static int query_rtsp_session_client_count(void *session) {
+    return rtspSessionGetClientNum(session);
+}
+
+/*
+ * 轮询“当前 session 的客户端总数是否上升”。
+ * 只要该 session 新增观看端，就置位外部 IDR 请求。
+ * 这样可避免 live_main 与 live_sub 之间互相误触发关键帧。
+ */
+static void rtsp_sink_probe_new_client(RtspSinkImpl *impl) {
+    int cur_count;
+    uint64_t detect_ts_us;
+    if (!impl || !impl->session) {
+        return;
+    }
+    cur_count = query_rtsp_session_client_count(impl->session);
+    if (cur_count < 0) {
+        return;
+    }
+    if (cur_count > impl->last_client_count && cur_count > 0) {
+        detect_ts_us = now_us();
+        atomic_store(&impl->new_client_detect_ts_us, detect_ts_us);
+        atomic_store(&impl->pending_external_idr, 1);
+        if (impl->config.immediate_sps_pps_on_new_client) {
+            impl->pending_send_cached_sps_pps = 1;
+        }
+        printf("[E2E] event=new_client_detected session=%s clients=%d ts_us=%" PRIu64 "\n",
+               impl->config.session_name ? impl->config.session_name : "unknown",
+               cur_count,
+               detect_ts_us);
+    }
+    impl->last_client_count = cur_count;
+}
 
 /* 安全复制字符串到固定长度缓冲区，保证以 '\0' 结束。 */
 static void copy_string_field(char *dst, size_t dst_size, const char *src) {
@@ -83,6 +142,87 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
         }
     }
     return -1;
+}
+
+/* 缓存最新 SPS/PPS，供“新客户端立刻补参数集”模式使用。 */
+static void cache_h264_parameter_set(RtspSinkImpl *impl, int nalu_type, const uint8_t *nalu, size_t nalu_len) {
+    uint8_t *new_buf;
+    if (!impl || !nalu || nalu_len == 0) {
+        return;
+    }
+    if (nalu_type != 7 && nalu_type != 8) {
+        return;
+    }
+    new_buf = (uint8_t *)malloc(nalu_len);
+    if (!new_buf) {
+        return;
+    }
+    memcpy(new_buf, nalu, nalu_len);
+    if (nalu_type == 7) {
+        free(impl->cached_sps);
+        impl->cached_sps = new_buf;
+        impl->cached_sps_len = nalu_len;
+    } else {
+        free(impl->cached_pps);
+        impl->cached_pps = new_buf;
+        impl->cached_pps_len = nalu_len;
+    }
+}
+
+/* 解析 Annex-B 并更新 SPS/PPS 缓存。 */
+static void update_sps_pps_cache(RtspSinkImpl *impl, const uint8_t *data, size_t len) {
+    size_t nalu_start = 0;
+    int code_len = 0;
+    if (!impl || !data || len == 0) {
+        return;
+    }
+    if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
+        return;
+    }
+    while (nalu_start < len) {
+        size_t payload_start = nalu_start + (size_t)code_len;
+        size_t next_start = len;
+        int next_code_len = 0;
+        int nalu_type;
+        if (payload_start >= len) {
+            break;
+        }
+        find_start_code(data, len, payload_start, &next_start, &next_code_len);
+        if (next_start <= payload_start) {
+            break;
+        }
+        nalu_type = data[payload_start] & 0x1F;
+        cache_h264_parameter_set(impl, nalu_type, data + payload_start, next_start - payload_start);
+        if (next_start >= len) {
+            break;
+        }
+        nalu_start = next_start;
+        code_len = next_code_len;
+    }
+}
+
+/* 在普通码流发送前补发缓存的 SPS/PPS，帮助新客户端尽快完成解码初始化。 */
+static void send_cached_sps_pps_if_needed(RtspSinkImpl *impl) {
+    if (!impl || !impl->session) {
+        return;
+    }
+    if (!impl->config.immediate_sps_pps_on_new_client || !impl->pending_send_cached_sps_pps) {
+        return;
+    }
+    if (!impl->cached_sps || !impl->cached_pps || impl->cached_sps_len == 0 || impl->cached_pps_len == 0) {
+        return;
+    }
+    if (sessionSendVideoData(impl->session, (unsigned char *)impl->cached_sps, (int)impl->cached_sps_len) < 0) {
+        return;
+    }
+    if (sessionSendVideoData(impl->session, (unsigned char *)impl->cached_pps, (int)impl->cached_pps_len) < 0) {
+        return;
+    }
+    impl->pending_send_cached_sps_pps = 0;
+    printf("[E2E] event=cached_sps_pps_sent session=%s sps=%zu pps=%zu\n",
+           impl->config.session_name ? impl->config.session_name : "unknown",
+           impl->cached_sps_len,
+           impl->cached_pps_len);
 }
 
 /* 将 Annex-B 数据按 NALU 切分后发送到 RTSP session。 */
@@ -263,6 +403,15 @@ static int rtsp_sink_start(MediaSink *sink) {
         impl->shared_server_acquired = 0;
         return -1;
     }
+    impl->last_client_count = query_rtsp_session_client_count(impl->session);
+    if (impl->last_client_count < 0) {
+        impl->last_client_count = 0;
+    }
+    atomic_store(&impl->pending_external_idr, 0);
+    atomic_store(&impl->awaiting_first_keyframe_after_external_idr, 0);
+    atomic_store(&impl->new_client_detect_ts_us, 0);
+    atomic_store(&impl->external_idr_request_ts_us, 0);
+    impl->pending_send_cached_sps_pps = 0;
 
     printf("[INFO] RTSP sink ready: rtsp://%s:%d/%s\n",
            impl->config.server_ip,
@@ -287,6 +436,26 @@ static int rtsp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
                 (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
+    /* 在发送路径轻量轮询新客户端接入事件，避免额外线程/锁开销。 */
+    rtsp_sink_probe_new_client(impl);
+    /* 更新参数集缓存，并在开启开关时对新客户端补发 SPS/PPS。 */
+    update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
+    send_cached_sps_pps_if_needed(impl);
+    if (packet->is_key_frame && atomic_exchange(&impl->awaiting_first_keyframe_after_external_idr, 0)) {
+        uint64_t now = now_us();
+        uint64_t detect_ts = atomic_load(&impl->new_client_detect_ts_us);
+        uint64_t idr_req_ts = atomic_load(&impl->external_idr_request_ts_us);
+        uint64_t detect_to_idr_req = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
+        uint64_t idr_req_to_send = (idr_req_ts > 0 && now >= idr_req_ts) ? (now - idr_req_ts) : 0;
+        uint64_t detect_to_send = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
+        printf("[E2E] event=first_keyframe_sent_after_new_client session=%s frame_id=%" PRIu64
+               " detect_to_idr_req_us=%" PRIu64 " idr_req_to_send_us=%" PRIu64 " detect_to_send_us=%" PRIu64 "\n",
+               impl->config.session_name ? impl->config.session_name : "unknown",
+               packet->frame_id,
+               detect_to_idr_req,
+               idr_req_to_send,
+               detect_to_send);
+    }
     return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
 }
 
@@ -309,6 +478,17 @@ static void rtsp_sink_stop(MediaSink *sink) {
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
     }
+    if (impl->cached_sps) {
+        free(impl->cached_sps);
+        impl->cached_sps = NULL;
+        impl->cached_sps_len = 0;
+    }
+    if (impl->cached_pps) {
+        free(impl->cached_pps);
+        impl->cached_pps = NULL;
+        impl->cached_pps_len = 0;
+    }
+    impl->pending_send_cached_sps_pps = 0;
 }
 
 /* 构建并初始化一个 RTSP sink。 */
@@ -355,6 +535,8 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     if (!impl->config.password) {
         impl->config.password = DEFAULT_RTSP_PASSWORD;
     }
+    impl->config.immediate_sps_pps_on_new_client =
+        impl->config.immediate_sps_pps_on_new_client ? 1 : 0;
 
     memset(&sink_config, 0, sizeof(sink_config));
     sink_config.name = impl->config.name;
@@ -370,4 +552,30 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
         return -1;
     }
     return 0;
+}
+
+int rtsp_sink_consume_external_idr_request(MediaSink *sink) {
+    RtspSinkImpl *impl;
+    uint64_t now;
+    uint64_t detect_ts;
+    if (!sink) {
+        return 0;
+    }
+    impl = (RtspSinkImpl *)sink->impl;
+    if (!impl || !impl->session) {
+        return 0;
+    }
+    /* exchange 保证“同一次接入事件”只消费一次。 */
+    if (!atomic_exchange(&impl->pending_external_idr, 0)) {
+        return 0;
+    }
+    now = now_us();
+    detect_ts = atomic_load(&impl->new_client_detect_ts_us);
+    atomic_store(&impl->external_idr_request_ts_us, now);
+    atomic_store(&impl->awaiting_first_keyframe_after_external_idr, 1);
+    printf("[E2E] event=external_idr_requested session=%s detect_to_idr_req_us=%" PRIu64 " ts_us=%" PRIu64 "\n",
+           impl->config.session_name ? impl->config.session_name : "unknown",
+           (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0,
+           now);
+    return 1;
 }
