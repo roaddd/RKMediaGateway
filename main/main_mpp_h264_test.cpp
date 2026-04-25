@@ -26,6 +26,7 @@ int main() {
     uint64_t frame_id = 0;
     uint64_t dqbuf_ts_us = 0;
     uint64_t driver_to_dqbuf_us = 0;
+    uint64_t frame_copy_us = 0;
     int frame_count = 0;
 
     // 1) 初始化采集端（V4L2）与编码端（MPP H264）。
@@ -63,7 +64,8 @@ int main() {
                                &raw_frame_len,
                                &frame_id,
                                &dqbuf_ts_us,
-                               &driver_to_dqbuf_us) < 0) {
+                               &driver_to_dqbuf_us,
+                               &frame_copy_us) < 0) {
             fprintf(stderr, "[ERROR] v4l2_capture_frame failed\n");
             break;
         }

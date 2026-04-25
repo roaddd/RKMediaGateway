@@ -23,6 +23,7 @@ int main() {
     uint64_t frame_id = 0;
     uint64_t dqbuf_ts_us = 0;
     uint64_t driver_to_dqbuf_us = 0;
+    uint64_t frame_copy_us = 0;
     int frame_count = 0;
 
     // 1. 初始化V4L2采集
@@ -47,7 +48,8 @@ int main() {
                                      &frame_len,
                                      &frame_id,
                                      &dqbuf_ts_us,
-                                     &driver_to_dqbuf_us);
+                                     &driver_to_dqbuf_us,
+                                     &frame_copy_us);
         if (ret == -1) {
             // 真正的错误，退出
             fprintf(stderr, "[ERROR] capture frame failed\n");
