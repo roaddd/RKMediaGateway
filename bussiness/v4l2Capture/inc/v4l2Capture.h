@@ -43,7 +43,8 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        int *frame_len,
                        uint64_t *frame_id,
                        uint64_t *dqbuf_ts_us,
-                       uint64_t *driver_to_dqbuf_us);
+                       uint64_t *driver_to_dqbuf_us,
+                       uint64_t *frame_copy_us);
 
 #ifdef __cplusplus
 }

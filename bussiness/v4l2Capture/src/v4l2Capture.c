@@ -277,6 +277,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
  * @param {uint64_t *} frame_id
  * @param {uint64_t *} dqbuf_ts_us
  * @param {uint64_t *} driver_to_dqbuf_us
+ * @param {uint64_t *} frame_copy_us
  * @return {int}
  */
 int v4l2_capture_frame(V4L2CaptureCtx *ctx,
@@ -284,8 +285,9 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        int *frame_len,
                        uint64_t *frame_id,
                        uint64_t *dqbuf_ts_us,
-                       uint64_t *driver_to_dqbuf_us) {
-    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us) {
+                       uint64_t *driver_to_dqbuf_us,
+                       uint64_t *frame_copy_us) {
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us || !frame_copy_us) {
         return -1;
     }
 
@@ -300,14 +302,19 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     buf.length = V4L2_CAPTURE_MAX_PLANES;
     buf.m.planes = planes;
 
+    *dqbuf_ts_us = get_now_us();
     if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
         fprintf(stderr, "[ERROR] dqbuf failed: %s (errno=%d)\n", strerror(errno), errno);
         return -1;
     }
-
+    *driver_to_dqbuf_us = get_now_us() - *dqbuf_ts_us; // 从驱动开始采集到 dqbuf 返回的时间差，反映了驱动处理这一帧的总耗时
+#if 0
     *dqbuf_ts_us = get_now_us();
     {
+        // driver_ts_us为驱动给这一帧打的时间戳，driver_to_dqbuf_us反映了从驱动开始采集到v4l2_capture_frame返回的时间差，理论上这个时间差应该包含了驱动处理这一帧的总耗时（包括采集、ISP处理、DMA传输等），是评估整体链路性能的关键指标。
         uint64_t driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
+        // 计算从驱动开始采集到v4l2_capture_frame返回的时间差，反映了驱动处理这一帧的总耗时
+        // 包括这一帧积压在驱动缓冲区内的时间？
         *driver_to_dqbuf_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
         // printf("[TRACE] step=driver_timestamp driver_ts_us=%" PRIu64
         //        " driver_to_dqbuf_us=%" PRIu64
@@ -316,7 +323,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
         //        *driver_to_dqbuf_us,
         //        (unsigned)(buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK));
     }
-
+#endif
     ctx->frame_id++;
     *frame_id = ctx->frame_id;
     // printf("[TRACE] frame=%" PRIu64 " step=after_vidioc_dqbuf ts_us=%" PRIu64 "\n",
@@ -340,7 +347,12 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // 旧实现直接把 mmap 缓冲地址返回给上层，然后马上执行 QBUF。
     // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
     // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
-    memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
+    // 这一帧的拷贝耗时
+    {
+        uint64_t copy_start_us = get_now_us();
+        memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
+        *frame_copy_us = get_now_us() - copy_start_us;
+    }
     *frame_data = ctx->frame_cache;
     *frame_len = (int)planes[0].bytesused;
     // 低延迟思路：

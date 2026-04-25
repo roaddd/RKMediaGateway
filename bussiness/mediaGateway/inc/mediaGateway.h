@@ -118,6 +118,8 @@ typedef struct {
     uint64_t bench_driver_to_dqbuf_max_us;     /* driver_ts -> dqbuf 最大值。 */
     uint64_t bench_capture_call_sum_us;        /* v4l2_capture_frame 调用耗时累计。 */
     uint64_t bench_capture_call_max_us;        /* v4l2_capture_frame 调用最大耗时。 */
+    uint64_t bench_capture_copy_sum_us;        /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
+    uint64_t bench_capture_copy_max_us;        /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
     uint64_t bench_dqbuf_to_put_sum_us;        /* dqbuf -> encode_put 时间累计。 */
     uint64_t bench_dqbuf_to_put_max_us;        /* dqbuf -> encode_put 最大值。 */
     uint64_t bench_put_to_get_sum_us;          /* encode_put -> encode_get 时间累计。 */

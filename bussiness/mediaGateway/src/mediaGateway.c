@@ -368,6 +368,8 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
     ctx->bench_driver_to_dqbuf_max_us = 0;
     ctx->bench_capture_call_sum_us = 0;
     ctx->bench_capture_call_max_us = 0;
+    ctx->bench_capture_copy_sum_us = 0;
+    ctx->bench_capture_copy_max_us = 0;
     ctx->bench_dqbuf_to_put_sum_us = 0;
     ctx->bench_dqbuf_to_put_max_us = 0;
     ctx->bench_put_to_get_sum_us = 0;
@@ -391,6 +393,7 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
 static void bench_record_sample(MediaGatewayCtx *ctx,
                                 uint64_t driver_to_dqbuf_us,
                                 uint64_t capture_call_us,
+                                uint64_t capture_copy_us,
                                 uint64_t dqbuf_to_put_us,
                                 uint64_t put_to_get_us,
                                 const MppEncoderTiming *mpp_timing,
@@ -401,6 +404,7 @@ static void bench_record_sample(MediaGatewayCtx *ctx,
     ctx->bench_sample_count++;
     ctx->bench_driver_to_dqbuf_sum_us += driver_to_dqbuf_us;
     ctx->bench_capture_call_sum_us += capture_call_us;
+    ctx->bench_capture_copy_sum_us += capture_copy_us;
     ctx->bench_dqbuf_to_put_sum_us += dqbuf_to_put_us;
     ctx->bench_put_to_get_sum_us += put_to_get_us;
     if (mpp_timing) {
@@ -414,6 +418,7 @@ static void bench_record_sample(MediaGatewayCtx *ctx,
     ctx->bench_dqbuf_to_fanout_sum_us += dqbuf_to_fanout_us;
     if (driver_to_dqbuf_us > ctx->bench_driver_to_dqbuf_max_us) ctx->bench_driver_to_dqbuf_max_us = driver_to_dqbuf_us;
     if (capture_call_us > ctx->bench_capture_call_max_us) ctx->bench_capture_call_max_us = capture_call_us;
+    if (capture_copy_us > ctx->bench_capture_copy_max_us) ctx->bench_capture_copy_max_us = capture_copy_us;
     if (dqbuf_to_put_us > ctx->bench_dqbuf_to_put_max_us) ctx->bench_dqbuf_to_put_max_us = dqbuf_to_put_us;
     if (put_to_get_us > ctx->bench_put_to_get_max_us) ctx->bench_put_to_get_max_us = put_to_get_us;
     if (mpp_timing) {
@@ -440,20 +445,22 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
     if (ctx->bench_sample_count > 0) {
         sample_count = (double)ctx->bench_sample_count;
         printf("[BENCH] samples=%" PRIu64
-               " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us"
-               " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us"
-               " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us"
-               " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us"
-               " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us"
-               " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us"
-               " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us"
-               " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us"
-               " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us"
-               " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us"
-               " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us\n",
+               " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us\n"
+               " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us\n"
+               " avg_capture_copy=%.2fus max_capture_copy=%" PRIu64 "us\n"
+               " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us\n"
+               " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us\n"
+               " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us\n"
+               " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us\n"
+               " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us\n"
+               " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us\n"
+               " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us\n"
+               " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us\n"
+               " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us\n\n\n",
                ctx->bench_sample_count,
                (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
                (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
+               (double)ctx->bench_capture_copy_sum_us / sample_count, ctx->bench_capture_copy_max_us,
                (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
                (double)ctx->bench_put_to_get_sum_us / sample_count, ctx->bench_put_to_get_max_us,
                (double)ctx->bench_mpp_input_copy_sum_us / sample_count, ctx->bench_mpp_input_copy_max_us,
@@ -848,14 +855,15 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     while (ctx->running) {
         /* Per-captured-frame timing baseline from driver dequeue. */
         uint64_t dqbuf_ts_us = 0;
-        uint64_t driver_to_dqbuf_us = 0;
+        uint64_t driver_to_dqbuf_us = 0; // 从驱动开始采集到v4l2_capture_frame返回的时间差，反映了驱动处理这一帧的总耗时
+        uint64_t frame_copy_us = 0;
         uint64_t capture_start_ts_us = get_now_us(); // capture调用开始的时间戳
         uint64_t capture_end_ts_us = 0;
         uint64_t capture_call_us = 0;
         int stream_idx;
 
         /* Retry capture with backoff; fail hard after too many consecutive errors. */
-        if (v4l2_capture_frame(&ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us) < 0) {
+        if (v4l2_capture_frame(&ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us, &frame_copy_us) < 0) {
             consecutive_capture_fail++;
             if (consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
                 fprintf(stderr,
@@ -971,6 +979,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                 bench_record_sample(ctx,
                                     driver_to_dqbuf_us,
                                     capture_call_us,
+                                    frame_copy_us,
                                     dqbuf_to_put_us,
                                     put_to_get_us,
                                     &mpp_timing,

@@ -497,6 +497,7 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
         size_t h264_len = 0;
         uint64_t dqbuf_ts_us = 0;
         uint64_t driver_to_dqbuf_us = 0;
+        uint64_t frame_copy_us = 0;
         uint64_t encode_put_ts_us = 0;
         uint64_t encode_get_ts_us = 0;
         uint64_t send_video_before_ts_us = 0;
@@ -511,7 +512,8 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
                                &raw_len,
                                &frame_id,
                                &dqbuf_ts_us,
-                               &driver_to_dqbuf_us) < 0) {
+                               &driver_to_dqbuf_us,
+                               &frame_copy_us) < 0) {
             consecutive_capture_fail++;
             if (consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
                 fprintf(stderr, "[ERROR] capture failed %d times continuously\n", consecutive_capture_fail);
