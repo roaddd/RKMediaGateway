@@ -1081,7 +1081,7 @@ static void *media_thread_main(void *arg)
                 usleep(10000);
                 continue;
             }
-            if (mpp_encoder_encode_frame(ctx->encoder, raw_frame, (size_t)raw_len, frame_id, &h264_data, &h264_len, &is_key_frame, NULL, NULL) != 0)
+            if (mpp_encoder_encode_frame(ctx->encoder, raw_frame, (size_t)raw_len, frame_id, &h264_data, &h264_len, &is_key_frame, NULL, NULL, NULL) != 0)
                 continue;
             if (!h264_data || h264_len == 0)
                 continue;

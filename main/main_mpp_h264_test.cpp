@@ -80,6 +80,7 @@ int main() {
                                      &h264_len,
                                      &is_key,
                                      NULL,
+                                     NULL,
                                      NULL) < 0) {
             fprintf(stderr, "[ERROR] mpp_encoder_encode_frame failed\n");
             break;

@@ -123,6 +123,16 @@ if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(video0_fps_test
+        ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
+    )
+    target_link_libraries(video0_fps_test PRIVATE pthread m)
+    set_target_properties(video0_fps_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "mpp_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(mpp_test
         ${PROJECT_SOURCE_DIR}/main/main_mpp_h264_test.cpp

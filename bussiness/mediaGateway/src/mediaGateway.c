@@ -21,6 +21,9 @@
 #define DEFAULT_CAPTURE_RETRY_MS 5
 #define DEFAULT_MAX_CONSECUTIVE_FAILURES 30
 #define DEFAULT_RECORD_FLUSH_INTERVAL_FRAMES 30
+#define DEFAULT_BENCH_ENABLE 0
+#define DEFAULT_BENCH_SAMPLE_EVERY 1
+#define DEFAULT_BENCH_PRINT_INTERVAL_SEC 1
 
 static const char *safe_str(const char *value, const char *fallback) {
     /* Return configured string when valid; otherwise use fallback. */
@@ -295,6 +298,9 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
     if (dst->capture_retry_ms <= 0) dst->capture_retry_ms = DEFAULT_CAPTURE_RETRY_MS;
     if (dst->max_consecutive_failures <= 0) dst->max_consecutive_failures = DEFAULT_MAX_CONSECUTIVE_FAILURES;
     if (dst->record_flush_interval_frames <= 0) dst->record_flush_interval_frames = DEFAULT_RECORD_FLUSH_INTERVAL_FRAMES;
+    dst->bench_enable = dst->bench_enable ? 1 : DEFAULT_BENCH_ENABLE;
+    if (dst->bench_sample_every <= 0) dst->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
+    if (dst->bench_print_interval_sec <= 0) dst->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
 
     if (dst->stream_count <= 0) {
         memset(&s0, 0, sizeof(s0));
@@ -360,10 +366,22 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
     ctx->bench_sample_count = 0;
     ctx->bench_driver_to_dqbuf_sum_us = 0;
     ctx->bench_driver_to_dqbuf_max_us = 0;
+    ctx->bench_capture_call_sum_us = 0;
+    ctx->bench_capture_call_max_us = 0;
     ctx->bench_dqbuf_to_put_sum_us = 0;
     ctx->bench_dqbuf_to_put_max_us = 0;
     ctx->bench_put_to_get_sum_us = 0;
     ctx->bench_put_to_get_max_us = 0;
+    ctx->bench_mpp_input_copy_sum_us = 0;
+    ctx->bench_mpp_input_copy_max_us = 0;
+    ctx->bench_mpp_put_frame_sum_us = 0;
+    ctx->bench_mpp_put_frame_max_us = 0;
+    ctx->bench_mpp_get_packet_sum_us = 0;
+    ctx->bench_mpp_get_packet_max_us = 0;
+    ctx->bench_mpp_packet_copy_sum_us = 0;
+    ctx->bench_mpp_packet_copy_max_us = 0;
+    ctx->bench_mpp_total_sum_us = 0;
+    ctx->bench_mpp_total_max_us = 0;
     ctx->bench_dqbuf_to_get_sum_us = 0;
     ctx->bench_dqbuf_to_get_max_us = 0;
     ctx->bench_dqbuf_to_fanout_sum_us = 0;
@@ -372,21 +390,39 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
 
 static void bench_record_sample(MediaGatewayCtx *ctx,
                                 uint64_t driver_to_dqbuf_us,
+                                uint64_t capture_call_us,
                                 uint64_t dqbuf_to_put_us,
                                 uint64_t put_to_get_us,
+                                const MppEncoderTiming *mpp_timing,
                                 uint64_t dqbuf_to_get_us,
                                 uint64_t dqbuf_to_fanout_us) {
     /* Accumulate one sampled frame's stage latencies. */
     if (!ctx) return;
     ctx->bench_sample_count++;
     ctx->bench_driver_to_dqbuf_sum_us += driver_to_dqbuf_us;
+    ctx->bench_capture_call_sum_us += capture_call_us;
     ctx->bench_dqbuf_to_put_sum_us += dqbuf_to_put_us;
     ctx->bench_put_to_get_sum_us += put_to_get_us;
+    if (mpp_timing) {
+        ctx->bench_mpp_input_copy_sum_us += mpp_timing->input_copy_us;
+        ctx->bench_mpp_put_frame_sum_us += mpp_timing->put_frame_us;
+        ctx->bench_mpp_get_packet_sum_us += mpp_timing->get_packet_us;
+        ctx->bench_mpp_packet_copy_sum_us += mpp_timing->packet_copy_us;
+        ctx->bench_mpp_total_sum_us += mpp_timing->total_us;
+    }
     ctx->bench_dqbuf_to_get_sum_us += dqbuf_to_get_us;
     ctx->bench_dqbuf_to_fanout_sum_us += dqbuf_to_fanout_us;
     if (driver_to_dqbuf_us > ctx->bench_driver_to_dqbuf_max_us) ctx->bench_driver_to_dqbuf_max_us = driver_to_dqbuf_us;
+    if (capture_call_us > ctx->bench_capture_call_max_us) ctx->bench_capture_call_max_us = capture_call_us;
     if (dqbuf_to_put_us > ctx->bench_dqbuf_to_put_max_us) ctx->bench_dqbuf_to_put_max_us = dqbuf_to_put_us;
     if (put_to_get_us > ctx->bench_put_to_get_max_us) ctx->bench_put_to_get_max_us = put_to_get_us;
+    if (mpp_timing) {
+        if (mpp_timing->input_copy_us > ctx->bench_mpp_input_copy_max_us) ctx->bench_mpp_input_copy_max_us = mpp_timing->input_copy_us;
+        if (mpp_timing->put_frame_us > ctx->bench_mpp_put_frame_max_us) ctx->bench_mpp_put_frame_max_us = mpp_timing->put_frame_us;
+        if (mpp_timing->get_packet_us > ctx->bench_mpp_get_packet_max_us) ctx->bench_mpp_get_packet_max_us = mpp_timing->get_packet_us;
+        if (mpp_timing->packet_copy_us > ctx->bench_mpp_packet_copy_max_us) ctx->bench_mpp_packet_copy_max_us = mpp_timing->packet_copy_us;
+        if (mpp_timing->total_us > ctx->bench_mpp_total_max_us) ctx->bench_mpp_total_max_us = mpp_timing->total_us;
+    }
     if (dqbuf_to_get_us > ctx->bench_dqbuf_to_get_max_us) ctx->bench_dqbuf_to_get_max_us = dqbuf_to_get_us;
     if (dqbuf_to_fanout_us > ctx->bench_dqbuf_to_fanout_max_us) ctx->bench_dqbuf_to_fanout_max_us = dqbuf_to_fanout_us;
 }
@@ -405,14 +441,26 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
         sample_count = (double)ctx->bench_sample_count;
         printf("[BENCH] samples=%" PRIu64
                " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us"
+               " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us"
                " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us"
                " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us"
+               " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us"
+               " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us"
+               " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us"
+               " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us"
+               " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us"
                " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us"
                " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us\n",
                ctx->bench_sample_count,
                (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
+               (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
                (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
                (double)ctx->bench_put_to_get_sum_us / sample_count, ctx->bench_put_to_get_max_us,
+               (double)ctx->bench_mpp_input_copy_sum_us / sample_count, ctx->bench_mpp_input_copy_max_us,
+               (double)ctx->bench_mpp_put_frame_sum_us / sample_count, ctx->bench_mpp_put_frame_max_us,
+               (double)ctx->bench_mpp_get_packet_sum_us / sample_count, ctx->bench_mpp_get_packet_max_us,
+               (double)ctx->bench_mpp_packet_copy_sum_us / sample_count, ctx->bench_mpp_packet_copy_max_us,
+               (double)ctx->bench_mpp_total_sum_us / sample_count, ctx->bench_mpp_total_max_us,
                (double)ctx->bench_dqbuf_to_get_sum_us / sample_count, ctx->bench_dqbuf_to_get_max_us,
                (double)ctx->bench_dqbuf_to_fanout_sum_us / sample_count, ctx->bench_dqbuf_to_fanout_max_us);
     } else {
@@ -644,12 +692,15 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
     int i;
     if (!cfg) return;
 
-    printf("[CFG] stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d\n",
+    printf("[CFG] stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d bench(enable=%d sample_every=%d print_interval_sec=%d)\n",
            cfg->stream_count,
            cfg->low_latency_mode,
            cfg->stats_interval_sec,
            cfg->capture_retry_ms,
-           cfg->max_consecutive_failures);
+           cfg->max_consecutive_failures,
+           cfg->bench_enable,
+           cfg->bench_sample_every,
+           cfg->bench_print_interval_sec);
     printf("[CFG] record_file=%s record_flush_interval_frames=%d\n",
            (cfg->record_file_path && cfg->record_file_path[0] != '\0') ? cfg->record_file_path : "(disabled)",
            cfg->record_flush_interval_frames);
@@ -754,12 +805,17 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
 
     ctx->running = 1;
     ctx->stat_last_ts_us = get_now_us();
-    ctx->bench_enable = MEDIA_GATEWAY_BENCH_ENABLE_DEFAULT ? 1 : 0;
-    ctx->bench_sample_every = MEDIA_GATEWAY_BENCH_SAMPLE_EVERY_DEFAULT;
-    ctx->bench_print_interval_sec = MEDIA_GATEWAY_BENCH_PRINT_INTERVAL_SEC_DEFAULT;
-    if (ctx->bench_sample_every <= 0) ctx->bench_sample_every = MEDIA_GATEWAY_BENCH_SAMPLE_EVERY_DEFAULT;
-    if (ctx->bench_print_interval_sec <= 0) ctx->bench_print_interval_sec = MEDIA_GATEWAY_BENCH_PRINT_INTERVAL_SEC_DEFAULT;
+    ctx->bench_enable = ctx->config.bench_enable ? 1 : 0;
+    ctx->bench_sample_every = ctx->config.bench_sample_every;
+    ctx->bench_print_interval_sec = ctx->config.bench_print_interval_sec;
+    if (ctx->bench_sample_every <= 0) ctx->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
+    if (ctx->bench_print_interval_sec <= 0) ctx->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
     ctx->bench_last_ts_us = ctx->stat_last_ts_us;
+    /* 打印调试信息的配置 */
+    printf("[CFG] bench enable=%d sample_every=%d print_interval_sec=%d\n",
+           ctx->bench_enable,
+           ctx->bench_sample_every,
+           ctx->bench_print_interval_sec);
     bench_reset_window(ctx);
     return 0;
 
@@ -793,6 +849,9 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         /* Per-captured-frame timing baseline from driver dequeue. */
         uint64_t dqbuf_ts_us = 0;
         uint64_t driver_to_dqbuf_us = 0;
+        uint64_t capture_start_ts_us = get_now_us(); // capture调用开始的时间戳
+        uint64_t capture_end_ts_us = 0;
+        uint64_t capture_call_us = 0;
         int stream_idx;
 
         /* Retry capture with backoff; fail hard after too many consecutive errors. */
@@ -808,6 +867,8 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
             continue;
         }
+        capture_end_ts_us = get_now_us(); // capture调用结束的时间戳
+        capture_call_us = capture_end_ts_us - capture_start_ts_us; // capture调用的耗时
         consecutive_capture_fail = 0;
 
         /* One raw frame can be reused by multiple output streams. */
@@ -821,6 +882,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             int is_key_frame = 0;
             uint64_t encode_put_ts_us = 0;
             uint64_t encode_get_ts_us = 0;
+            MppEncoderTiming mpp_timing;
             MediaBuffer *buffer = NULL;
             MediaPacket packet;
             int i;
@@ -857,7 +919,8 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                                          &h264_len,
                                          &is_key_frame,
                                          &encode_put_ts_us,
-                                         &encode_get_ts_us) < 0) {
+                                         &encode_get_ts_us,
+                                         &mpp_timing) < 0) {
                 /* Rebuild encoder if one stream keeps failing to encode. */
                 consecutive_encode_fail[stream_idx]++;
                 if (consecutive_encode_fail[stream_idx] >= 3) {
@@ -905,7 +968,14 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                 uint64_t put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
                 uint64_t dqbuf_to_get_us = (encode_get_ts_us >= dqbuf_ts_us) ? (encode_get_ts_us - dqbuf_ts_us) : 0;
                 uint64_t dqbuf_to_fanout_us = (get_now_us() >= dqbuf_ts_us) ? (get_now_us() - dqbuf_ts_us) : 0;
-                bench_record_sample(ctx, driver_to_dqbuf_us, dqbuf_to_put_us, put_to_get_us, dqbuf_to_get_us, dqbuf_to_fanout_us);
+                bench_record_sample(ctx,
+                                    driver_to_dqbuf_us,
+                                    capture_call_us,
+                                    dqbuf_to_put_us,
+                                    put_to_get_us,
+                                    &mpp_timing,
+                                    dqbuf_to_get_us,
+                                    dqbuf_to_fanout_us);
             }
 
             /* Optional local H264 dump for stream 0. */

@@ -532,7 +532,8 @@ int rtsp_streamer_run(RtspStreamerCtx *ctx) {
                                      &h264_len,
                                      NULL,
                                      &encode_put_ts_us,
-                                     &encode_get_ts_us) < 0) {
+                                     &encode_get_ts_us,
+                                     NULL) < 0) {
             consecutive_encode_fail++;
             if (consecutive_encode_fail >= 3) {
                 fprintf(stderr, "[WARN] encoder failed %d times, try reset\n", consecutive_encode_fail);
@@ -674,4 +675,3 @@ void rtsp_streamer_deinit(RtspStreamerCtx *ctx) {
     ctx->stat_frames = 0;
     ctx->stat_bytes = 0;
 }
-

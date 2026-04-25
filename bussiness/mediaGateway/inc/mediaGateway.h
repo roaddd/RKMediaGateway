@@ -44,22 +44,6 @@ typedef struct {
     Gb28181SinkConfig gb28181;       /* 该码流 GB28181 配置。 */
 } MediaGatewayStreamConfig;
 
-/*
- * Benchmark 编译期默认配置。
- * 如需调整，可在编译参数里通过 -D 覆盖这些宏。
- */
-#ifndef MEDIA_GATEWAY_BENCH_ENABLE_DEFAULT
-#define MEDIA_GATEWAY_BENCH_ENABLE_DEFAULT 0
-#endif
-
-#ifndef MEDIA_GATEWAY_BENCH_SAMPLE_EVERY_DEFAULT
-#define MEDIA_GATEWAY_BENCH_SAMPLE_EVERY_DEFAULT 30
-#endif
-
-#ifndef MEDIA_GATEWAY_BENCH_PRINT_INTERVAL_SEC_DEFAULT
-#define MEDIA_GATEWAY_BENCH_PRINT_INTERVAL_SEC_DEFAULT 1
-#endif
-
 typedef struct {
     int enable_rtsp;                 /* 是否启用 RTSP 输出链路。 */
     int enable_rtmp;                 /* 是否启用 RTMP 输出链路。 */
@@ -84,6 +68,9 @@ typedef struct {
     const char *record_file_path;    /* 本地录像文件路径，为空则不录制。 */
     int record_flush_interval_frames;/* 本地录像每隔多少帧执行一次 fflush。 */
     const char *config_file_path;    /* 预留的配置文件路径钩子。 */
+    int bench_enable;                /* 是否开启性能测试埋点日志。 */
+    int bench_sample_every;          /* 性能埋点每隔多少帧采样一次。 */
+    int bench_print_interval_sec;    /* 性能埋点日志打印周期，单位秒。 */
     int stream_count;                /* 流配置数量，<=0 表示使用兼容模式自动生成 main 流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
     RtspSinkConfig rtsp;             /* RTSP 协议专用配置块。 */
@@ -129,10 +116,22 @@ typedef struct {
 
     uint64_t bench_driver_to_dqbuf_sum_us;     /* driver_ts -> dqbuf 时间累计。 */
     uint64_t bench_driver_to_dqbuf_max_us;     /* driver_ts -> dqbuf 最大值。 */
+    uint64_t bench_capture_call_sum_us;        /* v4l2_capture_frame 调用耗时累计。 */
+    uint64_t bench_capture_call_max_us;        /* v4l2_capture_frame 调用最大耗时。 */
     uint64_t bench_dqbuf_to_put_sum_us;        /* dqbuf -> encode_put 时间累计。 */
     uint64_t bench_dqbuf_to_put_max_us;        /* dqbuf -> encode_put 最大值。 */
     uint64_t bench_put_to_get_sum_us;          /* encode_put -> encode_get 时间累计。 */
     uint64_t bench_put_to_get_max_us;          /* encode_put -> encode_get 最大值。 */
+    uint64_t bench_mpp_input_copy_sum_us;      /* NV12 拷贝到 MPP 输入缓冲累计。 */
+    uint64_t bench_mpp_input_copy_max_us;      /* NV12 拷贝到 MPP 输入缓冲最大值。 */
+    uint64_t bench_mpp_put_frame_sum_us;       /* encode_put_frame 调用耗时累计。 */
+    uint64_t bench_mpp_put_frame_max_us;       /* encode_put_frame 调用最大耗时。 */
+    uint64_t bench_mpp_get_packet_sum_us;      /* encode_get_packet 调用耗时累计。 */
+    uint64_t bench_mpp_get_packet_max_us;      /* encode_get_packet 调用最大耗时。 */
+    uint64_t bench_mpp_packet_copy_sum_us;     /* H264 packet 拷贝耗时累计。 */
+    uint64_t bench_mpp_packet_copy_max_us;     /* H264 packet 拷贝最大耗时。 */
+    uint64_t bench_mpp_total_sum_us;           /* mpp_encoder_encode_frame 总耗时累计。 */
+    uint64_t bench_mpp_total_max_us;           /* mpp_encoder_encode_frame 总耗时最大值。 */
     uint64_t bench_dqbuf_to_get_sum_us;        /* dqbuf -> encode_get 时间累计。 */
     uint64_t bench_dqbuf_to_get_max_us;        /* dqbuf -> encode_get 最大值。 */
     uint64_t bench_dqbuf_to_fanout_sum_us;     /* dqbuf -> fanout 完成累计。 */

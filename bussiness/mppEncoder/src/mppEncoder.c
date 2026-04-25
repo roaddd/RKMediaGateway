@@ -138,47 +138,48 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_enc_cfg_set_s32(enc->cfg, "prep:height", enc->height);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:hor_stride", enc->hor_stride);
     mpp_enc_cfg_set_s32(enc->cfg, "prep:ver_stride", enc->ver_stride);
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP);
+    mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP); /* 图像色彩空间格式以及内存排布方式 */
     /* Rate Control(RC) 模块 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", (options && options->rc_mode > 0) ? options->rc_mode : MPP_ENC_RC_MODE_CBR);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_num", enc->fps);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_denorm", 1);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_flex", 0);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_num", enc->fps);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_denorm", 1);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_target", enc->bitrate); /* 设置码率 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_max", enc->bitrate * 17 / 16);
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16);
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", (options && options->rc_mode > 0) ? options->rc_mode : MPP_ENC_RC_MODE_CBR); /* 码率控制模式 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop); /*两个I帧之间的间隔 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0); /* 输入帧率是否可变, fps_in_flex=0 表示固定输入帧率 */
+
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_num", enc->fps); /* 输入帧率分数值的分子部分，默认值为30 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_denorm", 1); /* 输入帧率分数值的分母部分，默认值为1 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_flex", 0); /* 输出帧率是否可变的标志位，默认为0,fps_out_flex=0 表示固定输出帧率 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_num", enc->fps); /* 输出帧率分数值的分子部分，默认值为30 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_denorm", 1); /* 输出帧率分数值的分母部分，默认值为1 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_target", enc->bitrate); /* 定码率(CBR)模式下的目标码率 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_max", enc->bitrate * 17 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最高码率 */
+    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最低码率 */
 
     if (options) {
         if (options->qp_init > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_init", options->qp_init);
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_init", options->qp_init); /* 初始QP值 */
         }
         if (options->qp_min > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min", options->qp_min);
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min", options->qp_min); /* P、B帧的最小QP值 */
         }
         if (options->qp_max > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max", options->qp_max);
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max", options->qp_max); /* P、B帧的最大QP值 */
         }
         if (options->qp_min_i > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min_i", options->qp_min_i);
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min_i", options->qp_min_i); /* I帧的最小QP值 */
         }
         if (options->qp_max_i > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_i", options->qp_max_i);
+            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_i", options->qp_max_i); /* I帧的最大QP值 */
         }
         if (options->qp_max_step > 0) {
             mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_step", options->qp_max_step);
         }
     }
-    mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC);
+    mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC); /* 表示MppEncCodecCfg对应的协议类型，需要与MppCtx初始化函数mpp_init的参数一致 */
     // 低延时思路：
     // RTSP 推流链路按 Annex-B 拆 NALU 发包，强制编码器输出 Annex-B，
     // 避免格式不一致导致的解析/重组等待。
     mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", (options && options->h264_profile > 0) ? options->h264_profile : 100);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:level", (options && options->h264_level > 0) ? options->h264_level : 40);
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", (options && options->h264_profile > 0) ? options->h264_profile : 100); /* SPS中的profile_idc参数 */
+    mpp_enc_cfg_set_s32(enc->cfg, "h264:level", (options && options->h264_level > 0) ? options->h264_level : 40); /* SPS中的level_idc参数 */
     mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", (options && options->h264_cabac_en >= 0) ? options->h264_cabac_en : 1);
 
     ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_CFG, enc->cfg);
@@ -257,7 +258,16 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              size_t *h264_len,
                              int *is_key_frame,
                              uint64_t *encode_put_ts_us,
-                             uint64_t *encode_get_ts_us) {
+                             uint64_t *encode_get_ts_us,
+                             MppEncoderTiming *timing) {
+    uint64_t total_start_us = get_now_us();
+    uint64_t stage_start_us;
+    uint64_t stage_end_us;
+
+    if (timing) {
+        memset(timing, 0, sizeof(*timing));
+    }
+
     if (!enc || !enc->ctx || !nv12_data || !h264_data || !h264_len) {
         return -1;
     }
@@ -276,7 +286,12 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     // 把紧凑 NV12 拷贝到带 stride 的 MPP 输入缓冲。
+    stage_start_us = get_now_us();
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
+    stage_end_us = get_now_us();
+    if (timing) {
+        timing->input_copy_us = stage_end_us - stage_start_us;
+    }
 
     // 投喂一帧并拉取对应编码包（部分情况下可能暂时取不到 packet）。
     // 低延时思路：
@@ -296,15 +311,27 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         // printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
         //        frame_id, ts);
     }
+
+    /* 这里是设置该帧的PTS吗，为啥每次加一呢，PTS不是显示时间吗 */
     mpp_frame_set_pts(enc->frame, enc->pts++);
+    stage_start_us = get_now_us();
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
+    stage_end_us = get_now_us();
+    if (timing) {
+        timing->put_frame_us = stage_end_us - stage_start_us;
+    }
     if (ret != MPP_OK) {
         mpp_log_error("encode_put_frame failed", ret);
         return -1;
     }
 
     MppPacket packet = NULL;
+    stage_start_us = get_now_us();
     ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
+    stage_end_us = get_now_us();
+    if (timing) {
+        timing->get_packet_us = stage_end_us - stage_start_us;
+    }
     {
         uint64_t ts = get_now_us();
         if (encode_get_ts_us) {
@@ -324,6 +351,9 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         *h264_len = 0;
         if (is_key_frame) {
             *is_key_frame = 0;
+        }
+        if (timing) {
+            timing->total_us = get_now_us() - total_start_us;
         }
         return 0;
     }
@@ -346,7 +376,12 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     // 把 MPP packet 拷贝到可复用缓存，返回给上层写文件/推流。
+    stage_start_us = get_now_us();
     memcpy(enc->packet_cache, packet_pos, packet_len);
+    stage_end_us = get_now_us();
+    if (timing) {
+        timing->packet_copy_us = stage_end_us - stage_start_us;
+    }
     *h264_data = enc->packet_cache;
     *h264_len = packet_len;
 
@@ -361,6 +396,9 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     mpp_packet_deinit(&packet);
+    if (timing) {
+        timing->total_us = get_now_us() - total_start_us; // 包括输入拷贝、编码处理、输出拷贝的整帧耗时
+    }
     return 0;
 }
 

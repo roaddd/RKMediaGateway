@@ -112,7 +112,11 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_co
            file_config.get_int("STREAM_SUB_ENABLE_RTMP", -999),
            file_config.get_int("STREAM_SUB_ENABLE_GB28181", -999));
 
-    printf("[MAIN_CFG] parsed stream_count=%d\n", config->stream_count);
+    printf("[MAIN_CFG] parsed stream_count=%d bench(enable=%d sample_every=%d print_interval_sec=%d)\n",
+           config->stream_count,
+           config->bench_enable,
+           config->bench_sample_every,
+           config->bench_print_interval_sec);
     for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         const MediaGatewayStreamConfig *s = &config->streams[i];
         printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d\n",
@@ -163,6 +167,9 @@ int main(int argc, char **argv)
     config.record_file_path = cfg_str("GATEWAY_RECORD_FILE_PATH", "");
     config.record_flush_interval_frames = cfg_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES", 30);
     config.config_file_path = cfg_str("GATEWAY_CONFIG_FILE_PATH", config_path);
+    config.bench_enable = cfg_int("GATEWAY_BENCH_ENABLE", 0);
+    config.bench_sample_every = cfg_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
+    config.bench_print_interval_sec = cfg_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
     config.stream_count = cfg_int("GATEWAY_STREAM_COUNT", 2);
 
     fill_stream_config(&config.streams[0], 1, file_config, string_pool);

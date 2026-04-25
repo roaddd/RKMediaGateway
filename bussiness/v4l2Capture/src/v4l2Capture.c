@@ -3,6 +3,10 @@
 #include <inttypes.h>
 #include <time.h>
 
+#ifndef V4L2_CAPTURE_ENABLE_OSD
+#define V4L2_CAPTURE_ENABLE_OSD 0
+#endif
+
 /**
  * @description: 输出 V4L2 接口错误日志
  * @param {const char *} msg
@@ -23,6 +27,7 @@ static uint64_t get_now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+#if V4L2_CAPTURE_ENABLE_OSD
 /**
  * @description: 获取当前实时时钟时间，单位微秒
  * @return {static uint64_t}
@@ -117,6 +122,7 @@ static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y,
         cursor_x += glyph_w + gap;
     }
 }
+#endif
 
 /**
  * @description: 初始化 V4L2 采集模块
@@ -335,15 +341,6 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
     // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
     memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
-    {
-        char line1[64];
-        char line2[64];
-        uint64_t realtime_us = get_realtime_us();
-        snprintf(line1, sizeof(line1), "rt=%" PRIu64, realtime_us/1000);
-        snprintf(line2, sizeof(line2), "f=%" PRIu64, *frame_id);
-        draw_text_nv12_y(ctx->frame_cache, CAPTURE_WIDTH, CAPTURE_HEIGHT, 24, 24, line1, 3);
-        draw_text_nv12_y(ctx->frame_cache, CAPTURE_WIDTH, CAPTURE_HEIGHT, 24, 24 + 30, line2, 3);
-    }
     *frame_data = ctx->frame_cache;
     *frame_len = (int)planes[0].bytesused;
     // 低延迟思路：
@@ -393,4 +390,3 @@ void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
     ctx->fd = -1;
     printf("[INFO] v4l2 capture deinit success\n");
 }
-

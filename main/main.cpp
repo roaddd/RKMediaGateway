@@ -58,6 +58,9 @@ int main(int argc, char **argv)
     config.record_file_path = cfg_str("GATEWAY_RECORD_FILE_PATH", "");
     config.record_flush_interval_frames = cfg_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES", 30);
     config.config_file_path = cfg_str("GATEWAY_CONFIG_FILE_PATH", config_path);
+    config.bench_enable = cfg_int("GATEWAY_BENCH_ENABLE", 0);
+    config.bench_sample_every = cfg_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
+    config.bench_print_interval_sec = cfg_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
 
     /* RtspSinkConfig */
     config.rtsp.name = cfg_str("RTSP_NAME", "rtsp");
