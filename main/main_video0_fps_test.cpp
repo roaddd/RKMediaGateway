@@ -18,10 +18,47 @@ typedef struct {
     size_t len;
 } MmapBuffer;
 
+typedef struct {
+    uint64_t frame_total_sum_us;
+    uint64_t frame_total_max_us;
+    uint64_t dqbuf_sum_us;
+    uint64_t dqbuf_max_us;
+    uint64_t qbuf_sum_us;
+    uint64_t qbuf_max_us;
+    uint64_t frames;
+} Video0TimingStats;
+
 static uint64_t now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+static void timing_stats_reset(Video0TimingStats *stats) {
+    if (!stats) return;
+    memset(stats, 0, sizeof(*stats));
+}
+
+static void timing_stats_add(Video0TimingStats *stats,
+                             uint64_t frame_total_us,
+                             uint64_t dqbuf_us,
+                             uint64_t qbuf_us) {
+    if (!stats) return;
+    stats->frames++;
+    stats->frame_total_sum_us += frame_total_us;
+    stats->dqbuf_sum_us += dqbuf_us;
+    stats->qbuf_sum_us += qbuf_us;
+    if (frame_total_us > stats->frame_total_max_us) stats->frame_total_max_us = frame_total_us;
+    if (dqbuf_us > stats->dqbuf_max_us) stats->dqbuf_max_us = dqbuf_us;
+    if (qbuf_us > stats->qbuf_max_us) stats->qbuf_max_us = qbuf_us;
+}
+
+static double timing_avg_ms(uint64_t sum_us, uint64_t frames) {
+    return (frames > 0) ? ((double)sum_us / (double)frames / 1000.0) : 0.0;
+}
+
+static double timing_max_ms(uint64_t max_us) {
+    return (double)max_us / 1000.0;
 }
 
 static int xioctl(int fd, unsigned long req, void *arg, const char *name) {
@@ -47,6 +84,8 @@ int main(int argc, char **argv) {
     uint64_t max_driver_gap_us = 0;
     uint64_t frame_count = 0;
     uint64_t report_frames = 0;
+    Video0TimingStats total_timing;
+    Video0TimingStats window_timing;
     int ret = 1;
     struct v4l2_capability cap;
     struct v4l2_format fmt;
@@ -57,6 +96,8 @@ int main(int argc, char **argv) {
     memset(&cap, 0, sizeof(cap));
     memset(&fmt, 0, sizeof(fmt));
     memset(&req, 0, sizeof(req));
+    timing_stats_reset(&total_timing);
+    timing_stats_reset(&window_timing);
     if (argc > 1) {
         frame_limit = atoi(argv[1]);
         if (frame_limit <= 0) frame_limit = SAVE_FRAME_COUNT;
@@ -129,6 +170,14 @@ int main(int argc, char **argv) {
         struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
         uint64_t driver_ts_us;
         uint64_t cur_us;
+        uint64_t frame_start_us;
+        uint64_t dqbuf_start_us;
+        uint64_t dqbuf_done_us;
+        uint64_t qbuf_start_us;
+        uint64_t qbuf_done_us;
+        uint64_t frame_total_us;
+        uint64_t dqbuf_us;
+        uint64_t qbuf_us;
 
         memset(&buf, 0, sizeof(buf));
         memset(planes, 0, sizeof(planes));
@@ -137,7 +186,11 @@ int main(int argc, char **argv) {
         buf.length = V4L2_CAPTURE_MAX_PLANES;
         buf.m.planes = planes;
 
+        frame_start_us = now_us();
+        dqbuf_start_us = frame_start_us;
         if (xioctl(fd, VIDIOC_DQBUF, &buf, "VIDIOC_DQBUF") < 0) goto stop_stream;
+        dqbuf_done_us = now_us();
+        dqbuf_us = dqbuf_done_us - dqbuf_start_us;
         frame_count++;
         report_frames++;
 
@@ -149,14 +202,32 @@ int main(int argc, char **argv) {
         }
         last_driver_ts_us = driver_ts_us;
 
+        qbuf_start_us = now_us();
         if (xioctl(fd, VIDIOC_QBUF, &buf, "VIDIOC_QBUF") < 0) goto stop_stream;
+        qbuf_done_us = now_us();
+        qbuf_us = qbuf_done_us - qbuf_start_us;
+        frame_total_us = qbuf_done_us - frame_start_us;
+        timing_stats_add(&total_timing, frame_total_us, dqbuf_us, qbuf_us);
+        timing_stats_add(&window_timing, frame_total_us, dqbuf_us, qbuf_us);
 
-        cur_us = now_us();
+        cur_us = qbuf_done_us;
         if (cur_us - last_report_us >= 1000000ULL) {
             double span = (double)(cur_us - last_report_us) / 1000000.0;
             double fps = (span > 0.0) ? (double)report_frames / span : 0.0;
-            printf("[VIDEO0_FPS] window_fps=%.2f frames=%" PRIu64 "\n", fps, report_frames);
+            printf("[VIDEO0_FPS] window_fps=%.2f frames=%" PRIu64
+                   " avg_frame=%.3fms max_frame=%.3fms"
+                   " avg_dqbuf=%.3fms max_dqbuf=%.3fms"
+                   " avg_qbuf=%.3fms max_qbuf=%.3fms\n",
+                   fps,
+                   report_frames,
+                   timing_avg_ms(window_timing.frame_total_sum_us, window_timing.frames),
+                   timing_max_ms(window_timing.frame_total_max_us),
+                   timing_avg_ms(window_timing.dqbuf_sum_us, window_timing.frames),
+                   timing_max_ms(window_timing.dqbuf_max_us),
+                   timing_avg_ms(window_timing.qbuf_sum_us, window_timing.frames),
+                   timing_max_ms(window_timing.qbuf_max_us));
             report_frames = 0;
+            timing_stats_reset(&window_timing);
             last_report_us = cur_us;
         }
     }
@@ -166,12 +237,22 @@ int main(int argc, char **argv) {
         double total_sec = (double)(end_us - start_us) / 1000000.0;
         double avg_fps = (total_sec > 0.0) ? (double)frame_count / total_sec : 0.0;
         double avg_driver_gap_ms = (frame_count > 1) ? (double)total_driver_gap_us / (double)(frame_count - 1) / 1000.0 : 0.0;
-        printf("[VIDEO0_FPS] done frames=%" PRIu64 " seconds=%.3f avg_fps=%.2f avg_driver_gap=%.2fms max_driver_gap=%.2fms\n",
+        printf("[VIDEO0_FPS] done frames=%" PRIu64 " seconds=%.3f avg_fps=%.2f"
+               " avg_driver_gap=%.2fms max_driver_gap=%.2fms"
+               " avg_frame=%.3fms max_frame=%.3fms"
+               " avg_dqbuf=%.3fms max_dqbuf=%.3fms"
+               " avg_qbuf=%.3fms max_qbuf=%.3fms\n",
                frame_count,
                total_sec,
                avg_fps,
                avg_driver_gap_ms,
-               (double)max_driver_gap_us / 1000.0);
+               (double)max_driver_gap_us / 1000.0,
+               timing_avg_ms(total_timing.frame_total_sum_us, total_timing.frames),
+               timing_max_ms(total_timing.frame_total_max_us),
+               timing_avg_ms(total_timing.dqbuf_sum_us, total_timing.frames),
+               timing_max_ms(total_timing.dqbuf_max_us),
+               timing_avg_ms(total_timing.qbuf_sum_us, total_timing.frames),
+               timing_max_ms(total_timing.qbuf_max_us));
     }
     ret = 0;
 
