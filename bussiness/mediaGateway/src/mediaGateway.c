@@ -366,6 +366,8 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
     ctx->bench_sample_count = 0;
     ctx->bench_driver_to_dqbuf_sum_us = 0;
     ctx->bench_driver_to_dqbuf_max_us = 0;
+    ctx->bench_dqbuf_ioctl_sum_us = 0;
+    ctx->bench_dqbuf_ioctl_max_us = 0;
     ctx->bench_capture_call_sum_us = 0;
     ctx->bench_capture_call_max_us = 0;
     ctx->bench_capture_copy_sum_us = 0;
@@ -392,6 +394,7 @@ static void bench_reset_window(MediaGatewayCtx *ctx) {
 
 static void bench_record_sample(MediaGatewayCtx *ctx,
                                 uint64_t driver_to_dqbuf_us,
+                                uint64_t dqbuf_ioctl_us,
                                 uint64_t capture_call_us,
                                 uint64_t capture_copy_us,
                                 uint64_t dqbuf_to_put_us,
@@ -403,6 +406,7 @@ static void bench_record_sample(MediaGatewayCtx *ctx,
     if (!ctx) return;
     ctx->bench_sample_count++;
     ctx->bench_driver_to_dqbuf_sum_us += driver_to_dqbuf_us;
+    ctx->bench_dqbuf_ioctl_sum_us += dqbuf_ioctl_us;
     ctx->bench_capture_call_sum_us += capture_call_us;
     ctx->bench_capture_copy_sum_us += capture_copy_us;
     ctx->bench_dqbuf_to_put_sum_us += dqbuf_to_put_us;
@@ -417,6 +421,7 @@ static void bench_record_sample(MediaGatewayCtx *ctx,
     ctx->bench_dqbuf_to_get_sum_us += dqbuf_to_get_us;
     ctx->bench_dqbuf_to_fanout_sum_us += dqbuf_to_fanout_us;
     if (driver_to_dqbuf_us > ctx->bench_driver_to_dqbuf_max_us) ctx->bench_driver_to_dqbuf_max_us = driver_to_dqbuf_us;
+    if (dqbuf_ioctl_us > ctx->bench_dqbuf_ioctl_max_us) ctx->bench_dqbuf_ioctl_max_us = dqbuf_ioctl_us;
     if (capture_call_us > ctx->bench_capture_call_max_us) ctx->bench_capture_call_max_us = capture_call_us;
     if (capture_copy_us > ctx->bench_capture_copy_max_us) ctx->bench_capture_copy_max_us = capture_copy_us;
     if (dqbuf_to_put_us > ctx->bench_dqbuf_to_put_max_us) ctx->bench_dqbuf_to_put_max_us = dqbuf_to_put_us;
@@ -446,6 +451,7 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
         sample_count = (double)ctx->bench_sample_count;
         printf("[BENCH] samples=%" PRIu64
                " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us\n"
+               " avg_dqbuf_ioctl=%.2fus max_dqbuf_ioctl=%" PRIu64 "us\n"
                " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us\n"
                " avg_capture_copy=%.2fus max_capture_copy=%" PRIu64 "us\n"
                " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us\n"
@@ -459,6 +465,7 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
                " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us\n\n\n",
                ctx->bench_sample_count,
                (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
+               (double)ctx->bench_dqbuf_ioctl_sum_us / sample_count, ctx->bench_dqbuf_ioctl_max_us,
                (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
                (double)ctx->bench_capture_copy_sum_us / sample_count, ctx->bench_capture_copy_max_us,
                (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
@@ -819,10 +826,10 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     if (ctx->bench_print_interval_sec <= 0) ctx->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
     ctx->bench_last_ts_us = ctx->stat_last_ts_us;
     /* 打印调试信息的配置 */
-    printf("[CFG] bench enable=%d sample_every=%d print_interval_sec=%d\n",
-           ctx->bench_enable,
-           ctx->bench_sample_every,
-           ctx->bench_print_interval_sec);
+    fprintf(stderr, "[CFG] bench enable=%d sample_every=%d print_interval_sec=%d\n",
+            ctx->bench_enable,
+            ctx->bench_sample_every,
+            ctx->bench_print_interval_sec);
     bench_reset_window(ctx);
     return 0;
 
@@ -832,214 +839,412 @@ fail:
     return -1;
 }
 
-int media_gateway_run(MediaGatewayCtx *ctx) {
-    /*
-     * Main loop:
-     * 1) Capture one NV12 frame from V4L2.
-     * 2) Optionally scale per stream, then encode to H264.
-     * 3) Fan out encoded packet to sinks mapped to that stream.
-     * 4) Periodically print throughput and latency stats.
-     */
-    uint8_t *raw_frame = NULL;
-    int raw_len = 0;
-    uint64_t frame_id = 0;
-    int consecutive_capture_fail = 0;
-    int consecutive_encode_fail[MEDIA_GATEWAY_MAX_STREAMS] = {0};
-    int rga_fallback_warned[MEDIA_GATEWAY_MAX_STREAMS] = {0};
+/**
+ * @description: 从 V4L2 采集一帧，并记录采集阶段耗时。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {MediaGatewayRunState *} state 运行期状态和连续失败计数。
+ * @param {MediaGatewayCapturedFrame *} frame 输出当前采集帧及其采集耗时。
+ * @return {int} 1 表示采集成功；0 表示本次采集失败但可继续重试；-1 表示达到失败阈值。
+ */
+static int capture_gateway_frame(MediaGatewayCtx *ctx,
+                                 MediaGatewayRunState *state,
+                                 MediaGatewayCapturedFrame *frame) {
+    uint64_t capture_start_ts_us;
+    uint64_t capture_end_ts_us;
 
-    if (!ctx || !ctx->running) {
+    if (!ctx || !state || !frame) 
+    {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: invalid input parameters\n");
+        return -1;
+    }
+    memset(frame, 0, sizeof(*frame));
+
+    capture_start_ts_us = get_now_us();
+    if (v4l2_capture_frame(&ctx->capture,
+                           &frame->raw_frame,
+                           &frame->raw_len,
+                           &frame->frame_id,
+                           &frame->dqbuf_ts_us,
+                           &frame->driver_to_dqbuf_us,
+                           &frame->dqbuf_ioctl_us,
+                           &frame->frame_copy_us) < 0) 
+    {
+        state->consecutive_capture_fail++;
+        if (state->consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
+            fprintf(stderr,
+                    "[ERROR] media_gateway_run failed: capture failed continuously count=%d limit=%d\n",
+                    state->consecutive_capture_fail,
+                    ctx->config.max_consecutive_failures);
+            return -1;
+        }
+        usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
+        return 0;
+    }
+
+    capture_end_ts_us = get_now_us();
+    frame->capture_call_us = capture_end_ts_us - capture_start_ts_us;
+    state->consecutive_capture_fail = 0;
+    return 1;
+}
+
+/**
+ * @description: 为指定码流准备编码输入，必要时执行缩放。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {MediaGatewayRunState *} state 运行期状态，用于记录 fallback 告警。
+ * @param {int} stream_idx 码流下标。
+ * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {const uint8_t **} encode_input 输出编码输入数据指针。
+ * @param {size_t *} encode_input_len 输出编码输入数据长度。
+ * @return {int} 0 成功，-1 失败。
+ */
+static int ensure_stream_input(MediaGatewayCtx *ctx,
+                               MediaGatewayRunState *state,
+                               int stream_idx,
+                               const MediaGatewayCapturedFrame *frame,
+                               const uint8_t **encode_input,
+                               size_t *encode_input_len) {
+    ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+
+    if (prepare_stream_encode_input(ctx,
+                                    stream_idx,
+                                    frame->raw_frame,
+                                    (size_t)frame->raw_len,
+                                    encode_input,
+                                    encode_input_len,
+                                    &scale_path) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: prepare_stream_encode_input stream=%d name=%s\n",
+                stream_idx,
+                stream_cfg->name ? stream_cfg->name : "unknown");
+        return -1;
+    }
+
+    if (scale_path == SCALE_PATH_CPU_NEAREST && !state->rga_fallback_warned[stream_idx]) {
+        fprintf(stderr,
+                "[WARN] stream=%d fallback to CPU nearest scaler (RGA unavailable or failed)\n",
+                stream_idx);
+        state->rga_fallback_warned[stream_idx] = 1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 编码指定码流的一帧数据，并在连续失败时重建对应编码器。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {MediaGatewayRunState *} state 运行期状态，用于记录连续编码失败次数。
+ * @param {int} stream_idx 码流下标。
+ * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {uint8_t *} encode_input 编码输入数据。
+ * @param {size_t} encode_input_len 编码输入数据长度。
+ * @param {uint8_t **} h264_data 输出 H264 数据指针。
+ * @param {size_t *} h264_len 输出 H264 数据长度。
+ * @param {int *} is_key_frame 输出是否关键帧。
+ * @param {uint64_t *} encode_put_ts_us 输出 encode_put_frame 前时间戳。
+ * @param {uint64_t *} encode_get_ts_us 输出 encode_get_packet 后时间戳。
+ * @param {MppEncoderTiming *} mpp_timing 输出 MPP 内部分段耗时。
+ * @return {int} 0 编码成功；1 本帧编码失败但可继续；-1 编码器重建失败。
+ */
+static int encode_stream_frame(MediaGatewayCtx *ctx,
+                               MediaGatewayRunState *state,
+                               int stream_idx,
+                               const MediaGatewayCapturedFrame *frame,
+                               const uint8_t *encode_input,
+                               size_t encode_input_len,
+                               uint8_t **h264_data,
+                               size_t *h264_len,
+                               int *is_key_frame,
+                               uint64_t *encode_put_ts_us,
+                               uint64_t *encode_get_ts_us,
+                               MppEncoderTiming *mpp_timing) {
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+
+    trigger_external_idr_if_needed(ctx, stream_idx);
+    if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
+                                 encode_input,
+                                 encode_input_len,
+                                 frame->frame_id,
+                                 h264_data,
+                                 h264_len,
+                                 is_key_frame,
+                                 encode_put_ts_us,
+                                 encode_get_ts_us,
+                                 mpp_timing) == 0) {
+        state->consecutive_encode_fail[stream_idx] = 0;
+        return 0;
+    }
+
+    state->consecutive_encode_fail[stream_idx]++;
+    if (state->consecutive_encode_fail[stream_idx] >= 3) {
+        if (reset_encoder(ctx, stream_idx) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: reset_encoder stream=%d name=%s\n",
+                    stream_idx,
+                    stream_cfg->name ? stream_cfg->name : "unknown");
+            return -1;
+        }
+        state->consecutive_encode_fail[stream_idx] = 0;
+    }
+    return 1;
+}
+
+/**
+ * @description: 将编码后的 H264 数据封装为 MediaPacket，并分发到该码流绑定的所有 sink。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {int} stream_idx 码流下标。
+ * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {uint8_t *} h264_data H264 数据指针。
+ * @param {size_t} h264_len H264 数据长度。
+ * @param {int} is_key_frame 是否关键帧。
+ * @return {int} 0 成功，-1 失败。
+ */
+static int enqueue_stream_packet(MediaGatewayCtx *ctx,
+                                 int stream_idx,
+                                 const MediaGatewayCapturedFrame *frame,
+                                 uint8_t *h264_data,
+                                 size_t h264_len,
+                                 int is_key_frame) {
+    MediaBuffer *buffer = NULL;
+    MediaPacket packet;
+    int i;
+    int sink_hit = 0;
+
+    if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu\n",
+                stream_idx,
+                h264_len);
+        return -1;
+    }
+
+    media_packet_init(&packet);
+    packet.frame_type = MEDIA_FRAME_TYPE_VIDEO;
+    packet.codec = MEDIA_CODEC_H264;
+    packet.buffer = buffer;
+    packet.frame_id = frame->frame_id;
+    packet.pts_us = frame->dqbuf_ts_us;
+    packet.dts_us = frame->dqbuf_ts_us;
+    packet.is_key_frame = is_key_frame;
+
+    for (i = 0; i < ctx->sink_count; ++i) {
+        if (ctx->sink_stream_index[i] != stream_idx) continue;
+        sink_hit = 1;
+        media_sink_enqueue(&ctx->sinks[i], &packet);
+    }
+
+    if (sink_hit) {
+        ctx->stat_frames++;
+        ctx->stat_bytes += h264_len;
+        ctx->stream_stat_frames[stream_idx]++;
+        ctx->stream_stat_bytes[stream_idx] += h264_len;
+    }
+    media_packet_reset(&packet);
+    return 0;
+}
+
+/**
+ * @description: 按配置采样并累计指定码流的 BENCH 性能埋点。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {int} stream_idx 码流下标，目前只统计 stream 0。
+ * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {uint64_t} encode_put_ts_us encode_put_frame 前时间戳。
+ * @param {uint64_t} encode_get_ts_us encode_get_packet 后时间戳。
+ * @param {MppEncoderTiming *} mpp_timing MPP 内部分段耗时。
+ * @return {void}
+ */
+static void record_stream_benchmark(MediaGatewayCtx *ctx,
+                                    int stream_idx,
+                                    const MediaGatewayCapturedFrame *frame,
+                                    uint64_t encode_put_ts_us,
+                                    uint64_t encode_get_ts_us,
+                                    const MppEncoderTiming *mpp_timing) {
+    uint64_t now;
+    uint64_t dqbuf_to_put_us;
+    uint64_t put_to_get_us;
+    uint64_t dqbuf_to_get_us;
+    uint64_t dqbuf_to_fanout_us;
+
+    if (!ctx->bench_enable || stream_idx != 0) return;
+    if ((frame->frame_id % (uint64_t)ctx->bench_sample_every) != 0) return;
+
+    now = get_now_us();
+    dqbuf_to_put_us = (encode_put_ts_us >= frame->dqbuf_ts_us) ? (encode_put_ts_us - frame->dqbuf_ts_us) : 0;
+    put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
+    dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
+    dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
+
+    bench_record_sample(ctx,
+                        frame->driver_to_dqbuf_us,
+                        frame->dqbuf_ioctl_us,
+                        frame->capture_call_us,
+                        frame->frame_copy_us,
+                        dqbuf_to_put_us,
+                        put_to_get_us,
+                        mpp_timing,
+                        dqbuf_to_get_us,
+                        dqbuf_to_fanout_us);
+}
+
+/**
+ * @description: 可选地把 stream 0 的 H264 码流写入本地文件，便于离线分析。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {int} stream_idx 码流下标。
+ * @param {uint64_t} frame_id 当前帧号。
+ * @param {uint8_t *} h264_data H264 数据指针。
+ * @param {size_t} h264_len H264 数据长度。
+ * @return {void}
+ */
+static void maybe_record_stream_file(MediaGatewayCtx *ctx,
+                                     int stream_idx,
+                                     uint64_t frame_id,
+                                     const uint8_t *h264_data,
+                                     size_t h264_len) {
+    size_t written;
+    if (!ctx->record_fp || stream_idx != 0) return;
+
+    written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
+    if (written != h264_len) fprintf(stderr, "[WARN] local record write short: %zu/%zu\n", written, h264_len);
+    if ((frame_id % (uint64_t)ctx->config.record_flush_interval_frames) == 0) fflush(ctx->record_fp);
+}
+
+/**
+ * @description: 完成单个码流的一帧处理，包括准备输入、编码、分发、统计和可选录像。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @param {MediaGatewayRunState *} state 运行期状态。
+ * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {int} stream_idx 码流下标。
+ * @return {int} 0 成功或本帧可跳过，-1 发生不可恢复错误。
+ */
+static int process_gateway_stream(MediaGatewayCtx *ctx,
+                                  MediaGatewayRunState *state,
+                                  const MediaGatewayCapturedFrame *frame,
+                                  int stream_idx) {
+    const uint8_t *encode_input = NULL;
+    size_t encode_input_len = 0;
+    uint8_t *h264_data = NULL;
+    size_t h264_len = 0;
+    int is_key_frame = 0;
+    uint64_t encode_put_ts_us = 0;
+    uint64_t encode_get_ts_us = 0;
+    MppEncoderTiming mpp_timing;
+    int encode_ret;
+
+    if (!ctx->stream_enabled[stream_idx]) return 0;
+    if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0) return -1;
+
+    encode_ret = encode_stream_frame(ctx,
+                                     state,
+                                     stream_idx,
+                                     frame,
+                                     encode_input,
+                                     encode_input_len,
+                                     &h264_data,
+                                     &h264_len,
+                                     &is_key_frame,
+                                     &encode_put_ts_us,
+                                     &encode_get_ts_us,
+                                     &mpp_timing);
+    if (encode_ret != 0) return (encode_ret < 0) ? -1 : 0;
+    if (!h264_data || h264_len == 0) return 0;
+
+    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0) return -1;
+    record_stream_benchmark(ctx, stream_idx, frame, encode_put_ts_us, encode_get_ts_us, &mpp_timing);
+    maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
+    return 0;
+}
+
+/**
+ * @description: 清空当前吞吐统计窗口。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @return {void}
+ */
+static void reset_throughput_window(MediaGatewayCtx *ctx) {
+    int i;
+    ctx->stat_frames = 0;
+    ctx->stat_bytes = 0;
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+        ctx->stream_stat_frames[i] = 0;
+        ctx->stream_stat_bytes[i] = 0;
+    }
+}
+
+/**
+ * @description: 到达配置周期后打印吞吐、sink 状态和 BENCH 信息，并重置统计窗口。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @return {void}
+ */
+static void log_throughput_if_due(MediaGatewayCtx *ctx) {
+    uint64_t now = get_now_us();
+    uint64_t span_us = now - ctx->stat_last_ts_us;
+    double span_sec;
+    double fps;
+    double kbps;
+    int i;
+
+    if (span_us < (uint64_t)ctx->config.stats_interval_sec * 1000000ULL) return;
+
+    span_sec = (double)span_us / 1000000.0;
+    fps = (span_sec > 0.0) ? ((double)ctx->stat_frames / span_sec) : 0.0;
+    kbps = (span_sec > 0.0) ? ((double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+    fprintf(stderr, "[STAT] total_fps=%.2f total_bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
+           fps, kbps, ctx->stat_frames, ctx->stat_bytes);
+
+    for (i = 0; i < ctx->config.stream_count; ++i) {
+        double sfps;
+        double skbps;
+        if (!ctx->stream_enabled[i]) continue;
+        sfps = (span_sec > 0.0) ? ((double)ctx->stream_stat_frames[i] / span_sec) : 0.0;
+        skbps = (span_sec > 0.0) ? ((double)ctx->stream_stat_bytes[i] * 8.0 / 1000.0 / span_sec) : 0.0;
+        fprintf(stderr, "[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
+                i,
+               ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
+               sfps,
+               skbps,
+               ctx->stream_stat_frames[i],
+               ctx->stream_stat_bytes[i]);
+    }
+
+    log_sink_stats(ctx);
+    bench_log_and_reset_if_due(ctx);
+    reset_throughput_window(ctx);
+    ctx->stat_last_ts_us = now;
+}
+
+int media_gateway_run(MediaGatewayCtx *ctx) 
+{
+    MediaGatewayRunState state;
+
+    if (!ctx || !ctx->running) 
+    {
         fprintf(stderr, "[ERROR] media_gateway_run failed: invalid ctx or not running\n");
         return -1;
     }
 
-    while (ctx->running) {
-        /* Per-captured-frame timing baseline from driver dequeue. */
-        uint64_t dqbuf_ts_us = 0;
-        uint64_t driver_to_dqbuf_us = 0; // 从驱动开始采集到v4l2_capture_frame返回的时间差，反映了驱动处理这一帧的总耗时
-        uint64_t frame_copy_us = 0;
-        uint64_t capture_start_ts_us = get_now_us(); // capture调用开始的时间戳
-        uint64_t capture_end_ts_us = 0;
-        uint64_t capture_call_us = 0;
+    memset(&state, 0, sizeof(state));
+    while (ctx->running) 
+    {
+        MediaGatewayCapturedFrame frame;
         int stream_idx;
+        int capture_ret = capture_gateway_frame(ctx, &state, &frame);
 
-        /* Retry capture with backoff; fail hard after too many consecutive errors. */
-        if (v4l2_capture_frame(&ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us, &frame_copy_us) < 0) {
-            consecutive_capture_fail++;
-            if (consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
-                fprintf(stderr,
-                        "[ERROR] media_gateway_run failed: capture failed continuously count=%d limit=%d\n",
-                        consecutive_capture_fail,
-                        ctx->config.max_consecutive_failures);
-                return -1;
-            }
-            usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
+        if (capture_ret < 0) 
+        {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: capture_gateway_frame error\n");
+            return -1;
+        }
+        if (capture_ret == 0) 
+        {
+            fprintf(stderr, "[WARN] media_gateway_run: capture failed but retrying\n");
             continue;
         }
-        capture_end_ts_us = get_now_us(); // capture调用结束的时间戳
-        capture_call_us = capture_end_ts_us - capture_start_ts_us; // capture调用的耗时
-        consecutive_capture_fail = 0;
 
-        /* One raw frame can be reused by multiple output streams. */
-        for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
-            const MediaGatewayStreamConfig *stream_cfg;
-            const uint8_t *encode_input;
-            size_t encode_input_len;
-            ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
-            uint8_t *h264_data = NULL;
-            size_t h264_len = 0;
-            int is_key_frame = 0;
-            uint64_t encode_put_ts_us = 0;
-            uint64_t encode_get_ts_us = 0;
-            MppEncoderTiming mpp_timing;
-            MediaBuffer *buffer = NULL;
-            MediaPacket packet;
-            int i;
-            int sink_hit = 0;
-
-            if (!ctx->stream_enabled[stream_idx]) continue;
-            stream_cfg = &ctx->config.streams[stream_idx];
-            if (prepare_stream_encode_input(ctx,
-                                            stream_idx,
-                                            raw_frame,
-                                            (size_t)raw_len,
-                                            &encode_input,
-                                            &encode_input_len,
-                                            &scale_path) != 0) {
-                fprintf(stderr, "[ERROR] media_gateway_run failed: prepare_stream_encode_input stream=%d name=%s\n",
-                        stream_idx,
-                        stream_cfg->name ? stream_cfg->name : "unknown");
-                return -1;
-            }
-            if (scale_path == SCALE_PATH_CPU_NEAREST && !rga_fallback_warned[stream_idx]) {
-                fprintf(stderr,
-                        "[WARN] stream=%d fallback to CPU nearest scaler (RGA unavailable or failed)\n",
-                        stream_idx);
-                rga_fallback_warned[stream_idx] = 1;
-            }
-
-            /* Handle external key-frame request before encoding this frame. */
-            trigger_external_idr_if_needed(ctx, stream_idx);
-            if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
-                                         encode_input,
-                                         encode_input_len,
-                                         frame_id,
-                                         &h264_data,
-                                         &h264_len,
-                                         &is_key_frame,
-                                         &encode_put_ts_us,
-                                         &encode_get_ts_us,
-                                         &mpp_timing) < 0) {
-                /* Rebuild encoder if one stream keeps failing to encode. */
-                consecutive_encode_fail[stream_idx]++;
-                if (consecutive_encode_fail[stream_idx] >= 3) {
-                    if (reset_encoder(ctx, stream_idx) != 0) {
-                        fprintf(stderr, "[ERROR] media_gateway_run failed: reset_encoder stream=%d name=%s\n",
-                                stream_idx,
-                                stream_cfg->name ? stream_cfg->name : "unknown");
-                        return -1;
-                    }
-                    consecutive_encode_fail[stream_idx] = 0;
-                }
-                continue;
-            }
-            consecutive_encode_fail[stream_idx] = 0;
-            if (!h264_data || h264_len == 0) continue;
-
-            /* Copy encoded payload into shared media buffer for multi-sink fanout. */
-            if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
-                fprintf(stderr, "[ERROR] media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu\n",
-                        stream_idx,
-                        h264_len);
-                return -1;
-            }
-
-            media_packet_init(&packet);
-            packet.frame_type = MEDIA_FRAME_TYPE_VIDEO;
-            packet.codec = MEDIA_CODEC_H264;
-            packet.buffer = buffer;
-            packet.frame_id = frame_id;
-            /* TODO:没B帧的情况下，DTS和PTS是相等的，都赋值从v4l2采集的时间 */
-            packet.pts_us = dqbuf_ts_us;
-            packet.dts_us = dqbuf_ts_us;
-            packet.is_key_frame = is_key_frame;
-
-            /* Fan out only to sinks that belong to this stream index. */
-            for (i = 0; i < ctx->sink_count; ++i) {
-                if (ctx->sink_stream_index[i] != stream_idx) continue;
-                sink_hit = 1;
-                media_sink_enqueue(&ctx->sinks[i], &packet);
-            }
-
-            /* Benchmark sampling is throttled to reduce overhead. */
-            if (ctx->bench_enable && stream_idx == 0 && (frame_id % (uint64_t)ctx->bench_sample_every == 0)) {
-                uint64_t dqbuf_to_put_us = (encode_put_ts_us >= dqbuf_ts_us) ? (encode_put_ts_us - dqbuf_ts_us) : 0;
-                uint64_t put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
-                uint64_t dqbuf_to_get_us = (encode_get_ts_us >= dqbuf_ts_us) ? (encode_get_ts_us - dqbuf_ts_us) : 0;
-                uint64_t dqbuf_to_fanout_us = (get_now_us() >= dqbuf_ts_us) ? (get_now_us() - dqbuf_ts_us) : 0;
-                bench_record_sample(ctx,
-                                    driver_to_dqbuf_us,
-                                    capture_call_us,
-                                    frame_copy_us,
-                                    dqbuf_to_put_us,
-                                    put_to_get_us,
-                                    &mpp_timing,
-                                    dqbuf_to_get_us,
-                                    dqbuf_to_fanout_us);
-            }
-
-            /* Optional local H264 dump for stream 0. */
-            if (ctx->record_fp && stream_idx == 0) {
-                size_t written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
-                if (written != h264_len) fprintf(stderr, "[WARN] local record write short: %zu/%zu\n", written, h264_len);
-                if ((frame_id % (uint64_t)ctx->config.record_flush_interval_frames) == 0) fflush(ctx->record_fp);
-            }
-
-            /* Count throughput only when frame was actually enqueued to at least one sink. */
-            if (sink_hit) {
-                ctx->stat_frames++;
-                ctx->stat_bytes += h264_len;
-                ctx->stream_stat_frames[stream_idx]++;
-                ctx->stream_stat_bytes[stream_idx] += h264_len;
-            }
-            media_packet_reset(&packet);
-        }
-
+        for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) 
         {
-            /* Periodic per-window reporting, then reset counters. */
-            uint64_t now = get_now_us();
-            uint64_t span_us = now - ctx->stat_last_ts_us;
-            if (span_us >= (uint64_t)ctx->config.stats_interval_sec * 1000000ULL) {
-                double span_sec = (double)span_us / 1000000.0;
-                double fps = (span_sec > 0.0) ? ((double)ctx->stat_frames / span_sec) : 0.0;
-                double kbps = (span_sec > 0.0) ? ((double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
-                int i;
-                printf("[STAT] total_fps=%.2f total_bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
-                       fps, kbps, ctx->stat_frames, ctx->stat_bytes);
-                for (i = 0; i < ctx->config.stream_count; ++i) {
-                    double sfps;
-                    double skbps;
-                    if (!ctx->stream_enabled[i]) continue;
-                    sfps = (span_sec > 0.0) ? ((double)ctx->stream_stat_frames[i] / span_sec) : 0.0;
-                    skbps = (span_sec > 0.0) ? ((double)ctx->stream_stat_bytes[i] * 8.0 / 1000.0 / span_sec) : 0.0;
-                    printf("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
-                           i,
-                           ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
-                           sfps,
-                           skbps,
-                           ctx->stream_stat_frames[i],
-                           ctx->stream_stat_bytes[i]);
-                }
-                log_sink_stats(ctx);
-                bench_log_and_reset_if_due(ctx);
-                ctx->stat_frames = 0;
-                ctx->stat_bytes = 0;
-                for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-                    ctx->stream_stat_frames[i] = 0;
-                    ctx->stream_stat_bytes[i] = 0;
-                }
-                ctx->stat_last_ts_us = now;
+            if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) 
+            {
+                fprintf(stderr, "[ERROR] media_gateway_run failed: process_gateway_stream error\n");
+                return -1;
             }
         }
+        // 记录吞吐统计和 BENCH 信息，并在周期到达时打印日志和重置窗口
+        log_throughput_if_due(ctx);
     }
 
     return 0;

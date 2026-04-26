@@ -25,10 +25,10 @@
 typedef struct {
     int fd;                 /* 摄像头设备文件描述符。 */
     void *buf[4];           /* 驱动 mmap 出来的采集缓冲区地址。 */
-    int buf_len[4];         /* 各采集缓冲区长度。 */
+    int buf_len[4];         /* 每个采集缓冲区的长度。 */
     int buf_count;          /* 实际申请到的驱动缓冲区数量。 */
     uint64_t frame_id;      /* 已采集帧计数。 */
-    uint8_t *frame_cache;   /* 拷贝后的稳定帧缓存，供外部安全读取。 */
+    uint8_t *frame_cache;   /* 拷贝后的稳定用户态帧缓存，供调用方读取。 */
     int frame_cache_len;    /* frame_cache 当前可用容量。 */
 } V4L2CaptureCtx;
 
@@ -44,6 +44,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        uint64_t *frame_id,
                        uint64_t *dqbuf_ts_us,
                        uint64_t *driver_to_dqbuf_us,
+                       uint64_t *dqbuf_ioctl_us,
                        uint64_t *frame_copy_us);
 
 #ifdef __cplusplus

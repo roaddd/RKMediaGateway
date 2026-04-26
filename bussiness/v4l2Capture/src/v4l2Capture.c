@@ -8,9 +8,9 @@
 #endif
 
 /**
- * @description: 输出 V4L2 接口错误日志
- * @param {const char *} msg
- * @param {int} ret
+ * @description: 打印 V4L2 接口错误日志。
+ * @param {const char *} msg 错误上下文描述。
+ * @param {int} ret 错误码。
  * @return {static void}
  */
 static void print_v4l2_error(const char *msg, int ret) {
@@ -18,7 +18,7 @@ static void print_v4l2_error(const char *msg, int ret) {
 }
 
 /**
- * @description: 获取当前单调时钟时间，单位微秒
+ * @description: 获取当前单调时钟时间，单位微秒。
  * @return {static uint64_t}
  */
 static uint64_t get_now_us(void) {
@@ -29,7 +29,7 @@ static uint64_t get_now_us(void) {
 
 #if V4L2_CAPTURE_ENABLE_OSD
 /**
- * @description: 获取当前实时时钟时间，单位微秒
+ * @description: 获取当前实时时钟时间，单位微秒。
  * @return {static uint64_t}
  */
 static uint64_t get_realtime_us(void) {
@@ -39,9 +39,9 @@ static uint64_t get_realtime_us(void) {
 }
 
 /**
- * @description: 获取字符对应的 5x7 点阵数据
- * @param {char} c
- * @param {uint8_t} rows
+ * @description: 获取字符对应的 5x7 点阵数据。
+ * @param {char} c 输入字符。
+ * @param {uint8_t} rows 输出点阵行数据。
  * @return {static int}
  */
 static int glyph5x7(char c, uint8_t rows[7]) {
@@ -65,14 +65,14 @@ static int glyph5x7(char c, uint8_t rows[7]) {
 }
 
 /**
- * @description: 在 NV12 图像亮度平面绘制文本
- * @param {uint8_t *} nv12
- * @param {int} width
- * @param {int} height
- * @param {int} x
- * @param {int} y
- * @param {const char *} text
- * @param {int} scale
+ * @description: 在 NV12 图像的 Y 亮度平面上绘制文本。
+ * @param {uint8_t *} nv12 NV12 图像数据。
+ * @param {int} width 图像宽度。
+ * @param {int} height 图像高度。
+ * @param {int} x 文本起始 x 坐标。
+ * @param {int} y 文本起始 y 坐标。
+ * @param {const char *} text 待绘制文本。
+ * @param {int} scale 点阵缩放倍数。
  * @return {static void}
  */
 static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y, const char *text, int scale) {
@@ -125,8 +125,8 @@ static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y,
 #endif
 
 /**
- * @description: 初始化 V4L2 采集模块
- * @param {V4L2CaptureCtx *} ctx
+ * @description: 初始化 V4L2 采集模块。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
  * @return {int}
  */
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
@@ -189,8 +189,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
-    // V4L2 缓冲越多，采集到应用层的帧可能越“旧”。
-    // 这里把队列深度从 4 降到 2，减少采集侧排队时延（代价是抗抖动能力略降）。
+    // V4L2 buffer depth affects latency. Fewer buffers reduce queued stale frames but lower jitter tolerance.
     req.count = 2;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
@@ -270,14 +269,15 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 }
 
 /**
- * @description: 采集一帧图像数据
- * @param {V4L2CaptureCtx *} ctx
- * @param {uint8_t **} frame_data
- * @param {int *} frame_len
- * @param {uint64_t *} frame_id
- * @param {uint64_t *} dqbuf_ts_us
- * @param {uint64_t *} driver_to_dqbuf_us
- * @param {uint64_t *} frame_copy_us
+ * @description: 采集一帧 NV12 图像数据。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
+ * @param {uint8_t **} frame_data 输出帧数据指针，指向内部 frame_cache。
+ * @param {int *} frame_len 输出帧数据长度。
+ * @param {uint64_t *} frame_id 输出递增帧号。
+ * @param {uint64_t *} dqbuf_ts_us VIDIOC_DQBUF 返回后的单调时钟时间。
+ * @param {uint64_t *} driver_to_dqbuf_us 驱动帧时间戳到 DQBUF 返回后的时间差。
+ * @param {uint64_t *} dqbuf_ioctl_us VIDIOC_DQBUF ioctl 调用耗时。
+ * @param {uint64_t *} frame_copy_us mmap buffer 拷贝到 frame_cache 的耗时。
  * @return {int}
  */
 int v4l2_capture_frame(V4L2CaptureCtx *ctx,
@@ -286,8 +286,9 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        uint64_t *frame_id,
                        uint64_t *dqbuf_ts_us,
                        uint64_t *driver_to_dqbuf_us,
+                       uint64_t *dqbuf_ioctl_us,
                        uint64_t *frame_copy_us) {
-    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us || !frame_copy_us) {
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us || !dqbuf_ioctl_us || !frame_copy_us) {
         return -1;
     }
 
@@ -302,16 +303,16 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     buf.length = V4L2_CAPTURE_MAX_PLANES;
     buf.m.planes = planes;
 
-    *dqbuf_ts_us = get_now_us();
+    uint64_t dqbuf_ioctl_start_us = get_now_us();
     if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
         fprintf(stderr, "[ERROR] dqbuf failed: %s (errno=%d)\n", strerror(errno), errno);
         return -1;
     }
-    *driver_to_dqbuf_us = get_now_us() - *dqbuf_ts_us; // 从驱动开始采集到 dqbuf 返回的时间差，反映了驱动处理这一帧的总耗时
-#if 0
     *dqbuf_ts_us = get_now_us();
+    *dqbuf_ioctl_us = *dqbuf_ts_us - dqbuf_ioctl_start_us;
+#if 1
     {
-        // driver_ts_us为驱动给这一帧打的时间戳，driver_to_dqbuf_us反映了从驱动开始采集到v4l2_capture_frame返回的时间差，理论上这个时间差应该包含了驱动处理这一帧的总耗时（包括采集、ISP处理、DMA传输等），是评估整体链路性能的关键指标。
+        // 驱动时间戳表示该帧在内核侧的时间点；与 dqbuf_ts_us 的差值可反映帧在驱动队列中的滞留时间。
         uint64_t driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
         // 计算从驱动开始采集到v4l2_capture_frame返回的时间差，反映了驱动处理这一帧的总耗时
         // 包括这一帧积压在驱动缓冲区内的时间？
@@ -329,7 +330,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // printf("[TRACE] frame=%" PRIu64 " step=after_vidioc_dqbuf ts_us=%" PRIu64 "\n",
     //        *frame_id, *dqbuf_ts_us);
 
-    // 某些驱动上 bytesused 可能大于初始预估值，这里按需扩容，避免越界。
+    // 某些驱动的 bytesused 可能大于初始预估值，这里按需扩容，避免越界。
     if ((int)planes[0].bytesused > ctx->frame_cache_len) {
         uint8_t *new_cache = (uint8_t *)realloc(ctx->frame_cache, planes[0].bytesused);
         if (!new_cache) {
@@ -347,7 +348,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // 旧实现直接把 mmap 缓冲地址返回给上层，然后马上执行 QBUF。
     // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
     // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
-    // 这一帧的拷贝耗时
+    // 这一帧的拷贝耗时4-5ms
     {
         uint64_t copy_start_us = get_now_us();
         memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
@@ -368,8 +369,8 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
 }
 
 /**
- * @description: 释放 V4L2 采集模块资源
- * @param {V4L2CaptureCtx *} ctx
+ * @description: 释放 V4L2 采集模块资源。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
  * @return {void}
  */
 void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {

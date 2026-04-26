@@ -23,6 +23,7 @@ int main() {
     uint64_t frame_id = 0;
     uint64_t dqbuf_ts_us = 0;
     uint64_t driver_to_dqbuf_us = 0;
+    uint64_t dqbuf_ioctl_us = 0;
     uint64_t frame_copy_us = 0;
     int frame_count = 0;
 
@@ -49,6 +50,7 @@ int main() {
                                      &frame_id,
                                      &dqbuf_ts_us,
                                      &driver_to_dqbuf_us,
+                                     &dqbuf_ioctl_us,
                                      &frame_copy_us);
         if (ret == -1) {
             // 真正的错误，退出

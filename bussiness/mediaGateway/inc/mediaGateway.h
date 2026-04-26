@@ -116,6 +116,8 @@ typedef struct {
 
     uint64_t bench_driver_to_dqbuf_sum_us;     /* driver_ts -> dqbuf 时间累计。 */
     uint64_t bench_driver_to_dqbuf_max_us;     /* driver_ts -> dqbuf 最大值。 */
+    uint64_t bench_dqbuf_ioctl_sum_us;         /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
+    uint64_t bench_dqbuf_ioctl_max_us;         /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
     uint64_t bench_capture_call_sum_us;        /* v4l2_capture_frame 调用耗时累计。 */
     uint64_t bench_capture_call_max_us;        /* v4l2_capture_frame 调用最大耗时。 */
     uint64_t bench_capture_copy_sum_us;        /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
@@ -139,6 +141,23 @@ typedef struct {
     uint64_t bench_dqbuf_to_fanout_sum_us;     /* dqbuf -> fanout 完成累计。 */
     uint64_t bench_dqbuf_to_fanout_max_us;     /* dqbuf -> fanout 完成最大值。 */
 } MediaGatewayCtx;
+
+typedef struct {
+    uint8_t *raw_frame;             /* 当前采集到的 NV12 帧数据，指向 v4l2Capture 内部 frame_cache。 */
+    int raw_len;                    /* 当前 NV12 帧有效数据长度。 */
+    uint64_t frame_id;              /* 当前采集帧号。 */
+    uint64_t dqbuf_ts_us;           /* VIDIOC_DQBUF 返回后的单调时钟时间。 */
+    uint64_t driver_to_dqbuf_us;    /* 驱动帧时间戳到 DQBUF 返回后的时间差。 */
+    uint64_t dqbuf_ioctl_us;        /* VIDIOC_DQBUF ioctl 调用耗时。 */
+    uint64_t frame_copy_us;         /* mmap buffer 拷贝到 frame_cache 的耗时。 */
+    uint64_t capture_call_us;       /* v4l2_capture_frame 整体调用耗时。 */
+} MediaGatewayCapturedFrame;
+
+typedef struct {
+    int consecutive_capture_fail;                         /* 连续采集失败次数。 */
+    int consecutive_encode_fail[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路连续编码失败次数。 */
+    int rga_fallback_warned[MEDIA_GATEWAY_MAX_STREAMS];     /* 每路 CPU 缩放 fallback 告警是否已打印。 */
+} MediaGatewayRunState;
 
 int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config);
 int media_gateway_run(MediaGatewayCtx *ctx);

@@ -27,7 +27,7 @@ int media_buffer_create_copy(const uint8_t *data, size_t size, MediaBuffer **out
         free(buffer);
         return -1;
     }
-
+    /* 这里不是真正的拷贝一帧，而是共享数据指针。 */
     memcpy(buffer->data, data, size);
     buffer->size = size;
     /* 初始引用属于当前生产者；后续每入一个 sink 队列会额外 +1。 */
