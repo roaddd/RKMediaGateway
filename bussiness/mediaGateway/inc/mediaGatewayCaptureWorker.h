@@ -10,14 +10,14 @@
 extern "C" {
 #endif
 
-#define MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS 3
+#define MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS 2
 
 typedef struct {
     uint8_t *data;                  /* 槽位内保存的一帧 NV12 数据副本。 */
     size_t capacity;                /* 当前槽位已分配容量。 */
     MediaGatewayCapturedFrame frame; /* 与 data 对应的一帧采集元信息。 */
     uint64_t seq;                   /* 槽位帧序号，用于区分新旧帧。 */
-    int valid;                      /* 槽位是否保存了尚未消费的新帧。 */
+    int valid;                      /* 槽位是否保存了“还没被编码线程取走”的新帧。 */
     int in_use;                     /* 编码线程是否正在使用该槽位。 */
 } MediaGatewayCaptureSlot;
 
@@ -27,6 +27,9 @@ typedef struct {
     pthread_mutex_t lock;           /* 保护槽位、运行状态和统计字段。 */
     pthread_cond_t cond;            /* 新帧到达或线程退出时唤醒消费者。 */
 
+    // 最新帧缓冲池设计为三槽：一个正在被编码线程使用，一个最新发布但尚未被编码线程 acquire，另一个预备槽位供采集线程发布新帧。
+    // 编码线程永远拿最新帧；如果编码慢了，旧帧可以丢；不能覆盖正在被编码线程使用的帧。
+    // 如果要做录像不丢帧，则要换成阻塞的队列。
     MediaGatewayCaptureSlot slots[MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS]; /* 最新帧三槽缓冲。 */
     int latest_slot;                /* 当前最新可消费槽位下标，-1 表示暂无新帧。 */
     uint64_t next_seq;              /* 下一帧发布序号。 */

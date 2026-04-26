@@ -1025,7 +1025,7 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
     put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
     dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
     dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
-
+#if 0
     /*
      * 逐帧 BENCH 日志：用于观察单帧时间线。
      * 配置 GATEWAY_BENCH_SAMPLE_EVERY=1 时每一帧都会打印。
@@ -1059,7 +1059,7 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
              mpp_timing ? mpp_timing->total_us : 0,
              dqbuf_to_get_us,
              dqbuf_to_fanout_us);
-
+#endif
     bench_record_sample(ctx,
                         frame->driver_to_dqbuf_us,
                         frame->dqbuf_ioctl_us,

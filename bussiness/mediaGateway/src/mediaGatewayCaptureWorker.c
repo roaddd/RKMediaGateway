@@ -111,9 +111,15 @@ static int capture_worker_find_write_slot(MediaGatewayCaptureWorker *worker) {
  */
 static void capture_worker_drop_stale_slots(MediaGatewayCaptureWorker *worker, int keep_slot) {
     int i;
-    for (i = 0; i < MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS; ++i) {
-        if (i == keep_slot) continue;
-        if (!worker->slots[i].in_use && worker->slots[i].valid) {
+    for (i = 0; i < MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS; ++i) 
+    {
+        if (i == keep_slot) 
+        {
+            continue;
+        }
+        // 丢弃所有非 keep_slot 的旧帧，统计丢弃数；正在被编码线程使用的槽位不丢弃。
+        if (!worker->slots[i].in_use && worker->slots[i].valid) 
+        {
             worker->slots[i].valid = 0;
             worker->dropped_frames++;
         }
@@ -164,6 +170,7 @@ static int capture_worker_publish_frame(MediaGatewayCaptureWorker *worker,
     slot->valid = 1;
     worker->latest_slot = slot_idx;
 
+    // 发布新帧后丢弃旧帧，保证编码线程拿到的永远是最新帧。
     capture_worker_drop_stale_slots(worker, slot_idx);
     pthread_cond_signal(&worker->cond);
     pthread_mutex_unlock(&worker->lock);
