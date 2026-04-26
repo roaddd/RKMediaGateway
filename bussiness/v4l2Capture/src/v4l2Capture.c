@@ -125,27 +125,62 @@ static void draw_text_nv12_y(uint8_t *nv12, int width, int height, int x, int y,
 #endif
 
 /**
- * @description: 初始化 V4L2 采集模块。
+ * @description: 使用默认参数初始化 V4L2 采集模块。
  * @param {V4L2CaptureCtx *} ctx 采集上下文。
  * @return {int}
  */
 int v4l2_capture_init(V4L2CaptureCtx *ctx) {
+    V4L2CaptureConfig config;
+    memset(&config, 0, sizeof(config));
+    config.device_path = CAM_DEV_PATH;
+    config.width = CAPTURE_WIDTH;
+    config.height = CAPTURE_HEIGHT;
+    config.pixelformat = CAPTURE_FORMAT;
+    config.buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    return v4l2_capture_init_with_config(ctx, &config);
+}
+
+/**
+ * @description: 按指定设备、分辨率和格式初始化 V4L2 采集模块。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
+ * @param {V4L2CaptureConfig *} config 采集配置。
+ * @return {int}
+ */
+int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *config) {
+    const char *device_path;
+    int capture_width;
+    int capture_height;
+    uint32_t pixelformat;
+    int buffer_count;
+    struct v4l2_capability cap;
+    struct v4l2_format fmt;
+    struct v4l2_requestbuffers req;
+    enum v4l2_buf_type type;
+    int ret;
+    int i;
+
     if (!ctx) {
         fprintf(stderr, "[ERROR] ctx is NULL\n");
         return -1;
     }
+    device_path = (config && config->device_path && config->device_path[0] != '\0') ? config->device_path : CAM_DEV_PATH;
+    capture_width = (config && config->width > 0) ? config->width : CAPTURE_WIDTH;
+    capture_height = (config && config->height > 0) ? config->height : CAPTURE_HEIGHT;
+    pixelformat = (config && config->pixelformat != 0) ? config->pixelformat : CAPTURE_FORMAT;
+    buffer_count = (config && config->buffer_count > 0) ? config->buffer_count : V4L2_CAPTURE_BUFFER_COUNT;
+    if (buffer_count > V4L2_CAPTURE_BUFFER_COUNT) buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+
     memset(ctx, 0, sizeof(V4L2CaptureCtx));
     ctx->fd = -1;
 
-    ctx->fd = open(CAM_DEV_PATH, O_RDWR, 0);
+    ctx->fd = open(device_path, O_RDWR, 0);
     if (ctx->fd < 0) {
         perror("[ERROR] open camera dev failed");
         return -1;
     }
-    printf("[INFO] open camera %s success\n", CAM_DEV_PATH);
+    printf("[INFO] open camera %s success\n", device_path);
 
-    struct v4l2_capability cap;
-    int ret = ioctl(ctx->fd, VIDIOC_QUERYCAP, &cap);
+    ret = ioctl(ctx->fd, VIDIOC_QUERYCAP, &cap);
     if (ret < 0) {
         print_v4l2_error("VIDIOC_QUERYCAP failed", ret);
         close(ctx->fd);
@@ -166,12 +201,11 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     }
     printf("[INFO] camera support video capture and streaming\n");
 
-    struct v4l2_format fmt;
     memset(&fmt, 0, sizeof(fmt));
     fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-    fmt.fmt.pix_mp.width = CAPTURE_WIDTH;
-    fmt.fmt.pix_mp.height = CAPTURE_HEIGHT;
-    fmt.fmt.pix_mp.pixelformat = CAPTURE_FORMAT;
+    fmt.fmt.pix_mp.width = capture_width;
+    fmt.fmt.pix_mp.height = capture_height;
+    fmt.fmt.pix_mp.pixelformat = pixelformat;
     fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
 
     ret = ioctl(ctx->fd, VIDIOC_S_FMT, &fmt);
@@ -186,13 +220,15 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
            fmt.fmt.pix_mp.width,
            fmt.fmt.pix_mp.height,
            fmt.fmt.pix_mp.pixelformat);
+    ctx->width = (int)fmt.fmt.pix_mp.width;
+    ctx->height = (int)fmt.fmt.pix_mp.height;
+    ctx->pixelformat = fmt.fmt.pix_mp.pixelformat;
 
-    struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
     // V4L2 缓冲深度会影响采集稳定性。
     // demo 和 v4l2-ctl 都使用 4 个 mmap buffer；2 个 buffer 在有用户态拷贝和编码调度时容易让 ISP 队列变薄，
     // 从而把 VIDIOC_DQBUF 等待时间拉长到 40ms 以上，所以这里与测试命令保持一致。
-    req.count = V4L2_CAPTURE_BUFFER_COUNT;
+    req.count = (uint32_t)buffer_count;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
 
@@ -215,7 +251,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     }
     printf("[INFO] request %d buffers success\n", ctx->buf_count);
 
-    for (int i = 0; i < ctx->buf_count; i++) {
+    for (i = 0; i < ctx->buf_count; i++) {
         struct v4l2_buffer buf;
         struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
 
@@ -256,7 +292,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
         }
     }
 
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     ret = ioctl(ctx->fd, VIDIOC_STREAMON, &type);
     if (ret < 0) {
         print_v4l2_error("VIDIOC_STREAMON failed", ret);
@@ -268,7 +304,7 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
     // 预分配一块用户态缓存。
     // 后续每次取帧都会先把 DQBUF 得到的数据拷贝到这里，再把原始缓冲 QBUF 回驱动。
     // 这样上层拿到的 frame_data 在本次函数返回后仍然有效，不会因为驱动复用底层缓冲而被覆盖。
-    ctx->frame_cache_len = CAPTURE_WIDTH * CAPTURE_HEIGHT * 3 / 2;
+    ctx->frame_cache_len = ctx->width * ctx->height * 3 / 2;
     ctx->frame_cache = (uint8_t *)malloc((size_t)ctx->frame_cache_len);
     if (!ctx->frame_cache) {
         fprintf(stderr, "[ERROR] malloc frame cache failed\n");

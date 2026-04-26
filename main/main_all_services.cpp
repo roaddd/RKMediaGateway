@@ -26,6 +26,7 @@ static void fill_stream_config(MediaGatewayStreamConfig *stream,
 
     stream->enabled = cfg_int("ENABLE", is_main ? 1 : 0);
     stream->name = cfg_str("NAME", is_main ? "main" : "sub");
+    stream->source_index = cfg_int("SOURCE_INDEX", is_main ? 0 : 1);
     stream->width = cfg_int("WIDTH", is_main ? CAPTURE_WIDTH : (CAPTURE_WIDTH / 2));
     stream->height = cfg_int("HEIGHT", is_main ? CAPTURE_HEIGHT : (CAPTURE_HEIGHT / 2));
     stream->fps = cfg_int("FPS", is_main ? 30 : 15);
@@ -94,6 +95,30 @@ static void fill_stream_config(MediaGatewayStreamConfig *stream,
     stream->gb28181.queue_capacity = cfg_int("GB28181_QUEUE_CAPACITY", 64);
 }
 
+static void fill_capture_source_config(MediaGatewayCaptureSourceConfig *source,
+                                       int is_main,
+                                       simple_config::Reader &file_config,
+                                       std::list<std::string> &string_pool) {
+    const char *prefix = is_main ? "CAPTURE_MAIN_" : "CAPTURE_SUB_";
+    auto cfg_str = [&](const std::string &suffix, const char *fallback) -> const char * {
+        std::string key = prefix + suffix;
+        string_pool.push_back(file_config.get_string(key.c_str(), fallback));
+        return string_pool.back().c_str();
+    };
+    auto cfg_int = [&](const std::string &suffix, int fallback) -> int {
+        std::string key = prefix + suffix;
+        return file_config.get_int(key.c_str(), fallback);
+    };
+
+    source->enabled = cfg_int("ENABLE", is_main ? 1 : 0);
+    source->name = cfg_str("NAME", is_main ? "main_path" : "self_path");
+    source->device_path = cfg_str("DEVICE", is_main ? "/dev/video0" : "/dev/video1");
+    source->width = cfg_int("WIDTH", is_main ? CAPTURE_WIDTH : 1280);
+    source->height = cfg_int("HEIGHT", is_main ? CAPTURE_HEIGHT : 720);
+    source->pixelformat = (uint32_t)cfg_int("PIXELFORMAT", CAPTURE_FORMAT);
+    source->buffer_count = cfg_int("BUFFER_COUNT", V4L2_CAPTURE_BUFFER_COUNT);
+}
+
 static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_config::Reader &file_config) {
     if (!config) return;
     printf("[MAIN_CFG] source=%s loaded=%d\n",
@@ -119,10 +144,11 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config, simple_co
            config->bench_print_interval_sec);
     for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         const MediaGatewayStreamConfig *s = &config->streams[i];
-        printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d\n",
+        printf("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d\n",
                i,
                s->name ? s->name : "unknown",
                s->enabled,
+               s->source_index,
                s->width,
                s->height,
                s->fps,
@@ -170,8 +196,11 @@ int main(int argc, char **argv)
     config.bench_enable = cfg_int("GATEWAY_BENCH_ENABLE", 0);
     config.bench_sample_every = cfg_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
     config.bench_print_interval_sec = cfg_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
+    config.capture_source_count = cfg_int("GATEWAY_CAPTURE_SOURCE_COUNT", 2);
     config.stream_count = cfg_int("GATEWAY_STREAM_COUNT", 2);
 
+    fill_capture_source_config(&config.capture_sources[0], 1, file_config, string_pool);
+    fill_capture_source_config(&config.capture_sources[1], 0, file_config, string_pool);
     fill_stream_config(&config.streams[0], 1, file_config, string_pool);
     fill_stream_config(&config.streams[1], 0, file_config, string_pool);
 
@@ -179,8 +208,17 @@ int main(int argc, char **argv)
     if (file_config.get_int("STREAM_MAIN_ENABLE", -1) < 0)
     {
         config.stream_count = 1;
+        config.capture_source_count = 1;
+        config.capture_sources[0].enabled = 1;
+        config.capture_sources[0].name = "main_path";
+        config.capture_sources[0].device_path = "/dev/video0";
+        config.capture_sources[0].width = CAPTURE_WIDTH;
+        config.capture_sources[0].height = CAPTURE_HEIGHT;
+        config.capture_sources[0].pixelformat = CAPTURE_FORMAT;
+        config.capture_sources[0].buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
         config.streams[0].enabled = 1;
         config.streams[0].name = "main";
+        config.streams[0].source_index = 0;
         config.streams[0].width = CAPTURE_WIDTH;
         config.streams[0].height = CAPTURE_HEIGHT;
         config.streams[0].fps = cfg_int("GATEWAY_FPS", 30);

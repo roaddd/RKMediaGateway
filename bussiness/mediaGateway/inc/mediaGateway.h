@@ -16,10 +16,22 @@ extern "C" {
 
 #define MEDIA_GATEWAY_MAX_STREAMS 2
 #define MEDIA_GATEWAY_MAX_SINKS 8
+#define MEDIA_GATEWAY_MAX_CAPTURE_SOURCES MEDIA_GATEWAY_MAX_STREAMS
+
+typedef struct {
+    int enabled;                     /* 该采集源是否启用。 */
+    const char *name;                /* 采集源名称，例如 main_path/self_path。 */
+    const char *device_path;         /* V4L2 设备节点，例如 /dev/video0。 */
+    int width;                       /* 采集宽度。 */
+    int height;                      /* 采集高度。 */
+    uint32_t pixelformat;            /* V4L2 像素格式，例如 V4L2_PIX_FMT_NV12。 */
+    int buffer_count;                /* V4L2 mmap buffer 数量。 */
+} MediaGatewayCaptureSourceConfig;
 
 typedef struct {
     int enabled;                     /* 该码流是否启用。 */
     const char *name;                /* 码流名称，建议 main/sub。 */
+    int source_index;                /* 绑定的采集源下标。 */
     int width;                       /* 该码流编码宽度。 */
     int height;                      /* 该码流编码高度。 */
     int fps;                         /* 该码流帧率。 */
@@ -71,6 +83,8 @@ typedef struct {
     int bench_enable;                /* 是否开启性能测试埋点日志。 */
     int bench_sample_every;          /* 性能埋点每隔多少帧采样一次。 */
     int bench_print_interval_sec;    /* 性能埋点日志打印周期，单位秒。 */
+    int capture_source_count;        /* 采集源数量。 */
+    MediaGatewayCaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
     int stream_count;                /* 流配置数量，<=0 表示使用兼容模式自动生成 main 流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
     RtspSinkConfig rtsp;             /* RTSP 协议专用配置块。 */
@@ -86,16 +100,16 @@ typedef struct {
 } MediaGatewayThroughput;
 
 typedef struct {
-    V4L2CaptureCtx capture;                    /* 采集模块上下文。 */
+    V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
     MppEncoderCtx encoders[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块上下文。 */
     int stream_enabled[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流是否启用。 */
+    int capture_ready[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源是否已初始化成功。 */
     MediaSink sinks[MEDIA_GATEWAY_MAX_SINKS];  /* 已启用的输出通道集合。 */
     int sink_stream_index[MEDIA_GATEWAY_MAX_SINKS]; /* 每个 sink 绑定的 stream 下标。stream:main、sub等；sink:gb28181Sink、rtmpSink、rtspSink等 */
     int sink_count;                            /* 当前启用的 sink 数量。 */
     MediaGatewayConfig config;                 /* 归一化后的网关配置副本。 */
     int rtsp_sink_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 rtsp sink 索引。 */
     int gb28181_sink_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 gb28181 sink 索引。 */
-    int capture_ready;                         /* 采集模块是否已初始化成功。 */
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
     int running;                               /* 主循环是否正在运行。 */
     FILE *record_fp;                           /* 本地录像文件句柄。 */

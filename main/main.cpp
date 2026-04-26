@@ -61,6 +61,14 @@ int main(int argc, char **argv)
     config.bench_enable = cfg_int("GATEWAY_BENCH_ENABLE", 0);
     config.bench_sample_every = cfg_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
     config.bench_print_interval_sec = cfg_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
+    config.capture_source_count = 1;
+    config.capture_sources[0].enabled = 1;
+    config.capture_sources[0].name = cfg_str("CAPTURE_MAIN_NAME", "main_path");
+    config.capture_sources[0].device_path = cfg_str("CAPTURE_MAIN_DEVICE", "/dev/video0");
+    config.capture_sources[0].width = cfg_int("CAPTURE_MAIN_WIDTH", CAPTURE_WIDTH);
+    config.capture_sources[0].height = cfg_int("CAPTURE_MAIN_HEIGHT", CAPTURE_HEIGHT);
+    config.capture_sources[0].pixelformat = (uint32_t)cfg_int("CAPTURE_MAIN_PIXELFORMAT", CAPTURE_FORMAT);
+    config.capture_sources[0].buffer_count = cfg_int("CAPTURE_MAIN_BUFFER_COUNT", V4L2_CAPTURE_BUFFER_COUNT);
 
     /* RtspSinkConfig */
     config.rtsp.name = cfg_str("RTSP_NAME", "rtsp");

@@ -173,41 +173,80 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
      * ISP direct path: capture output already matches target stream size.
      * Here "ISP direct" means no extra scaling in media gateway.
      */
-    if (stream_cfg->width == CAPTURE_WIDTH && stream_cfg->height == CAPTURE_HEIGHT) {
-        *encode_input = raw_frame;
-        *encode_input_len = raw_len;
-        *path_used = SCALE_PATH_ISP_DIRECT;
-        return 0;
-    }
+    {
+        int source_idx = stream_cfg->source_index;
+        int capture_width;
+        int capture_height;
 
-    scaled_len = (size_t)stream_cfg->width * stream_cfg->height * 3 / 2;
-    if (ensure_scaled_frame_cache(ctx, stream_idx, scaled_len) != 0) return -1;
+        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count) return -1;
+        capture_width = ctx->config.capture_sources[source_idx].width;
+        capture_height = ctx->config.capture_sources[source_idx].height;
 
-    if (scale_nv12_rga_if_available(raw_frame,
-                                    CAPTURE_WIDTH,
-                                    CAPTURE_HEIGHT,
-                                    ctx->scaled_frame_cache[stream_idx],
-                                    stream_cfg->width,
-                                    stream_cfg->height) == 0) {
+        if (stream_cfg->width == capture_width && stream_cfg->height == capture_height) {
+            *encode_input = raw_frame;
+            *encode_input_len = raw_len;
+            *path_used = SCALE_PATH_ISP_DIRECT;
+            return 0;
+        }
+
+        scaled_len = (size_t)stream_cfg->width * stream_cfg->height * 3 / 2;
+        if (ensure_scaled_frame_cache(ctx, stream_idx, scaled_len) != 0) return -1;
+
+        if (scale_nv12_rga_if_available(raw_frame,
+                                        capture_width,
+                                        capture_height,
+                                        ctx->scaled_frame_cache[stream_idx],
+                                        stream_cfg->width,
+                                        stream_cfg->height) == 0) {
+            *encode_input = ctx->scaled_frame_cache[stream_idx];
+            *encode_input_len = scaled_len;
+            *path_used = SCALE_PATH_RGA;
+            return 0;
+        }
+
+        if (scale_nv12_nearest(raw_frame,
+                               capture_width,
+                               capture_height,
+                               ctx->scaled_frame_cache[stream_idx],
+                               stream_cfg->width,
+                               stream_cfg->height) != 0) {
+            return -1;
+        }
+
         *encode_input = ctx->scaled_frame_cache[stream_idx];
         *encode_input_len = scaled_len;
-        *path_used = SCALE_PATH_RGA;
+        *path_used = SCALE_PATH_CPU_NEAREST;
         return 0;
     }
 
-    if (scale_nv12_nearest(raw_frame,
-                           CAPTURE_WIDTH,
-                           CAPTURE_HEIGHT,
-                           ctx->scaled_frame_cache[stream_idx],
-                           stream_cfg->width,
-                           stream_cfg->height) != 0) {
-        return -1;
+}
+
+static void fill_default_capture_source(MediaGatewayCaptureSourceConfig *dst,
+                                        const MediaGatewayCaptureSourceConfig *src,
+                                        int source_idx) {
+    MediaGatewayCaptureSourceConfig src_copy;
+    int has_src = 0;
+
+    if (src) {
+        src_copy = *src;
+        has_src = 1;
     }
 
-    *encode_input = ctx->scaled_frame_cache[stream_idx];
-    *encode_input_len = scaled_len;
-    *path_used = SCALE_PATH_CPU_NEAREST;
-    return 0;
+    memset(dst, 0, sizeof(*dst));
+    if (has_src) {
+        *dst = src_copy;
+    }
+
+    dst->enabled = dst->enabled ? 1 : 0;
+    dst->name = safe_str(dst->name, (source_idx == 0) ? "main_path" : "self_path");
+    dst->device_path = safe_str(dst->device_path, (source_idx == 0) ? "/dev/video0" : "/dev/video1");
+    if (dst->width <= 0) dst->width = (source_idx == 0) ? CAPTURE_WIDTH : 1280;
+    if (dst->height <= 0) dst->height = (source_idx == 0) ? CAPTURE_HEIGHT : 720;
+    if (dst->width & 1) dst->width -= 1;
+    if (dst->height & 1) dst->height -= 1;
+    if (dst->pixelformat == 0) dst->pixelformat = CAPTURE_FORMAT;
+    if (dst->buffer_count <= 0) dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    if (dst->buffer_count > V4L2_CAPTURE_BUFFER_COUNT) dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
 }
 
 static void fill_default_stream(MediaGatewayStreamConfig *dst,
@@ -231,6 +270,9 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
 
     dst->enabled = dst->enabled ? 1 : 0;
     dst->name = safe_str(dst->name, (stream_idx == 0) ? "main" : "sub");
+    if (!has_src || dst->source_index < 0 || dst->source_index >= MEDIA_GATEWAY_MAX_CAPTURE_SOURCES) {
+        dst->source_index = stream_idx;
+    }
     if (dst->width <= 0) dst->width = default_width;
     if (dst->height <= 0) dst->height = default_height;
     if (dst->width & 1) dst->width -= 1;
@@ -305,11 +347,23 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
     dst->bench_enable = dst->bench_enable ? 1 : DEFAULT_BENCH_ENABLE;
     if (dst->bench_sample_every <= 0) dst->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
     if (dst->bench_print_interval_sec <= 0) dst->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
+    if (dst->capture_source_count <= 0) dst->capture_source_count = 1;
+    if (dst->capture_source_count > MEDIA_GATEWAY_MAX_CAPTURE_SOURCES) {
+        dst->capture_source_count = MEDIA_GATEWAY_MAX_CAPTURE_SOURCES;
+    }
+    for (i = 0; i < dst->capture_source_count; ++i) {
+        fill_default_capture_source(&dst->capture_sources[i], &dst->capture_sources[i], i);
+    }
+    for (i = dst->capture_source_count; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
+        memset(&dst->capture_sources[i], 0, sizeof(dst->capture_sources[i]));
+        dst->capture_sources[i].name = (i == 0) ? "main_path" : "self_path";
+    }
 
     if (dst->stream_count <= 0) {
         memset(&s0, 0, sizeof(s0));
         s0.enabled = 1;
         s0.name = "main";
+        s0.source_index = 0;
         s0.width = CAPTURE_WIDTH;
         s0.height = CAPTURE_HEIGHT;
         s0.fps = (dst->fps > 0) ? dst->fps : DEFAULT_ENCODE_FPS;
@@ -335,11 +389,20 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
             s0.enable_rtsp = DEFAULT_ENABLE_RTSP;
         }
         fill_default_stream(&dst->streams[0], &s0, 0);
+        dst->capture_sources[0].enabled = 1;
         dst->stream_count = 1;
     } else {
         if (dst->stream_count > MEDIA_GATEWAY_MAX_STREAMS) dst->stream_count = MEDIA_GATEWAY_MAX_STREAMS;
         for (i = 0; i < dst->stream_count; ++i) {
             fill_default_stream(&dst->streams[i], &dst->streams[i], i);
+            if (dst->streams[i].enabled) {
+                int source_idx = dst->streams[i].source_index;
+                if (source_idx < 0 || source_idx >= dst->capture_source_count) {
+                    source_idx = 0;
+                    dst->streams[i].source_index = 0;
+                }
+                dst->capture_sources[source_idx].enabled = 1;
+            }
         }
     }
 
@@ -710,7 +773,8 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
     int i;
     if (!cfg) return;
 
-    printf("[CFG] stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d bench(enable=%d sample_every=%d print_interval_sec=%d)\n",
+    printf("[CFG] capture_source_count=%d stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d bench(enable=%d sample_every=%d print_interval_sec=%d)\n",
+           cfg->capture_source_count,
            cfg->stream_count,
            cfg->low_latency_mode,
            cfg->stats_interval_sec,
@@ -723,12 +787,26 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
            (cfg->record_file_path && cfg->record_file_path[0] != '\0') ? cfg->record_file_path : "(disabled)",
            cfg->record_flush_interval_frames);
 
+    for (i = 0; i < cfg->capture_source_count && i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
+        const MediaGatewayCaptureSourceConfig *source = &cfg->capture_sources[i];
+        printf("[CFG] capture_source=%d name=%s enabled=%d device=%s size=%dx%d format=0x%x buffers=%d\n",
+               i,
+               source->name ? source->name : "unknown",
+               source->enabled,
+               source->device_path ? source->device_path : "unknown",
+               source->width,
+               source->height,
+               source->pixelformat,
+               source->buffer_count);
+    }
+
     for (i = 0; i < cfg->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         const MediaGatewayStreamConfig *s = &cfg->streams[i];
-        printf("[CFG] stream=%d name=%s enabled=%d size=%dx%d fps=%d bitrate=%d gop=%d rc=%d\n",
+        printf("[CFG] stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d gop=%d rc=%d\n",
                i,
                s->name ? s->name : "unknown",
                s->enabled,
+               s->source_index,
                s->width,
                s->height,
                s->fps,
@@ -783,14 +861,48 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         ctx->gb28181_sink_index[i] = -1;
     }
 
-    if (v4l2_capture_init(&ctx->capture) < 0) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: v4l2_capture_init\n");
-        goto fail;
+    for (i = 0; i < ctx->config.capture_source_count; ++i) {
+        V4L2CaptureConfig capture_config;
+        const MediaGatewayCaptureSourceConfig *source = &ctx->config.capture_sources[i];
+        if (!source->enabled) continue;
+
+        memset(&capture_config, 0, sizeof(capture_config));
+        capture_config.device_path = source->device_path;
+        capture_config.width = source->width;
+        capture_config.height = source->height;
+        capture_config.pixelformat = source->pixelformat;
+        capture_config.buffer_count = source->buffer_count;
+        if (v4l2_capture_init_with_config(&ctx->captures[i], &capture_config) < 0) {
+            fprintf(stderr,
+                    "[ERROR] media_gateway_init failed: capture source=%d name=%s device=%s\n",
+                    i,
+                    source->name ? source->name : "unknown",
+                    source->device_path ? source->device_path : "unknown");
+            goto fail;
+        }
+        ctx->capture_ready[i] = 1;
+        ctx->config.capture_sources[i].width = ctx->captures[i].width;
+        ctx->config.capture_sources[i].height = ctx->captures[i].height;
+        ctx->config.capture_sources[i].pixelformat = ctx->captures[i].pixelformat;
+        printf("[CFG] capture_source=%d actual size=%dx%d format=0x%x\n",
+               i,
+               ctx->captures[i].width,
+               ctx->captures[i].height,
+               ctx->captures[i].pixelformat);
     }
-    ctx->capture_ready = 1;
 
     for (i = 0; i < ctx->config.stream_count; ++i) {
+        int source_idx;
         if (!ctx->config.streams[i].enabled) continue;
+        source_idx = ctx->config.streams[i].source_index;
+        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count || !ctx->capture_ready[source_idx]) {
+            fprintf(stderr,
+                    "[ERROR] media_gateway_init failed: stream=%d name=%s capture source not ready index=%d\n",
+                    i,
+                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
+                    source_idx);
+            goto fail;
+        }
         if (reset_encoder(ctx, i) != 0) {
             fprintf(stderr, "[ERROR] media_gateway_init failed: reset_encoder stream=%d name=%s\n",
                     i,
@@ -1210,10 +1322,12 @@ static void log_throughput_if_due(MediaGatewayCtx *ctx) {
  */
 int media_gateway_run(MediaGatewayCtx *ctx) {
     MediaGatewayRunState state;
-    MediaGatewayCaptureWorker capture_worker;
-    int worker_inited = 0;
+    MediaGatewayCaptureWorker capture_workers[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    int worker_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    int worker_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
     int ret = 0;
     MediaGatewayCapturedFrame frame;
+    int source_idx = -1;
     int stream_idx = -1;
     int slot_index = -1;
     int acquire_ret = 0;
@@ -1224,59 +1338,80 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     }
 
     memset(&state, 0, sizeof(state));
-    memset(&capture_worker, 0, sizeof(capture_worker));
+    memset(capture_workers, 0, sizeof(capture_workers));
+    memset(worker_inited, 0, sizeof(worker_inited));
+    memset(worker_started, 0, sizeof(worker_started));
 
-    if (media_gateway_capture_worker_init(&capture_worker,
-                                          &ctx->capture,
-                                          ctx->config.capture_retry_ms,
-                                          ctx->config.max_consecutive_failures) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: init capture worker\n");
-        return -1;
-    }
-    worker_inited = 1;
-    // 启动 capture worker 后才能进入主循环，否则可能错过早期错误导致无法正确退出。
-    if (media_gateway_capture_worker_start(&capture_worker) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: start capture worker\n");
-        ret = -1;
-        goto out;
+    for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
+        if (!ctx->capture_ready[source_idx]) continue;
+        if (media_gateway_capture_worker_init(&capture_workers[source_idx],
+                                              &ctx->captures[source_idx],
+                                              ctx->config.capture_retry_ms,
+                                              ctx->config.max_consecutive_failures) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: init capture worker source=%d\n", source_idx);
+            ret = -1;
+            goto out;
+        }
+        worker_inited[source_idx] = 1;
+        if (media_gateway_capture_worker_start(&capture_workers[source_idx]) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: start capture worker source=%d\n", source_idx);
+            ret = -1;
+            goto out;
+        }
+        worker_started[source_idx] = 1;
     }
 
     while (ctx->running)
     {
-        /*
-         * 最多等待 100ms，避免没有新帧时主循环长时间卡住。
-         * 超时不算错误，只用于继续刷新统计窗口并检查退出标志。
-         */
-        acquire_ret = media_gateway_capture_worker_acquire_latest(&capture_worker, &frame, &slot_index, 100);
-        if (acquire_ret < 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: capture worker stopped by fatal error\n");
-            ret = -1;
-            break;
-        }
-        if (acquire_ret == 0) {
-            log_throughput_if_due(ctx);
-            continue;
-        }
+        int got_frame = 0;
 
-        /*
-         * frame.raw_frame 指向 worker 槽位缓存，必须在 release 之前完成所有码流处理。
-         * 当前策略是只处理最新帧，编码来不及时允许丢旧帧，以保证实时性优先。
-         */
-        for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
-            if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) {
-                fprintf(stderr, "[ERROR] media_gateway_run failed: process_gateway_stream error\n");
+        for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
+            if (!worker_started[source_idx]) continue;
+
+            /*
+             * 每个采集源最多等待 10ms，避免某一路无帧时拖住其它码流。
+             * 超时不算错误，主循环继续检查其它 source 和退出标志。
+             */
+            slot_index = -1;
+            acquire_ret = media_gateway_capture_worker_acquire_latest(&capture_workers[source_idx], &frame, &slot_index, 10);
+            if (acquire_ret < 0) {
+                fprintf(stderr, "[ERROR] media_gateway_run failed: capture worker stopped by fatal error source=%d\n", source_idx);
                 ret = -1;
                 break;
             }
+            if (acquire_ret == 0) continue;
+            got_frame = 1;
+
+            /*
+             * frame.raw_frame 指向 worker 槽位缓存，必须在 release 之前完成所有绑定到该 source 的码流处理。
+             * 当前策略是每个 source 只处理最新帧，编码来不及时允许丢旧帧，以保证实时性优先。
+             */
+            for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
+                if (!ctx->stream_enabled[stream_idx]) continue;
+                if (ctx->config.streams[stream_idx].source_index != source_idx) continue;
+                if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) {
+                    fprintf(stderr,
+                            "[ERROR] media_gateway_run failed: process_gateway_stream source=%d stream=%d\n",
+                            source_idx,
+                            stream_idx);
+                    ret = -1;
+                    break;
+                }
+            }
+
+            media_gateway_capture_worker_release(&capture_workers[source_idx], slot_index);
+            if (ret != 0) break;
         }
 
-        media_gateway_capture_worker_release(&capture_worker, slot_index);
         log_throughput_if_due(ctx);
+        if (!got_frame) usleep(1000);
         if (ret != 0) break;
     }
 
 out:
-    if (worker_inited) media_gateway_capture_worker_deinit(&capture_worker);
+    for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx) {
+        if (worker_inited[source_idx]) media_gateway_capture_worker_deinit(&capture_workers[source_idx]);
+    }
     return ret;
 }
 
@@ -1310,9 +1445,11 @@ void media_gateway_deinit(MediaGatewayCtx *ctx) {
         }
         ctx->scaled_frame_cache_size[i] = 0;
     }
-    if (ctx->capture_ready) {
-        v4l2_capture_deinit(&ctx->capture);
-        ctx->capture_ready = 0;
+    for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
+        if (ctx->capture_ready[i]) {
+            v4l2_capture_deinit(&ctx->captures[i]);
+            ctx->capture_ready[i] = 0;
+        }
     }
     memset(&ctx->config, 0, sizeof(ctx->config));
     ctx->running = 0;
