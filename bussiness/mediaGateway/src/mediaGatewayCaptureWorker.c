@@ -1,4 +1,5 @@
 #include "mediaGatewayCaptureWorker.h"
+#include "logger.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -60,7 +61,7 @@ static int capture_slot_ensure_capacity(MediaGatewayCaptureSlot *slot, size_t ne
 
     new_data = (uint8_t *)realloc(slot->data, need_size);
     if (!new_data) {
-        fprintf(stderr, "[ERROR] capture worker realloc slot failed need=%zu\n", need_size);
+        LOG_ERROR("capture worker realloc slot failed need=%zu", need_size);
         return -1;
     }
     slot->data = new_data;
@@ -78,7 +79,9 @@ static int capture_worker_find_write_slot(MediaGatewayCaptureWorker *worker) {
     int i;
 
     for (i = 0; i < MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS; ++i) {
-        if (!worker->slots[i].in_use && !worker->slots[i].valid) return i;
+        if (!worker->slots[i].in_use && !worker->slots[i].valid) {
+            return i;
+        }
     }
 
     if (worker->latest_slot >= 0 &&
@@ -90,7 +93,9 @@ static int capture_worker_find_write_slot(MediaGatewayCaptureWorker *worker) {
 
     for (i = 0; i < MEDIA_GATEWAY_CAPTURE_WORKER_SLOTS; ++i) {
         if (!worker->slots[i].in_use) {
-            if (worker->slots[i].valid) worker->dropped_frames++;
+            if (worker->slots[i].valid) {
+                worker->dropped_frames++;
+            }
             return i;
         }
     }
@@ -128,7 +133,10 @@ static int capture_worker_publish_frame(MediaGatewayCaptureWorker *worker,
     MediaGatewayCaptureSlot *slot;
     size_t copy_len;
 
-    if (!worker || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0) return -1;
+    if (!worker || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0) {
+        LOG_ERROR("capture worker publish frame failed: invalid arguments");
+        return -1;
+    }
     copy_len = (size_t)src_frame->raw_len;
 
     pthread_mutex_lock(&worker->lock);
@@ -140,6 +148,7 @@ static int capture_worker_publish_frame(MediaGatewayCaptureWorker *worker,
     }
 
     slot = &worker->slots[slot_idx];
+    // 确保槽位有足够容量保存当前帧数据，失败则标记 worker 进入 fatal 状态。
     if (capture_slot_ensure_capacity(slot, copy_len) != 0) {
         worker->fatal_error = 1;
         worker->running = 0;
@@ -169,12 +178,11 @@ static int capture_worker_publish_frame(MediaGatewayCaptureWorker *worker,
  */
 static void *capture_worker_thread(void *arg) {
     MediaGatewayCaptureWorker *worker = (MediaGatewayCaptureWorker *)arg;
+    uint64_t capture_start_us;
+    uint64_t capture_end_us;
+    MediaGatewayCapturedFrame frame;
 
     while (capture_worker_should_run(worker)) {
-        MediaGatewayCapturedFrame frame;
-        uint64_t capture_start_us;
-        uint64_t capture_end_us;
-
         memset(&frame, 0, sizeof(frame));
         capture_start_us = capture_worker_now_us();
         if (v4l2_capture_frame(worker->capture,
@@ -192,10 +200,9 @@ static void *capture_worker_thread(void *arg) {
                 worker->running = 0;
                 pthread_cond_broadcast(&worker->cond);
                 pthread_mutex_unlock(&worker->lock);
-                fprintf(stderr,
-                        "[ERROR] capture worker failed continuously count=%d limit=%d\n",
-                        worker->consecutive_failures,
-                        worker->max_consecutive_failures);
+                LOG_ERROR("capture worker failed continuously count=%d limit=%d",
+                          worker->consecutive_failures,
+                          worker->max_consecutive_failures);
                 break;
             }
             usleep((useconds_t)worker->retry_ms * 1000U);
@@ -205,8 +212,12 @@ static void *capture_worker_thread(void *arg) {
         capture_end_us = capture_worker_now_us();
         frame.capture_call_us = capture_end_us - capture_start_us;
         worker->consecutive_failures = 0;
-        if (!capture_worker_should_run(worker)) break;
-        if (capture_worker_publish_frame(worker, &frame) != 0) break;
+        if (!capture_worker_should_run(worker)) {
+            break;
+        }
+        if (capture_worker_publish_frame(worker, &frame) != 0) {
+            break;
+        }
     }
 
     pthread_mutex_lock(&worker->lock);
@@ -223,16 +234,23 @@ int media_gateway_capture_worker_init(MediaGatewayCaptureWorker *worker,
                                       V4L2CaptureCtx *capture,
                                       int retry_ms,
                                       int max_consecutive_failures) {
-    if (!worker || !capture) return -1;
+    if (!worker || !capture) {
+        LOG_ERROR("capture worker init failed: invalid arguments");
+        return -1;
+    }
     memset(worker, 0, sizeof(*worker));
     worker->capture = capture;
     worker->retry_ms = (retry_ms > 0) ? retry_ms : 5;
     worker->max_consecutive_failures = (max_consecutive_failures > 0) ? max_consecutive_failures : 30;
     worker->latest_slot = -1;
     worker->next_seq = 1;
-    if (pthread_mutex_init(&worker->lock, NULL) != 0) return -1;
+    if (pthread_mutex_init(&worker->lock, NULL) != 0) {
+        LOG_ERROR("capture worker init failed: pthread_mutex_init");
+        return -1;
+    }
     if (pthread_cond_init(&worker->cond, NULL) != 0) {
         pthread_mutex_destroy(&worker->lock);
+        LOG_ERROR("capture worker init failed: pthread_cond_init");
         return -1;
     }
     return 0;
@@ -242,15 +260,23 @@ int media_gateway_capture_worker_init(MediaGatewayCaptureWorker *worker,
  * @description: 创建后台采集线程。
  */
 int media_gateway_capture_worker_start(MediaGatewayCaptureWorker *worker) {
-    if (!worker || !worker->capture) return -1;
-    if (worker->started) return 0;
+    if (!worker || !worker->capture) {
+        LOG_ERROR("capture worker start failed: invalid arguments");
+        return -1;
+    }
+    if (worker->started) {
+        LOG_ERROR("capture worker start failed: already started");
+        return -1;
+    }
 
     worker->running = 1;
     if (pthread_create(&worker->thread, NULL, capture_worker_thread, worker) != 0) {
         worker->running = 0;
+        LOG_ERROR("capture worker start failed: pthread_create");
         return -1;
     }
     worker->started = 1;
+    LOG_INFO("capture worker started");
     return 0;
 }
 
@@ -265,14 +291,16 @@ int media_gateway_capture_worker_acquire_latest(MediaGatewayCaptureWorker *worke
     int wait_ret = 0;
     int idx;
 
-    if (!worker || !frame || !slot_index) return -1;
+    if (!worker || !frame || !slot_index) {
+        LOG_ERROR("capture worker acquire_latest failed: invalid arguments");
+        return -1;
+    }
     *slot_index = -1;
     memset(frame, 0, sizeof(*frame));
     capture_worker_make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&worker->lock);
-    while (!worker->fatal_error &&
-           worker->running &&
+    while (!worker->fatal_error && worker->running &&
            (worker->latest_slot < 0 ||
             !worker->slots[worker->latest_slot].valid ||
             worker->slots[worker->latest_slot].seq == worker->consumed_seq)) {
@@ -329,6 +357,7 @@ void media_gateway_capture_worker_stop(MediaGatewayCaptureWorker *worker) {
     if (worker->started) {
         pthread_join(worker->thread, NULL);
         worker->started = 0;
+        LOG_INFO("capture worker stopped");
     }
 }
 

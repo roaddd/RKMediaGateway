@@ -2,6 +2,8 @@
 
 #include "mediaGatewayCaptureWorker.h"
 
+#include "logger.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -451,36 +453,36 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
 
     if (ctx->bench_sample_count > 0) {
         sample_count = (double)ctx->bench_sample_count;
-        printf("[BENCH] samples=%" PRIu64
-               " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us\n"
-               " avg_dqbuf_ioctl=%.2fus max_dqbuf_ioctl=%" PRIu64 "us\n"
-               " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us\n"
-               " avg_capture_copy=%.2fus max_capture_copy=%" PRIu64 "us\n"
-               " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us\n"
-               " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us\n"
-               " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us\n"
-               " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us\n"
-               " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us\n"
-               " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us\n"
-               " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us\n"
-               " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us\n"
-               " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us\n\n\n",
-               ctx->bench_sample_count,
-               (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
-               (double)ctx->bench_dqbuf_ioctl_sum_us / sample_count, ctx->bench_dqbuf_ioctl_max_us,
-               (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
-               (double)ctx->bench_capture_copy_sum_us / sample_count, ctx->bench_capture_copy_max_us,
-               (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
-               (double)ctx->bench_put_to_get_sum_us / sample_count, ctx->bench_put_to_get_max_us,
-               (double)ctx->bench_mpp_input_copy_sum_us / sample_count, ctx->bench_mpp_input_copy_max_us,
-               (double)ctx->bench_mpp_put_frame_sum_us / sample_count, ctx->bench_mpp_put_frame_max_us,
-               (double)ctx->bench_mpp_get_packet_sum_us / sample_count, ctx->bench_mpp_get_packet_max_us,
-               (double)ctx->bench_mpp_packet_copy_sum_us / sample_count, ctx->bench_mpp_packet_copy_max_us,
-               (double)ctx->bench_mpp_total_sum_us / sample_count, ctx->bench_mpp_total_max_us,
-               (double)ctx->bench_dqbuf_to_get_sum_us / sample_count, ctx->bench_dqbuf_to_get_max_us,
-               (double)ctx->bench_dqbuf_to_fanout_sum_us / sample_count, ctx->bench_dqbuf_to_fanout_max_us);
+        LOG_INFO("[BENCH_SUMMARY] samples=%" PRIu64
+                 " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us"
+                 " avg_dqbuf_ioctl=%.2fus max_dqbuf_ioctl=%" PRIu64 "us"
+                 " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us"
+                 " avg_capture_copy=%.2fus max_capture_copy=%" PRIu64 "us"
+                 " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us"
+                 " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us"
+                 " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us"
+                 " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us"
+                 " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us"
+                 " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us"
+                 " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us"
+                 " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us"
+                 " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us",
+                 ctx->bench_sample_count,
+                 (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
+                 (double)ctx->bench_dqbuf_ioctl_sum_us / sample_count, ctx->bench_dqbuf_ioctl_max_us,
+                 (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
+                 (double)ctx->bench_capture_copy_sum_us / sample_count, ctx->bench_capture_copy_max_us,
+                 (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
+                 (double)ctx->bench_put_to_get_sum_us / sample_count, ctx->bench_put_to_get_max_us,
+                 (double)ctx->bench_mpp_input_copy_sum_us / sample_count, ctx->bench_mpp_input_copy_max_us,
+                 (double)ctx->bench_mpp_put_frame_sum_us / sample_count, ctx->bench_mpp_put_frame_max_us,
+                 (double)ctx->bench_mpp_get_packet_sum_us / sample_count, ctx->bench_mpp_get_packet_max_us,
+                 (double)ctx->bench_mpp_packet_copy_sum_us / sample_count, ctx->bench_mpp_packet_copy_max_us,
+                 (double)ctx->bench_mpp_total_sum_us / sample_count, ctx->bench_mpp_total_max_us,
+                 (double)ctx->bench_dqbuf_to_get_sum_us / sample_count, ctx->bench_dqbuf_to_get_max_us,
+                 (double)ctx->bench_dqbuf_to_fanout_sum_us / sample_count, ctx->bench_dqbuf_to_fanout_max_us);
     } else {
-        printf("[BENCH] samples=0 (no sampled frames in this interval)\n");
+        LOG_INFO("[BENCH_SUMMARY] samples=0 no sampled frames in this interval");
     }
     ctx->bench_last_ts_us = now;
     bench_reset_window(ctx);
@@ -1024,6 +1026,40 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
     dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
     dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
 
+    /*
+     * 逐帧 BENCH 日志：用于观察单帧时间线。
+     * 配置 GATEWAY_BENCH_SAMPLE_EVERY=1 时每一帧都会打印。
+     */
+    LOG_INFO("[BENCH_FRAME] stream=%d frame=%" PRIu64
+             " driver_to_dqbuf=%" PRIu64 "us"
+             " dqbuf_ioctl=%" PRIu64 "us"
+             " capture_call=%" PRIu64 "us"
+             " capture_copy=%" PRIu64 "us"
+             " dqbuf_to_put=%" PRIu64 "us"
+             " put_to_get=%" PRIu64 "us"
+             " mpp_input_copy=%" PRIu64 "us"
+             " mpp_put_frame=%" PRIu64 "us"
+             " mpp_get_packet=%" PRIu64 "us"
+             " mpp_packet_copy=%" PRIu64 "us"
+             " mpp_total=%" PRIu64 "us"
+             " dqbuf_to_get=%" PRIu64 "us"
+             " dqbuf_to_fanout=%" PRIu64 "us",
+             stream_idx,
+             frame->frame_id,
+             frame->driver_to_dqbuf_us,
+             frame->dqbuf_ioctl_us,
+             frame->capture_call_us,
+             frame->frame_copy_us,
+             dqbuf_to_put_us,
+             put_to_get_us,
+             mpp_timing ? mpp_timing->input_copy_us : 0,
+             mpp_timing ? mpp_timing->put_frame_us : 0,
+             mpp_timing ? mpp_timing->get_packet_us : 0,
+             mpp_timing ? mpp_timing->packet_copy_us : 0,
+             mpp_timing ? mpp_timing->total_us : 0,
+             dqbuf_to_get_us,
+             dqbuf_to_fanout_us);
+
     bench_record_sample(ctx,
                         frame->driver_to_dqbuf_us,
                         frame->dqbuf_ioctl_us,
@@ -1080,7 +1116,10 @@ static int process_gateway_stream(MediaGatewayCtx *ctx,
     MppEncoderTiming mpp_timing;
     int encode_ret;
 
-    if (!ctx->stream_enabled[stream_idx]) return 0;
+    if (!ctx->stream_enabled[stream_idx]) {
+        return 0;
+    }
+
     if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0) return -1;
 
     encode_ret = encode_stream_frame(ctx,
@@ -1098,7 +1137,10 @@ static int process_gateway_stream(MediaGatewayCtx *ctx,
     if (encode_ret != 0) return (encode_ret < 0) ? -1 : 0;
     if (!h264_data || h264_len == 0) return 0;
 
-    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0) return -1;
+    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0) {
+        return -1;
+    }
+
     record_stream_benchmark(ctx, stream_idx, frame, encode_put_ts_us, encode_get_ts_us, &mpp_timing);
     maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
     return 0;
@@ -1171,6 +1213,10 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     MediaGatewayCaptureWorker capture_worker;
     int worker_inited = 0;
     int ret = 0;
+    MediaGatewayCapturedFrame frame;
+    int stream_idx = -1;
+    int slot_index = -1;
+    int acquire_ret = 0;
 
     if (!ctx || !ctx->running) {
         fprintf(stderr, "[ERROR] media_gateway_run failed: invalid ctx or not running\n");
@@ -1188,19 +1234,15 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         return -1;
     }
     worker_inited = 1;
-
+    // 启动 capture worker 后才能进入主循环，否则可能错过早期错误导致无法正确退出。
     if (media_gateway_capture_worker_start(&capture_worker) != 0) {
         fprintf(stderr, "[ERROR] media_gateway_run failed: start capture worker\n");
         ret = -1;
         goto out;
     }
 
-    while (ctx->running) {
-        MediaGatewayCapturedFrame frame;
-        int stream_idx;
-        int slot_index = -1;
-        int acquire_ret;
-
+    while (ctx->running)
+    {
         /*
          * 最多等待 100ms，避免没有新帧时主循环长时间卡住。
          * 超时不算错误，只用于继续刷新统计窗口并检查退出标志。

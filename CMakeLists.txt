@@ -13,6 +13,7 @@ endif()
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/logger/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/gb28181/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/inc)
@@ -58,6 +59,7 @@ list(APPEND MEDIA_GATEWAY_SRC
     ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/mediaGatewayCaptureWorker.c
 )
 list(REMOVE_DUPLICATES MEDIA_GATEWAY_SRC)
+file(GLOB LOGGER_SRC ${PROJECT_SOURCE_DIR}/bussiness/logger/src/*.c)
 file(GLOB GB28181_SRC ${PROJECT_SOURCE_DIR}/bussiness/gb28181/src/*.c)
 file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c)
 file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)
@@ -119,6 +121,7 @@ endif()
 if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(v4l2_test
         ${PROJECT_SOURCE_DIR}/main/main_v4l2Capture_test.cpp
+        ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
     )
     target_link_libraries(v4l2_test PRIVATE pthread m)
@@ -130,6 +133,7 @@ endif()
 if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(video0_fps_test
         ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
+        ${LOGGER_SRC}
     )
     target_link_libraries(video0_fps_test PRIVATE pthread m)
     set_target_properties(video0_fps_test PROPERTIES
@@ -140,6 +144,7 @@ endif()
 if(BUILD_TARGET STREQUAL "mpp_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(mpp_test
         ${PROJECT_SOURCE_DIR}/main/main_mpp_h264_test.cpp
+        ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
     )
@@ -161,6 +166,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
 
     add_executable(rtsp_gateway
         ${PROJECT_SOURCE_DIR}/main/main.cpp
+        ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
         ${GATEWAY_OUTPUT_SRC}
@@ -193,6 +199,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
 
     add_executable(dual_output_test
         ${PROJECT_SOURCE_DIR}/main/main_dual_output_test.cpp
+        ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
         ${DUAL_OUTPUT_SRC}
@@ -216,6 +223,7 @@ endif()
 if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device" OR BUILD_TARGET STREQUAL "all")
     add_executable(all_services
         ${PROJECT_SOURCE_DIR}/main/main_all_services.cpp
+        ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_GATEWAY_SRC}
