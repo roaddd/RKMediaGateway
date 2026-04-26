@@ -54,6 +54,10 @@ link_directories(${THIRDPARTY_OPENSSL_LIB_DIR})
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
+list(APPEND MEDIA_GATEWAY_SRC
+    ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/mediaGatewayCaptureWorker.c
+)
+list(REMOVE_DUPLICATES MEDIA_GATEWAY_SRC)
 file(GLOB GB28181_SRC ${PROJECT_SOURCE_DIR}/bussiness/gb28181/src/*.c)
 file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c)
 file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)

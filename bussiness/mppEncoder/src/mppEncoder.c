@@ -318,6 +318,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
     stage_end_us = get_now_us();
     if (timing) {
+        // 这里消耗13ms？
         timing->put_frame_us = stage_end_us - stage_start_us;
     }
     if (ret != MPP_OK) {

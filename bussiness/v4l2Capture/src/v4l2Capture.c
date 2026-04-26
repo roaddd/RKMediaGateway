@@ -348,7 +348,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     // 旧实现直接把 mmap 缓冲地址返回给上层，然后马上执行 QBUF。
     // 这样一旦驱动重新使用这块缓冲，调用方手里的指针就可能在编码前被新帧覆盖。
     // 现在先拷贝到 frame_cache，再 QBUF，保证上层在下一次取帧前看到的是稳定数据。
-    // 这一帧的拷贝耗时4-5ms
+    // 这一帧的拷贝耗时4-5ms，拷贝的size？
     {
         uint64_t copy_start_us = get_now_us();
         memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);

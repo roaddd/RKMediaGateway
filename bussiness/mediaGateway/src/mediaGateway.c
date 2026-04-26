@@ -1,5 +1,7 @@
 ﻿#include "mediaGateway.h"
 
+#include "mediaGatewayCaptureWorker.h"
+
 #include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
@@ -840,54 +842,6 @@ fail:
 }
 
 /**
- * @description: 从 V4L2 采集一帧，并记录采集阶段耗时。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {MediaGatewayRunState *} state 运行期状态和连续失败计数。
- * @param {MediaGatewayCapturedFrame *} frame 输出当前采集帧及其采集耗时。
- * @return {int} 1 表示采集成功；0 表示本次采集失败但可继续重试；-1 表示达到失败阈值。
- */
-static int capture_gateway_frame(MediaGatewayCtx *ctx,
-                                 MediaGatewayRunState *state,
-                                 MediaGatewayCapturedFrame *frame) {
-    uint64_t capture_start_ts_us;
-    uint64_t capture_end_ts_us;
-
-    if (!ctx || !state || !frame) 
-    {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: invalid input parameters\n");
-        return -1;
-    }
-    memset(frame, 0, sizeof(*frame));
-
-    capture_start_ts_us = get_now_us();
-    if (v4l2_capture_frame(&ctx->capture,
-                           &frame->raw_frame,
-                           &frame->raw_len,
-                           &frame->frame_id,
-                           &frame->dqbuf_ts_us,
-                           &frame->driver_to_dqbuf_us,
-                           &frame->dqbuf_ioctl_us,
-                           &frame->frame_copy_us) < 0) 
-    {
-        state->consecutive_capture_fail++;
-        if (state->consecutive_capture_fail >= ctx->config.max_consecutive_failures) {
-            fprintf(stderr,
-                    "[ERROR] media_gateway_run failed: capture failed continuously count=%d limit=%d\n",
-                    state->consecutive_capture_fail,
-                    ctx->config.max_consecutive_failures);
-            return -1;
-        }
-        usleep((useconds_t)ctx->config.capture_retry_ms * 1000U);
-        return 0;
-    }
-
-    capture_end_ts_us = get_now_us();
-    frame->capture_call_us = capture_end_ts_us - capture_start_ts_us;
-    state->consecutive_capture_fail = 0;
-    return 1;
-}
-
-/**
  * @description: 为指定码流准备编码输入，必要时执行缩放。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {MediaGatewayRunState *} state 运行期状态，用于记录 fallback 告警。
@@ -1207,47 +1161,81 @@ static void log_throughput_if_due(MediaGatewayCtx *ctx) {
     ctx->stat_last_ts_us = now;
 }
 
-int media_gateway_run(MediaGatewayCtx *ctx) 
-{
+/**
+ * @description: 网关主循环。采集工作由独立 worker 线程完成，本线程只取最新帧并执行编码/分发。
+ * @param {MediaGatewayCtx *} ctx 网关上下文。
+ * @return {int} 0 正常退出，-1 发生不可恢复错误。
+ */
+int media_gateway_run(MediaGatewayCtx *ctx) {
     MediaGatewayRunState state;
+    MediaGatewayCaptureWorker capture_worker;
+    int worker_inited = 0;
+    int ret = 0;
 
-    if (!ctx || !ctx->running) 
-    {
+    if (!ctx || !ctx->running) {
         fprintf(stderr, "[ERROR] media_gateway_run failed: invalid ctx or not running\n");
         return -1;
     }
 
     memset(&state, 0, sizeof(state));
-    while (ctx->running) 
-    {
+    memset(&capture_worker, 0, sizeof(capture_worker));
+
+    if (media_gateway_capture_worker_init(&capture_worker,
+                                          &ctx->capture,
+                                          ctx->config.capture_retry_ms,
+                                          ctx->config.max_consecutive_failures) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: init capture worker\n");
+        return -1;
+    }
+    worker_inited = 1;
+
+    if (media_gateway_capture_worker_start(&capture_worker) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_run failed: start capture worker\n");
+        ret = -1;
+        goto out;
+    }
+
+    while (ctx->running) {
         MediaGatewayCapturedFrame frame;
         int stream_idx;
-        int capture_ret = capture_gateway_frame(ctx, &state, &frame);
+        int slot_index = -1;
+        int acquire_ret;
 
-        if (capture_ret < 0) 
-        {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: capture_gateway_frame error\n");
-            return -1;
+        /*
+         * 最多等待 100ms，避免没有新帧时主循环长时间卡住。
+         * 超时不算错误，只用于继续刷新统计窗口并检查退出标志。
+         */
+        acquire_ret = media_gateway_capture_worker_acquire_latest(&capture_worker, &frame, &slot_index, 100);
+        if (acquire_ret < 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: capture worker stopped by fatal error\n");
+            ret = -1;
+            break;
         }
-        if (capture_ret == 0) 
-        {
-            fprintf(stderr, "[WARN] media_gateway_run: capture failed but retrying\n");
+        if (acquire_ret == 0) {
+            log_throughput_if_due(ctx);
             continue;
         }
 
-        for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) 
-        {
-            if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) 
-            {
+        /*
+         * frame.raw_frame 指向 worker 槽位缓存，必须在 release 之前完成所有码流处理。
+         * 当前策略是只处理最新帧，编码来不及时允许丢旧帧，以保证实时性优先。
+         */
+        for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
+            if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) {
                 fprintf(stderr, "[ERROR] media_gateway_run failed: process_gateway_stream error\n");
-                return -1;
+                ret = -1;
+                break;
             }
         }
-        // 记录吞吐统计和 BENCH 信息，并在周期到达时打印日志和重置窗口
+
+        media_gateway_capture_worker_release(&capture_worker, slot_index);
         log_throughput_if_due(ctx);
+        if (ret != 0) break;
     }
 
-    return 0;
+out:
+    if (worker_inited) media_gateway_capture_worker_deinit(&capture_worker);
+    return ret;
 }
 
 void media_gateway_stop(MediaGatewayCtx *ctx) {

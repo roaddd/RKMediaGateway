@@ -154,7 +154,6 @@ typedef struct {
 } MediaGatewayCapturedFrame;
 
 typedef struct {
-    int consecutive_capture_fail;                         /* 连续采集失败次数。 */
     int consecutive_encode_fail[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路连续编码失败次数。 */
     int rga_fallback_warned[MEDIA_GATEWAY_MAX_STREAMS];     /* 每路 CPU 缩放 fallback 告警是否已打印。 */
 } MediaGatewayRunState;
