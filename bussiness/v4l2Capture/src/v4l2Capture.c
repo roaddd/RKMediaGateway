@@ -189,8 +189,10 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
-    // V4L2 buffer depth affects latency. Fewer buffers reduce queued stale frames but lower jitter tolerance.
-    req.count = 2;
+    // V4L2 缓冲深度会影响采集稳定性。
+    // demo 和 v4l2-ctl 都使用 4 个 mmap buffer；2 个 buffer 在有用户态拷贝和编码调度时容易让 ISP 队列变薄，
+    // 从而把 VIDIOC_DQBUF 等待时间拉长到 40ms 以上，所以这里与测试命令保持一致。
+    req.count = V4L2_CAPTURE_BUFFER_COUNT;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
     req.memory = V4L2_MEMORY_MMAP;
 
@@ -202,6 +204,15 @@ int v4l2_capture_init(V4L2CaptureCtx *ctx) {
         return -1;
     }
     ctx->buf_count = req.count;
+    if (ctx->buf_count > V4L2_CAPTURE_BUFFER_COUNT) {
+        fprintf(stderr,
+                "[ERROR] driver returned too many buffers count=%d max=%d\n",
+                ctx->buf_count,
+                V4L2_CAPTURE_BUFFER_COUNT);
+        close(ctx->fd);
+        ctx->fd = -1;
+        return -1;
+    }
     printf("[INFO] request %d buffers success\n", ctx->buf_count);
 
     for (int i = 0; i < ctx->buf_count; i++) {

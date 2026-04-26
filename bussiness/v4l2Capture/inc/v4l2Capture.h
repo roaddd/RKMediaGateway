@@ -20,12 +20,13 @@
 #define SAVE_FRAME_COUNT 300
 #define OUTPUT_FILE "capture_nv12.yuv"
 
+#define V4L2_CAPTURE_BUFFER_COUNT 4
 #define V4L2_CAPTURE_MAX_PLANES 1
 
 typedef struct {
     int fd;                 /* 摄像头设备文件描述符。 */
-    void *buf[4];           /* 驱动 mmap 出来的采集缓冲区地址。 */
-    int buf_len[4];         /* 每个采集缓冲区的长度。 */
+    void *buf[V4L2_CAPTURE_BUFFER_COUNT]; /* 驱动 mmap 出来的采集缓冲区地址。 */
+    int buf_len[V4L2_CAPTURE_BUFFER_COUNT]; /* 每个采集缓冲区的长度。 */
     int buf_count;          /* 实际申请到的驱动缓冲区数量。 */
     uint64_t frame_id;      /* 已采集帧计数。 */
     uint8_t *frame_cache;   /* 拷贝后的稳定用户态帧缓存，供调用方读取。 */
