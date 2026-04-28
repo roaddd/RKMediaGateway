@@ -37,11 +37,49 @@ typedef struct {
     int is_key_frame;          /* 是否为关键帧，便于丢帧和重连恢复 */
 } MediaPacket;
 
+/**
+ * @description: 创建媒体缓冲区，并把输入数据拷贝到新分配的缓冲区中。
+ * @param {const uint8_t *} data 输入媒体数据地址。
+ * @param {size_t} size 输入媒体数据字节数。
+ * @param {MediaBuffer **} out_buffer 输出创建成功的缓冲区，初始引用计数为 1。
+ * @return {int} 0 成功，-1 失败。
+ */
 int media_buffer_create_copy(const uint8_t *data, size_t size, MediaBuffer **out_buffer);
+
+/**
+ * @description: 增加媒体缓冲区引用计数，用于多个 MediaPacket 共享同一份数据。
+ * @param {MediaBuffer *} buffer 需要增加引用的缓冲区，允许为 NULL。
+ * @return {void}
+ */
 void media_buffer_retain(MediaBuffer *buffer);
+
+/**
+ * @description: 减少媒体缓冲区引用计数，引用归零时释放数据和缓冲区对象。
+ * @param {MediaBuffer *} buffer 需要释放引用的缓冲区，允许为 NULL。
+ * @return {void}
+ */
 void media_buffer_release(MediaBuffer *buffer);
+
+/**
+ * @description: 初始化媒体包结构体，把所有字段清零。
+ * @param {MediaPacket *} packet 需要初始化的媒体包，允许为 NULL。
+ * @return {void}
+ */
 void media_packet_init(MediaPacket *packet);
+
+/**
+ * @description: 复制媒体包元数据，并增加底层 MediaBuffer 的引用计数。
+ * @param {MediaPacket *} dst 目标媒体包。
+ * @param {const MediaPacket *} src 源媒体包。
+ * @return {void}
+ */
 void media_packet_copy_ref(MediaPacket *dst, const MediaPacket *src);
+
+/**
+ * @description: 重置媒体包，并释放其持有的 MediaBuffer 引用。
+ * @param {MediaPacket *} packet 需要重置的媒体包，允许为 NULL。
+ * @return {void}
+ */
 void media_packet_reset(MediaPacket *packet);
 
 #ifdef __cplusplus

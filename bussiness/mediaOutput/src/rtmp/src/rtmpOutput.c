@@ -1,4 +1,4 @@
-#include "rtmpSink.h"
+﻿#include "../inc/rtmpOutput.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -23,42 +23,35 @@
 #define DEFAULT_RTMP_RECONNECT_INTERVAL_MS 1000
 #define DEFAULT_RTMP_CONNECT_TIMEOUT_MS 3000
 
+/* Annex-B 码流拆分后的 NALU 视图，只引用原始帧内存。 */
 typedef struct {
-    uint8_t *data; /* 指向去掉 Annex-B 起始码后的单个 NALU 负载视图，不拥有底层内存。 */
-    size_t size;   /* 当前 NALU 负载长度。 */
+    uint8_t *data;
+    size_t size;
 } NaluView;
 
+/* RTMP 输出私有状态，负责 librtmp 连接以及 H.264 参数集缓存。 */
 typedef struct {
-    RtmpSinkConfig config;    /* RTMP sink 配置副本，避免依赖外部配置对象生命周期。 */
-    int connected;            /* 当前是否已经完成 RTMP 连接并进入可发送状态。 */
-    int metadata_sent;        /* onMetaData 是否已经在本次会话中发送过。 */
-    int sequence_header_sent; /* AVC sequence header 是否已经在本次会话中发送过。 */
-    uint32_t stream_id;       /* librtmp 返回的 stream id，用于组装发送包。 */
-    uint32_t last_rtmp_ts_ms; /* 最近一次成功发送的视频时间戳，便于日志排查。 */
-    uint8_t *sps;             /* 缓存的 SPS 数据，用于 sequence header 和重连恢复。 */
-    size_t sps_len;           /* SPS 数据长度。 */
-    uint8_t *pps;             /* 缓存的 PPS 数据，用于 sequence header 和重连恢复。 */
-    size_t pps_len;           /* PPS 数据长度。 */
+    MediaOutputRtmpConfig config;
+    int connected;
+    int metadata_sent;
+    int sequence_header_sent;
+    uint32_t stream_id;
+    uint32_t last_rtmp_ts_ms;
+    uint8_t *sps;
+    size_t sps_len;
+    uint8_t *pps;
+    size_t pps_len;
 #if defined(ENABLE_RTMP_LIBRTMP)
-    RTMP *rtmp;               /* librtmp 连接句柄。 */
+    RTMP *rtmp;
 #endif
-} RtmpSinkImpl;
+} RtmpOutputImpl;
 
-/**
- * @description: 返回 RTMP 帧类型描述字符串
- * @param {int} is_key_frame
- * @return {static const char *}
- */
+
 static const char *rtmp_frame_kind(int is_key_frame) {
     return is_key_frame ? "key" : "inter";
 }
 
-/**
- * @description: 判断当前位置是否为 H264 起始码并返回长度
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @return {static int}
- */
+
 static int start_code_len(const uint8_t *data, size_t len) {
     if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
         return 4;
@@ -69,19 +62,11 @@ static int start_code_len(const uint8_t *data, size_t len) {
     return 0;
 }
 
-/**
- * @description: 查找下一个 H264 起始码位置
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @param {size_t} offset
- * @param {size_t *} pos
- * @param {int *} code_len
- * @return {static int}
- */
+
 static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_t *pos, int *code_len) {
     size_t i;
 
-    /* 在 Annex-B 字节流中继续查找下一个 3 字节或 4 字节起始码。 */
+    /* Annex-B 起始码可能是 3 字节或 4 字节。 */
     for (i = offset; i + 3 <= len; ++i) {
         int cur_len = start_code_len(data + i, len - i);
         if (cur_len > 0) {
@@ -93,12 +78,7 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
     return -1;
 }
 
-/**
- * @description: 按大端序写入 32 位整数
- * @param {uint8_t *} dst
- * @param {uint32_t} value
- * @return {static void}
- */
+
 static void write_be32(uint8_t *dst, uint32_t value) {
     dst[0] = (uint8_t)((value >> 24) & 0xFF);
     dst[1] = (uint8_t)((value >> 16) & 0xFF);
@@ -106,24 +86,14 @@ static void write_be32(uint8_t *dst, uint32_t value) {
     dst[3] = (uint8_t)(value & 0xFF);
 }
 
-/**
- * @description: 按大端序写入 16 位整数
- * @param {uint8_t *} dst
- * @param {uint16_t} value
- * @return {static void}
- */
+
 static void write_be16(uint8_t *dst, uint16_t value) {
     dst[0] = (uint8_t)((value >> 8) & 0xFF);
     dst[1] = (uint8_t)(value & 0xFF);
 }
 
 #if defined(ENABLE_RTMP_LIBRTMP)
-/**
- * @description: 按 AMF0 格式写入 double 数值
- * @param {uint8_t *} dst
- * @param {double} value
- * @return {static void}
- */
+
 static void write_amf_double(uint8_t *dst, double value) {
     union {
         double d;
@@ -137,12 +107,7 @@ static void write_amf_double(uint8_t *dst, double value) {
     }
 }
 
-/**
- * @description: 按 AMF0 格式写入字符串值
- * @param {uint8_t *} dst
- * @param {const char *} str
- * @return {static uint8_t *}
- */
+
 static uint8_t *amf_write_string(uint8_t *dst, const char *str) {
     size_t len = str ? strlen(str) : 0;
 
@@ -156,13 +121,7 @@ static uint8_t *amf_write_string(uint8_t *dst, const char *str) {
     return dst;
 }
 
-/**
- * @description: 按 AMF0 格式写入命名数值字段
- * @param {uint8_t *} dst
- * @param {const char *} name
- * @param {double} value
- * @return {static uint8_t *}
- */
+
 static uint8_t *amf_write_named_number(uint8_t *dst, const char *name, double value) {
     size_t name_len = name ? strlen(name) : 0;
 
@@ -178,13 +137,7 @@ static uint8_t *amf_write_named_number(uint8_t *dst, const char *name, double va
     return dst;
 }
 
-/**
- * @description: 按 AMF0 格式写入命名布尔字段
- * @param {uint8_t *} dst
- * @param {const char *} name
- * @param {int} value
- * @return {static uint8_t *}
- */
+
 static uint8_t *amf_write_named_bool(uint8_t *dst, const char *name, int value) {
     size_t name_len = name ? strlen(name) : 0;
 
@@ -199,13 +152,7 @@ static uint8_t *amf_write_named_bool(uint8_t *dst, const char *name, int value) 
     return dst;
 }
 
-/**
- * @description: 按 AMF0 格式写入命名字符串字段
- * @param {uint8_t *} dst
- * @param {const char *} name
- * @param {const char *} value
- * @return {static uint8_t *}
- */
+
 static uint8_t *amf_write_named_string(uint8_t *dst, const char *name, const char *value) {
     size_t name_len = name ? strlen(name) : 0;
     size_t value_len = value ? strlen(value) : 0;
@@ -226,11 +173,7 @@ static uint8_t *amf_write_named_string(uint8_t *dst, const char *name, const cha
     return dst;
 }
 
-/**
- * @description: 写入 AMF 对象结束标记
- * @param {uint8_t *} dst
- * @return {static uint8_t *}
- */
+
 static uint8_t *amf_write_object_end(uint8_t *dst) {
     dst[0] = 0;
     dst[1] = 0;
@@ -239,12 +182,7 @@ static uint8_t *amf_write_object_end(uint8_t *dst) {
 }
 #endif
 
-/**
- * @description: 释放缓存的 SPS 或 PPS 数据
- * @param {uint8_t **} data
- * @param {size_t *} size
- * @return {static void}
- */
+
 static void free_parameter_set(uint8_t **data, size_t *size) {
     if (*data) {
         free(*data);
@@ -253,15 +191,7 @@ static void free_parameter_set(uint8_t **data, size_t *size) {
     *size = 0;
 }
 
-/**
- * @description: 更新缓存的 SPS 或 PPS 数据
- * @param {uint8_t **} dst
- * @param {size_t *} dst_len
- * @param {const uint8_t *} src
- * @param {size_t} src_len
- * @param {int *} changed
- * @return {static int}
- */
+
 static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *src, size_t src_len, int *changed) {
     uint8_t *copy;
 
@@ -293,14 +223,8 @@ static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *s
     return 0;
 }
 
-/**
- * @description: 将 Annex-B 码流拆分为多个 NALU 视图
- * @param {const uint8_t *} data
- * @param {size_t} len
- * @param {NaluView **} out_nalus
- * @param {size_t *} out_count
- * @return {static int}
- */
+
+/* 解析 Annex-B 帧，输出不带起始码的 NALU 列表。 */
 static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_nalus, size_t *out_count) {
     size_t pos = 0;
     size_t first = 0;
@@ -314,7 +238,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
         return -1;
     }
 
-    /* 某些编码器可能直接输出单个裸 NALU，没有起始码，这里也兼容这种情况。 */
+    
     if (find_start_code(data, len, 0, &first, &code_len) != 0) {
         nalus = (NaluView *)calloc(1, sizeof(*nalus));
         if (!nalus) {
@@ -328,7 +252,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
         return 0;
     }
 
-    /* 将一帧 Annex-B 数据拆成多个 NALU 片段视图，避免重复拷贝负载数据。 */
+    
     pos = first;
     while (pos < len) {
         size_t payload_start = pos + (size_t)code_len;
@@ -367,14 +291,9 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
     return 0;
 }
 
-/**
- * @description: 从 NALU 列表中缓存 SPS 和 PPS 参数集
- * @param {RtmpSinkImpl *} impl
- * @param {const NaluView *} nalus
- * @param {size_t} count
- * @return {static int}
- */
-static int rtmp_cache_parameter_sets(RtmpSinkImpl *impl, const NaluView *nalus, size_t count) {
+
+/* 缓存 SPS/PPS，后续用于发送 AVCDecoderConfigurationRecord。 */
+static int rtmp_cache_parameter_sets(RtmpOutputImpl *impl, const NaluView *nalus, size_t count) {
     size_t i;
     int changed = 0;
 
@@ -385,7 +304,7 @@ static int rtmp_cache_parameter_sets(RtmpSinkImpl *impl, const NaluView *nalus, 
             continue;
         }
         nalu_type = (uint8_t)(nalus[i].data[0] & 0x1F);
-        /* SPS/PPS 可能会随着 IDR 帧重复出现，只有内容真正变化时才刷新缓存。 */
+        
         if (nalu_type == 7) {
             if (update_parameter_set(&impl->sps, &impl->sps_len, nalus[i].data, nalus[i].size, &changed) != 0) {
                 fprintf(stderr, "[RTMP][ERROR] cache SPS failed size=%zu\n", nalus[i].size);
@@ -408,15 +327,9 @@ static int rtmp_cache_parameter_sets(RtmpSinkImpl *impl, const NaluView *nalus, 
 }
 
 #if defined(ENABLE_RTMP_LIBRTMP)
-/**
- * @description: 发送 RTMP 信息消息体
- * @param {RtmpSinkImpl *} impl
- * @param {const uint8_t *} body
- * @param {size_t} body_size
- * @param {uint32_t} timestamp_ms
- * @return {static int}
- */
-static int rtmp_send_info_body(RtmpSinkImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
+
+/* 发送 RTMP 信息类消息，例如 onMetaData。 */
+static int rtmp_send_info_body(RtmpOutputImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
     RTMPPacket packet;
     int ret;
 
@@ -451,15 +364,9 @@ static int rtmp_send_info_body(RtmpSinkImpl *impl, const uint8_t *body, size_t b
     return ret ? 0 : -1;
 }
 
-/**
- * @description: 发送 RTMP 视频消息体
- * @param {RtmpSinkImpl *} impl
- * @param {const uint8_t *} body
- * @param {size_t} body_size
- * @param {uint32_t} timestamp_ms
- * @return {static int}
- */
-static int rtmp_send_video_body(RtmpSinkImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
+
+/* 发送 RTMP 视频消息，payload 是 FLV video tag body。 */
+static int rtmp_send_video_body(RtmpOutputImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
     RTMPPacket packet;
     int ret;
 
@@ -494,12 +401,9 @@ static int rtmp_send_video_body(RtmpSinkImpl *impl, const uint8_t *body, size_t 
     return ret ? 0 : -1;
 }
 
-/**
- * @description: 发送 RTMP onMetaData 元数据消息
- * @param {RtmpSinkImpl *} impl
- * @return {static int}
- */
-static int rtmp_send_on_metadata(RtmpSinkImpl *impl) {
+
+/* 首帧前发送元数据，便于播放器获得分辨率和编码信息。 */
+static int rtmp_send_on_metadata(RtmpOutputImpl *impl) {
     uint8_t body[512];
     uint8_t *p = body;
 
@@ -508,10 +412,7 @@ static int rtmp_send_on_metadata(RtmpSinkImpl *impl) {
         return -1;
     }
 
-    /* 在 AVC 解码配置和视频帧之前先发送标准 AMF0 onMetaData 消息。
-     * 很多 RTMP 服务端和播放器会依赖这些字段做流信息展示、解码器预热，
-     * 或在控制台中显示分辨率、帧率、码率等运行信息。
-     */
+    
     p = amf_write_string(p, "onMetaData");
     *p++ = AMF_ECMA_ARRAY;
     write_be32(p, 10);
@@ -543,13 +444,9 @@ static int rtmp_send_on_metadata(RtmpSinkImpl *impl) {
     return 0;
 }
 
-/**
- * @description: 发送 AVC Sequence Header
- * @param {RtmpSinkImpl *} impl
- * @param {uint32_t} timestamp_ms
- * @return {static int}
- */
-static int rtmp_send_avc_sequence_header(RtmpSinkImpl *impl, uint32_t timestamp_ms) {
+
+/* 发送 AVC sequence header，播放器依赖它初始化 H.264 解码器。 */
+static int rtmp_send_avc_sequence_header(RtmpOutputImpl *impl, uint32_t timestamp_ms) {
     uint8_t *body;
     size_t body_size;
     size_t offset = 0;
@@ -568,10 +465,7 @@ static int rtmp_send_avc_sequence_header(RtmpSinkImpl *impl, uint32_t timestamp_
         return -1;
     }
 
-    /* FLV 的 AVC sequence header 内部承载 AVCDecoderConfigurationRecord，
-     * 包含版本、profile、compatibility、level 以及原始 SPS/PPS 内容。
-     * RTMP 接收端必须先拿到这段信息，后续才能正确解码 AVCPacketType=1 的视频负载。
-     */
+    
     body[offset++] = (uint8_t)((FLV_FRAME_KEY << 4) | FLV_VIDEO_CODEC_AVC);
     body[offset++] = FLV_AVC_SEQ_HEADER;
     body[offset++] = 0;
@@ -616,16 +510,9 @@ static int rtmp_send_avc_sequence_header(RtmpSinkImpl *impl, uint32_t timestamp_
     return 0;
 }
 
-/**
- * @description: 发送 RTMP AVC 视频负载
- * @param {RtmpSinkImpl *} impl
- * @param {const NaluView *} nalus
- * @param {size_t} count
- * @param {uint32_t} timestamp_ms
- * @param {int} is_key_frame
- * @return {static int}
- */
-static int rtmp_send_avc_nalus(RtmpSinkImpl *impl,
+
+/* 将 Annex-B NALU 打包为 FLV/AVC length-prefixed payload 后发送。 */
+static int rtmp_send_avc_nalus(RtmpOutputImpl *impl,
                                const NaluView *nalus,
                                size_t count,
                                uint32_t timestamp_ms,
@@ -635,10 +522,7 @@ static int rtmp_send_avc_nalus(RtmpSinkImpl *impl,
     size_t offset = 0;
     size_t i;
 
-    /* 把 Annex-B 帧负载转换成 FLV/AVC 负载格式：
-     * 每个媒体 NALU 会被编码成 [4 字节大端长度][nalu 数据]。
-     * SPS/PPS/AUD 不再重复写入，因为它们已经在 sequence header 中单独发送过。
-     */
+    
     for (i = 0; i < count; ++i) {
         uint8_t nalu_type;
 
@@ -708,11 +592,7 @@ static int rtmp_send_avc_nalus(RtmpSinkImpl *impl,
 }
 #endif
 
-/**
- * @description: 将媒体包时间戳转换为毫秒
- * @param {const MediaPacket *} packet
- * @return {static uint32_t}
- */
+
 static uint32_t packet_timestamp_ms(const MediaPacket *packet) {
     uint64_t ts_us;
 
@@ -723,39 +603,27 @@ static uint32_t packet_timestamp_ms(const MediaPacket *packet) {
     return (uint32_t)(ts_us / 1000ULL);
 }
 
-/**
- * @description: 启动 RTMP 推流通道
- * @param {MediaSink *} sink
- * @return {static int}
- */
-static int rtmp_sink_start(MediaSink *sink) {
-    RtmpSinkImpl *impl = (RtmpSinkImpl *)sink->impl;
 
-    /* start() 只检查静态配置是否合法；真正建立网络连接放在 connect() 中。
-     * 这样断线重连时可以复用同一套状态机，而不必重建整个 sink 对象。
-     */
+static int rtmp_output_start(MediaOutput *output) {
+    RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
+
+    
     if (!impl->config.publish_url || impl->config.publish_url[0] == '\0') {
-        fprintf(stderr, "[WARN] RTMP sink disabled: publish_url is empty\n");
+        fprintf(stderr, "[WARN] RTMP output disabled: publish_url is empty\n");
         return -1;
     }
 
-    printf("[INFO] RTMP sink configured: %s\n", impl->config.publish_url);
+    printf("[INFO] RTMP output configured: %s\n", impl->config.publish_url);
     printf("[INFO] RTMP audio path reserved, current audio_enabled=%d\n", impl->config.audio_enabled);
     return 0;
 }
 
-/**
- * @description: 建立 RTMP 推流连接
- * @param {MediaSink *} sink
- * @return {static int}
- */
-static int rtmp_sink_connect(MediaSink *sink) {
-    RtmpSinkImpl *impl = (RtmpSinkImpl *)sink->impl;
+
+static int rtmp_output_connect(MediaOutput *output) {
+    RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
 
 #if defined(ENABLE_RTMP_LIBRTMP)
-    /* 每次重连都重新创建一个全新的 RTMP 会话。
-     * 这样恢复逻辑更简单，也能确保服务端状态从一次完整握手开始。
-     */
+    
     if (!impl) {
         fprintf(stderr, "[RTMP][ERROR] connect failed: impl is NULL\n");
         return -1;
@@ -813,20 +681,15 @@ static int rtmp_sink_connect(MediaSink *sink) {
            impl->config.connect_timeout_ms);
     return 0;
 #else
-    (void)sink;
-    fprintf(stderr, "[WARN] RTMP sink requested but librtmp support is not compiled in\n");
+    (void)output;
+    fprintf(stderr, "[WARN] RTMP output requested but librtmp support is not compiled in\n");
     return -1;
 #endif
 }
 
-/**
- * @description: 发送一个媒体包到 RTMP 通道
- * @param {MediaSink *} sink
- * @param {const MediaPacket *} packet
- * @return {static int}
- */
-static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
-    RtmpSinkImpl *impl = (RtmpSinkImpl *)sink->impl;
+
+static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
+    RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
     NaluView *nalus = NULL;
     size_t nalu_count = 0;
     uint32_t timestamp_ms;
@@ -844,9 +707,7 @@ static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     }
 
 #if defined(ENABLE_RTMP_LIBRTMP)
-    /* RTMP sink 直接接收编码器输出的 Annex-B 数据，并在本地完成 RTMP/FLV 封装转换，
-     * 这样不会影响其他 sink 的输入格式和处理逻辑。
-     */
+
     if (annexb_split_nalus(packet->buffer->data, packet->buffer->size, &nalus, &nalu_count) != 0) {
         fprintf(stderr, "[RTMP][ERROR] send_packet split annexb failed frame=%" PRIu64 " size=%zu\n",
                 packet->frame_id,
@@ -858,7 +719,8 @@ static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     }
 
     timestamp_ms = packet_timestamp_ms(packet);
-    /* onMetaData 只需要在每次 RTMP 会话建立后发送一次，并且要早于媒体头和视频帧。 */
+
+    /* 建链后的首个可发送视频帧负责补齐 metadata 和 sequence header。 */
     if (!impl->metadata_sent) {
         if (rtmp_send_on_metadata(impl) != 0) {
             fprintf(stderr, "[RTMP] event=metadata_send_failed frame=%" PRIu64 "\n", packet->frame_id);
@@ -867,7 +729,7 @@ static int rtmp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
     }
     if (!impl->sequence_header_sent) {
         if (!impl->sps || !impl->pps) {
-            /* 如果当前还没有拿到 SPS/PPS，就先跳过该帧，等待后续关键帧补齐参数集。 */
+            
             fprintf(stderr, "[WARN] RTMP skip frame=%" PRIu64 " because SPS/PPS not ready\n", packet->frame_id);
             ret = 0;
             goto done;
@@ -891,20 +753,16 @@ done:
     free(nalus);
     return ret;
 #else
-    (void)sink;
+    (void)output;
     (void)packet;
     fprintf(stderr, "[RTMP][ERROR] send_packet failed: librtmp support is not compiled in\n");
     return -1;
 #endif
 }
 
-/**
- * @description: 断开 RTMP 推流连接
- * @param {MediaSink *} sink
- * @return {static void}
- */
-static void rtmp_sink_disconnect(MediaSink *sink) {
-    RtmpSinkImpl *impl = (RtmpSinkImpl *)sink->impl;
+
+static void rtmp_output_disconnect(MediaOutput *output) {
+    RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
 
     if (!impl) {
         return;
@@ -927,48 +785,39 @@ static void rtmp_sink_disconnect(MediaSink *sink) {
     impl->last_rtmp_ts_ms = 0;
 }
 
-/**
- * @description: 停止 RTMP 推流通道
- * @param {MediaSink *} sink
- * @return {static void}
- */
-static void rtmp_sink_stop(MediaSink *sink) {
-    RtmpSinkImpl *impl = (RtmpSinkImpl *)sink->impl;
+
+static void rtmp_output_stop(MediaOutput *output) {
+    RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
 
     if (!impl) {
         return;
     }
 
-    rtmp_sink_disconnect(sink);
+    rtmp_output_disconnect(output);
     free_parameter_set(&impl->sps, &impl->sps_len);
     free_parameter_set(&impl->pps, &impl->pps_len);
 }
 
-/**
- * @description: 根据配置创建 RTMP 推流通道
- * @param {MediaSink *} sink
- * @param {const RtmpSinkConfig *} config
- * @return {int}
- */
-int rtmp_sink_setup(MediaSink *sink, const RtmpSinkConfig *config) {
-    static const MediaSinkVTable vtable = {
-        rtmp_sink_start,
-        rtmp_sink_connect,
-        rtmp_sink_send_packet,
-        rtmp_sink_disconnect,
-        rtmp_sink_stop
-    };
-    MediaSinkConfig sink_config;
-    RtmpSinkImpl *impl;
 
-    if (!sink) {
-        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: sink is NULL\n");
+int media_output_setup_rtmp(MediaOutput *output, const MediaOutputRtmpConfig *config) {
+    static const MediaOutputVTable vtable = {
+        rtmp_output_start,
+        rtmp_output_connect,
+        rtmp_output_send_packet,
+        rtmp_output_disconnect,
+        rtmp_output_stop
+    };
+    MediaOutputChannelConfig output_config;
+    RtmpOutputImpl *impl;
+
+    if (!output) {
+        fprintf(stderr, "[RTMP][ERROR] output_setup failed: output is NULL\n");
         return -1;
     }
 
-    impl = (RtmpSinkImpl *)calloc(1, sizeof(*impl));
+    impl = (RtmpOutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: impl alloc\n");
+        fprintf(stderr, "[RTMP][ERROR] output_setup failed: impl alloc\n");
         return -1;
     }
 
@@ -994,17 +843,18 @@ int rtmp_sink_setup(MediaSink *sink, const RtmpSinkConfig *config) {
         impl->config.encoder_name = "RKMediaGateway";
     }
 
-    memset(&sink_config, 0, sizeof(sink_config));
-    sink_config.name = impl->config.name;
-    sink_config.queue_capacity = impl->config.queue_capacity;
-    sink_config.reconnect_interval_ms = impl->config.reconnect_interval_ms;
-    sink_config.drop_until_keyframe_after_reconnect = 1;
+    memset(&output_config, 0, sizeof(output_config));
+    output_config.name = impl->config.name;
+    output_config.queue_capacity = impl->config.queue_capacity;
+    output_config.reconnect_interval_ms = impl->config.reconnect_interval_ms;
+    output_config.drop_until_keyframe_after_reconnect = 1;
 
-    if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] sink_setup failed: media_sink_init name=%s\n",
+    if (media_output_init(output, &output_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[RTMP][ERROR] output_setup failed: media_output_init name=%s\n",
                 impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;
     }
+    output->type = MEDIA_OUTPUT_TYPE_RTMP;
     return 0;
 }

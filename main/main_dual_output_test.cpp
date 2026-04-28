@@ -7,7 +7,7 @@ int main() {
     MediaGatewayConfig config = {0};
 
     /* This executable is a manual integration test for concurrent RTSP + RTMP publishing.
-     * The gateway keeps one encoder and fans the resulting H.264 stream out to two independent sinks.
+     * The gateway keeps one encoder and fans the resulting H.264 stream out to two independent outputs.
      * Use it when validating queue isolation, reconnect behavior and dual-protocol interoperability.
      */
     config.enable_rtsp = 1;

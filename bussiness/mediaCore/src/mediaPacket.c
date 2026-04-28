@@ -30,7 +30,7 @@ int media_buffer_create_copy(const uint8_t *data, size_t size, MediaBuffer **out
     /* 这里不是真正的拷贝一帧，而是共享数据指针。 */
     memcpy(buffer->data, data, size);
     buffer->size = size;
-    /* 初始引用属于当前生产者；后续每入一个 sink 队列会额外 +1。 */
+    /* 初始引用属于当前生产者；后续每入一个输出队列会额外 +1。 */
     buffer->ref_count = 1;
     pthread_mutex_init(&buffer->lock, NULL);
     *out_buffer = buffer;
@@ -125,4 +125,3 @@ void media_packet_reset(MediaPacket *packet) {
     }
     memset(packet, 0, sizeof(*packet));
 }
-

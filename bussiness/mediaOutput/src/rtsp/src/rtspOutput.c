@@ -1,4 +1,4 @@
-﻿#include "rtspSink.h"
+#include "../inc/rtspOutput.h"
 
 #include <stdatomic.h>
 #include <pthread.h>
@@ -10,7 +10,7 @@
 
 #include "rtsp_server_api.h"
 
-#define DEFAULT_RTSP_SINK_NAME "rtsp"
+#define DEFAULT_RTSP_OUTPUT_NAME "rtsp"
 #define DEFAULT_RTSP_SESSION "live"
 #define DEFAULT_RTSP_IP "0.0.0.0"
 #define DEFAULT_RTSP_PORT 8554
@@ -30,8 +30,8 @@ typedef struct {
 } RtspSharedServer;
 
 typedef struct {
-    RtspSinkConfig config;         /* 当前 sink 的配置副本。 */
-    void *session;                 /* 当前 sink 绑定的 RTSP session。 */
+    MediaOutputRtspConfig config;         /* 当前 output 的配置副本。 */
+    void *session;                 /* 当前 output 绑定的 RTSP session。 */
     int shared_server_acquired;    /* 是否已持有共享服务引用计数。 */
     int last_client_count;         /* 上一次观察到的 RTSP 总客户端数。 */
     atomic_int pending_external_idr;                        /* 新客户端接入后的一次性 IDR 请求标记。 */
@@ -43,7 +43,7 @@ typedef struct {
     size_t cached_sps_len;
     uint8_t *cached_pps;                                    /* 最近缓存的 PPS NALU（不含起始码）。 */
     size_t cached_pps_len;
-} RtspSinkImpl;
+} RtspOutputImpl;
 
 static RtspSharedServer g_rtsp_shared_server;
 static pthread_mutex_t g_rtsp_shared_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -60,7 +60,7 @@ static uint64_t now_us(void) {
 #endif
 }
 
-/* 查询当前 sink 对应 session 的客户端数，不可用时返回 -1。 */
+/* 查询当前 output 对应 session 的客户端数，不可用时返回 -1。 */
 static int query_rtsp_session_client_count(void *session) {
     return rtspSessionGetClientNum(session);
 }
@@ -70,7 +70,7 @@ static int query_rtsp_session_client_count(void *session) {
  * 只要该 session 新增观看端，就置位外部 IDR 请求。
  * 这样可避免 live_main 与 live_sub 之间互相误触发关键帧。
  */
-static void rtsp_sink_probe_new_client(RtspSinkImpl *impl) {
+static void rtsp_output_probe_new_client(RtspOutputImpl *impl) {
     int cur_count;
     uint64_t detect_ts_us;
     if (!impl || !impl->session) {
@@ -145,7 +145,7 @@ static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_
 }
 
 /* 缓存最新 SPS/PPS，供“新客户端立刻补参数集”模式使用。 */
-static void cache_h264_parameter_set(RtspSinkImpl *impl, int nalu_type, const uint8_t *nalu, size_t nalu_len) {
+static void cache_h264_parameter_set(RtspOutputImpl *impl, int nalu_type, const uint8_t *nalu, size_t nalu_len) {
     uint8_t *new_buf;
     if (!impl || !nalu || nalu_len == 0) {
         return;
@@ -170,7 +170,7 @@ static void cache_h264_parameter_set(RtspSinkImpl *impl, int nalu_type, const ui
 }
 
 /* 解析 Annex-B 并更新 SPS/PPS 缓存。 */
-static void update_sps_pps_cache(RtspSinkImpl *impl, const uint8_t *data, size_t len) {
+static void update_sps_pps_cache(RtspOutputImpl *impl, const uint8_t *data, size_t len) {
     size_t nalu_start = 0;
     int code_len = 0;
     if (!impl || !data || len == 0) {
@@ -202,7 +202,7 @@ static void update_sps_pps_cache(RtspSinkImpl *impl, const uint8_t *data, size_t
 }
 
 /* 在普通码流发送前补发缓存的 SPS/PPS，帮助新客户端尽快完成解码初始化。 */
-static void send_cached_sps_pps_if_needed(RtspSinkImpl *impl) {
+static void send_cached_sps_pps_if_needed(RtspOutputImpl *impl) {
     if (!impl || !impl->session) {
         return;
     }
@@ -268,8 +268,8 @@ static void *shared_rtsp_server_thread(void *arg) {
     return NULL;
 }
 
-/* 校验新 sink 的 server 参数是否与共享 server 一致。 */
-static int shared_rtsp_config_compatible(const RtspSinkConfig *cfg) {
+/* 校验新 output 的 server 参数是否与共享 server 一致。 */
+static int shared_rtsp_config_compatible(const MediaOutputRtspConfig *cfg) {
     if (!cfg) {
         return 0;
     }
@@ -295,13 +295,13 @@ static int shared_rtsp_config_compatible(const RtspSinkConfig *cfg) {
  * @description: 管理“共享 RTSP 服务器进程内实例”
  * 第一次调用：启动 RTSP 模块 + 起 server 线程（监听 ip:port）
  * 后续调用：不重复启动，只增加引用计数
- * 并检查新 sink 的 server 参数是否和已启动的一致（端口/鉴权等）
+ * 并检查新 output 的 server 参数是否和已启动的一致（端口/鉴权等）
  * 确保 main/sub 共用同一个 8554 服务端
- * @param {RtspSinkConfig} *cfg
+ * @param {MediaOutputRtspConfig} *cfg
  * @return {*}
  */
 
-static int shared_rtsp_server_acquire(const RtspSinkConfig *cfg) {
+static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
     int ret = 0;
     pthread_mutex_lock(&g_rtsp_shared_lock);
 
@@ -367,16 +367,16 @@ static void shared_rtsp_server_release(void) {
     pthread_mutex_unlock(&g_rtsp_shared_lock);
 }
 
-/* sink 启动：挂载共享 server，并创建当前 sink 的 session。 */
-static int rtsp_sink_start(MediaSink *sink) {
-    RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
+/* output 启动：挂载共享 server，并创建当前 output 的 session。 */
+static int rtsp_output_start(MediaOutput *output) {
+    RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl) {
-        fprintf(stderr, "[ERROR] rtsp_sink_start failed: impl is NULL\n");
+        fprintf(stderr, "[ERROR] rtsp_output_start failed: impl is NULL\n");
         return -1;
     }
 
     if (shared_rtsp_server_acquire(&impl->config) != 0) {
-        fprintf(stderr, "[ERROR] rtsp_sink_start failed: acquire shared server ip=%s port=%d session=%s\n",
+        fprintf(stderr, "[ERROR] rtsp_output_start failed: acquire shared server ip=%s port=%d session=%s\n",
                 impl->config.server_ip ? impl->config.server_ip : "unknown",
                 impl->config.server_port,
                 impl->config.session_name ? impl->config.session_name : "unknown");
@@ -387,7 +387,7 @@ static int rtsp_sink_start(MediaSink *sink) {
     /* 创建 RTSP 会话 */
     impl->session = rtspAddSession(impl->config.session_name);
     if (!impl->session) {
-        fprintf(stderr, "[ERROR] rtsp_sink_start failed: rtspAddSession session=%s\n",
+        fprintf(stderr, "[ERROR] rtsp_output_start failed: rtspAddSession session=%s\n",
                 impl->config.session_name ? impl->config.session_name : "unknown");
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
@@ -395,7 +395,7 @@ static int rtsp_sink_start(MediaSink *sink) {
     }
     /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
-        fprintf(stderr, "[ERROR] rtsp_sink_start failed: sessionAddVideo session=%s codec=H264\n",
+        fprintf(stderr, "[ERROR] rtsp_output_start failed: sessionAddVideo session=%s codec=H264\n",
                 impl->config.session_name ? impl->config.session_name : "unknown");
         rtspDelSession(impl->session);
         impl->session = NULL;
@@ -413,31 +413,31 @@ static int rtsp_sink_start(MediaSink *sink) {
     atomic_store(&impl->external_idr_request_ts_us, 0);
     impl->pending_send_cached_sps_pps = 0;
 
-    printf("[INFO] RTSP sink ready: rtsp://%s:%d/%s\n",
+    printf("[INFO] RTSP output ready: rtsp://%s:%d/%s\n",
            impl->config.server_ip,
            impl->config.server_port,
            impl->config.session_name);
     return 0;
 }
 
-/* sink 连接检查：session 已就绪即可视为可用。 */
-static int rtsp_sink_connect(MediaSink *sink) {
-    RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
+/* output 连接检查：session 已就绪即可视为可用。 */
+static int rtsp_output_connect(MediaOutput *output) {
+    RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     return impl->session ? 0 : -1;
 }
 
-/* sink 发送：将 H264 包转为 RTSP 可发送单元。 */
-static int rtsp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
-    RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
+/* output 发送：将 H264 包转为 RTSP 可发送单元。 */
+static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
+    RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session || !packet || !packet->buffer) {
-        fprintf(stderr, "[ERROR] rtsp_sink_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p\n",
+        fprintf(stderr, "[ERROR] rtsp_output_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p\n",
                 (impl && impl->session) ? 1 : 0,
                 (void *)packet,
                 (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
     /* 在发送路径轻量轮询新客户端接入事件，避免额外线程/锁开销。 */
-    rtsp_sink_probe_new_client(impl);
+    rtsp_output_probe_new_client(impl);
     /* 更新参数集缓存，并在开启开关时对新客户端补发 SPS/PPS。 */
     update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
     send_cached_sps_pps_if_needed(impl);
@@ -460,13 +460,13 @@ static int rtsp_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
 }
 
 /* 当前实现无需主动断链，保留该钩子用于接口一致性。 */
-static void rtsp_sink_disconnect(MediaSink *sink) {
-    (void)sink;
+static void rtsp_output_disconnect(MediaOutput *output) {
+    (void)output;
 }
 
-/* sink 停止：先删 session，再释放共享 server 引用。 */
-static void rtsp_sink_stop(MediaSink *sink) {
-    RtspSinkImpl *impl = (RtspSinkImpl *)sink->impl;
+/* output 停止：先删 session，再释放共享 server 引用。 */
+static void rtsp_output_stop(MediaOutput *output) {
+    RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl) {
         return;
     }
@@ -491,26 +491,26 @@ static void rtsp_sink_stop(MediaSink *sink) {
     impl->pending_send_cached_sps_pps = 0;
 }
 
-/* 构建并初始化一个 RTSP sink。 */
-int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
-    static const MediaSinkVTable vtable = {
-        rtsp_sink_start,
-        rtsp_sink_connect,
-        rtsp_sink_send_packet,
-        rtsp_sink_disconnect,
-        rtsp_sink_stop
+/* 构建并初始化一个 RTSP output。 */
+int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *config) {
+    static const MediaOutputVTable vtable = {
+        rtsp_output_start,
+        rtsp_output_connect,
+        rtsp_output_send_packet,
+        rtsp_output_disconnect,
+        rtsp_output_stop
     };
-    MediaSinkConfig sink_config;
-    RtspSinkImpl *impl;
+    MediaOutputChannelConfig output_config;
+    RtspOutputImpl *impl;
 
-    if (!sink) {
-        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: sink is NULL\n");
+    if (!output) {
+        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: output is NULL\n");
         return -1;
     }
 
-    impl = (RtspSinkImpl *)calloc(1, sizeof(*impl));
+    impl = (RtspOutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: impl alloc\n");
+        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: impl alloc\n");
         return -1;
     }
 
@@ -518,7 +518,7 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
         impl->config = *config;
     }
     if (!impl->config.name) {
-        impl->config.name = DEFAULT_RTSP_SINK_NAME;
+        impl->config.name = DEFAULT_RTSP_OUTPUT_NAME;
     }
     if (!impl->config.session_name) {
         impl->config.session_name = DEFAULT_RTSP_SESSION;
@@ -538,30 +538,31 @@ int rtsp_sink_setup(MediaSink *sink, const RtspSinkConfig *config) {
     impl->config.immediate_sps_pps_on_new_client =
         impl->config.immediate_sps_pps_on_new_client ? 1 : 0;
 
-    memset(&sink_config, 0, sizeof(sink_config));
-    sink_config.name = impl->config.name;
-    sink_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 32;
-    sink_config.reconnect_interval_ms = 1000;
-    sink_config.drop_until_keyframe_after_reconnect = 0;
+    memset(&output_config, 0, sizeof(output_config));
+    output_config.name = impl->config.name;
+    output_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 32;
+    output_config.reconnect_interval_ms = 1000;
+    output_config.drop_until_keyframe_after_reconnect = 0;
 
-    if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[ERROR] rtsp_sink_setup failed: media_sink_init name=%s session=%s\n",
+    if (media_output_init(output, &output_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: media_output_init name=%s session=%s\n",
                 impl->config.name ? impl->config.name : "unknown",
                 impl->config.session_name ? impl->config.session_name : "unknown");
         free(impl);
         return -1;
     }
+    output->type = MEDIA_OUTPUT_TYPE_RTSP;
     return 0;
 }
 
-int rtsp_sink_consume_external_idr_request(MediaSink *sink) {
-    RtspSinkImpl *impl;
+int media_output_rtsp_consume_external_idr_request(MediaOutput *output) {
+    RtspOutputImpl *impl;
     uint64_t now;
     uint64_t detect_ts;
-    if (!sink) {
+    if (!output) {
         return 0;
     }
-    impl = (RtspSinkImpl *)sink->impl;
+    impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session) {
         return 0;
     }

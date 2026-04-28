@@ -1,4 +1,4 @@
-﻿#include "gb28181Sink.h"
+#include "../inc/gb28181Output.h"
 
 #include <inttypes.h>
 #include <pthread.h>
@@ -6,22 +6,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "gb28181Device.h"
+#include "../inc/gb28181Device.h"
 
 /*
- * GB28181 sink 的职责：
- * 1. 作为 mediaGateway 的一个输出通道（MediaSink）接收编码后的视频包；
+ * GB28181 output 的职责：
+ * 1. 作为 mediaGateway 的一个输出通道（MediaOutput）接收编码后的视频包；
  * 2. 将 MediaPacket(H264 Annex-B) 转交给 gb28181Device 模块封装并发送；
  * 3. 管理 gb28181Device 的生命周期与 SIP 事件线程。
  */
 
 typedef struct {
-    Gb28181SinkConfig config;     /* sink 配置副本，避免外部临时配置对象失效。 */
+    MediaOutputGb28181Config config;     /* output 配置副本，避免外部临时配置对象失效。 */
     Gb28181DeviceCtx device_ctx;  /* 底层 GB28181 设备模块上下文。 */
     pthread_t sip_thread;         /* 运行 gb28181_device_run() 的线程句柄。 */
     int sip_thread_started;       /* SIP 线程是否已创建成功。 */
-    int started;                  /* sink 是否已进入启动完成状态。 */
-} Gb28181SinkImpl;
+    int started;                  /* output 是否已进入启动完成状态。 */
+} Gb28181OutputImpl;
 
 /* 字符串兜底：value 为空时返回 fallback。 */
 static const char *safe_str(const char *value, const char *fallback) {
@@ -29,10 +29,10 @@ static const char *safe_str(const char *value, const char *fallback) {
 }
 
 /*
- * 补齐 sink 默认配置。
+ * 补齐 output 默认配置。
  * 这里的默认值与 gb28181Device 内部默认保持一致，避免两层默认值不一致导致行为偏差。
  */
-static void fill_default_config(Gb28181SinkConfig *dst, const Gb28181SinkConfig *src) {
+static void fill_default_config(MediaOutputGb28181Config *dst, const MediaOutputGb28181Config *src) {
     memset(dst, 0, sizeof(*dst));
     if (src) {
         *dst = *src;
@@ -62,11 +62,11 @@ static void fill_default_config(Gb28181SinkConfig *dst, const Gb28181SinkConfig 
 }
 
 /*
- * 将 sink 配置转换为 gb28181Device 配置。
+ * 将 output 配置转换为 gb28181Device 配置。
  * 强制 external_media_input=1：表示 gb28181Device 不再自己初始化 V4L2/MPP，
- * 而是复用 mediaGateway 共享编码链路，由本 sink 注入 H264。
+ * 而是复用 mediaGateway 共享编码链路，由本 output 注入 H264。
  */
-static void build_device_config(const Gb28181SinkConfig *src, Gb28181DeviceConfig *dst) {
+static void build_device_config(const MediaOutputGb28181Config *src, Gb28181DeviceConfig *dst) {
     memset(dst, 0, sizeof(*dst));
     dst->server_ip = src->server_ip;
     dst->server_port = src->server_port;
@@ -93,8 +93,8 @@ static void build_device_config(const Gb28181SinkConfig *src, Gb28181DeviceConfi
 }
 
 /* SIP 线程入口：阻塞运行 gb28181_device_run() 直到 stop。 */
-static void *gb28181_sink_sip_loop(void *arg) {
-    Gb28181SinkImpl *impl = (Gb28181SinkImpl *)arg;
+static void *gb28181_output_sip_loop(void *arg) {
+    Gb28181OutputImpl *impl = (Gb28181OutputImpl *)arg;
     if (!impl) {
         return NULL;
     }
@@ -103,16 +103,16 @@ static void *gb28181_sink_sip_loop(void *arg) {
 }
 
 /*
- * sink start：
+ * output start：
  * 1. 初始化 gb28181Device；
  * 2. 拉起 SIP 事件线程；
  * 3. 进入 started 状态。
  */
-static int gb28181_sink_start(MediaSink *sink) {
-    Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
+static int gb28181_output_start(MediaOutput *output) {
+    Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     Gb28181DeviceConfig device_config;
     if (!impl) {
-        fprintf(stderr, "[ERROR] gb28181_sink_start failed: impl is NULL\n");
+        fprintf(stderr, "[ERROR] gb28181_output_start failed: impl is NULL\n");
         return -1;
     }
     if (impl->started) {
@@ -122,7 +122,7 @@ static int gb28181_sink_start(MediaSink *sink) {
     build_device_config(&impl->config, &device_config);
     if (gb28181_device_init(&impl->device_ctx, &device_config) != 0) {
         fprintf(stderr,
-                "[ERROR] gb28181_sink_start failed: gb28181_device_init server=%s:%d device=%s local_sip=%d\n",
+                "[ERROR] gb28181_output_start failed: gb28181_device_init server=%s:%d device=%s local_sip=%d\n",
                 impl->config.server_ip ? impl->config.server_ip : "unknown",
                 impl->config.server_port,
                 impl->config.device_id ? impl->config.device_id : "unknown",
@@ -130,9 +130,9 @@ static int gb28181_sink_start(MediaSink *sink) {
         return -1;
     }
     {
-        int ret = pthread_create(&impl->sip_thread, NULL, gb28181_sink_sip_loop, impl);
+        int ret = pthread_create(&impl->sip_thread, NULL, gb28181_output_sip_loop, impl);
         if (ret != 0) {
-            fprintf(stderr, "[ERROR] gb28181_sink_start failed: pthread_create ret=%d\n", ret);
+            fprintf(stderr, "[ERROR] gb28181_output_start failed: pthread_create ret=%d\n", ret);
             gb28181_device_deinit(&impl->device_ctx);
             return -1;
         }
@@ -143,9 +143,9 @@ static int gb28181_sink_start(MediaSink *sink) {
     return 0;
 }
 
-/* MediaSink connect 钩子：此处仅确认 sink 已启动。 */
-static int gb28181_sink_connect(MediaSink *sink) {
-    Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
+/* MediaOutput connect 钩子：此处仅确认 output 已启动。 */
+static int gb28181_output_connect(MediaOutput *output) {
+    Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     return (impl && impl->started) ? 0 : -1;
 }
 
@@ -155,10 +155,10 @@ static int gb28181_sink_connect(MediaSink *sink) {
  * - 将 Annex-B 数据转交 gb28181_device_send_h264()；
  * - 实际的 PS 封装与 RTP 分包在 gb28181Device 内部完成。
  */
-static int gb28181_sink_send_packet(MediaSink *sink, const MediaPacket *packet) {
-    Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
+static int gb28181_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
+    Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     if (!impl || !impl->started || !packet || !packet->buffer) {
-        fprintf(stderr, "[ERROR] gb28181_sink_send_packet failed: invalid args started=%d packet=%p buffer=%p\n",
+        fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: invalid args started=%d packet=%p buffer=%p\n",
                 (impl && impl->started) ? 1 : 0,
                 (void *)packet,
                 (void *)(packet ? packet->buffer : NULL));
@@ -175,7 +175,7 @@ static int gb28181_sink_send_packet(MediaSink *sink, const MediaPacket *packet) 
                                  packet->buffer->size,
                                  packet->is_key_frame,
                                  packet->pts_us) != 0) {
-        fprintf(stderr, "[ERROR] gb28181_sink_send_packet failed: send_h264 size=%zu key=%d pts=%" PRIu64 "\n",
+        fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: send_h264 size=%zu key=%d pts=%" PRIu64 "\n",
                 packet->buffer->size,
                 packet->is_key_frame,
                 packet->pts_us);
@@ -185,18 +185,18 @@ static int gb28181_sink_send_packet(MediaSink *sink, const MediaPacket *packet) 
 }
 
 /* disconnect 钩子：当前无额外动作，真正收尾在 stop。 */
-static void gb28181_sink_disconnect(MediaSink *sink) {
-    (void)sink;
+static void gb28181_output_disconnect(MediaOutput *output) {
+    (void)output;
 }
 
 /*
- * sink stop：
+ * output stop：
  * 1. 请求 gb28181Device 停止；
  * 2. 等待 SIP 线程退出；
  * 3. 释放 gb28181Device 资源。
  */
-static void gb28181_sink_stop(MediaSink *sink) {
-    Gb28181SinkImpl *impl = (Gb28181SinkImpl *)sink->impl;
+static void gb28181_output_stop(MediaOutput *output) {
+    Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     if (!impl) {
         return;
     }
@@ -211,54 +211,55 @@ static void gb28181_sink_stop(MediaSink *sink) {
 }
 
 /*
- * 创建并初始化 GB28181 sink。
+ * 创建并初始化 GB28181 output。
  * 该函数只做对象构建与通用队列初始化，不会真正建立 SIP/RTP 连接。
  */
-int gb28181_sink_setup(MediaSink *sink, const Gb28181SinkConfig *config) {
-    static const MediaSinkVTable vtable = {
-        gb28181_sink_start,
-        gb28181_sink_connect,
-        gb28181_sink_send_packet,
-        gb28181_sink_disconnect,
-        gb28181_sink_stop
+int media_output_setup_gb28181(MediaOutput *output, const MediaOutputGb28181Config *config) {
+    static const MediaOutputVTable vtable = {
+        gb28181_output_start,
+        gb28181_output_connect,
+        gb28181_output_send_packet,
+        gb28181_output_disconnect,
+        gb28181_output_stop
     };
-    MediaSinkConfig sink_config;
-    Gb28181SinkImpl *impl = NULL;
+    MediaOutputChannelConfig output_config;
+    Gb28181OutputImpl *impl = NULL;
 
-    if (!sink) {
-        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: sink is NULL\n");
+    if (!output) {
+        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: output is NULL\n");
         return -1;
     }
 
-    impl = (Gb28181SinkImpl *)calloc(1, sizeof(*impl));
+    impl = (Gb28181OutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: impl alloc\n");
+        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: impl alloc\n");
         return -1;
     }
     fill_default_config(&impl->config, config);
 
-    memset(&sink_config, 0, sizeof(sink_config));
-    sink_config.name = impl->config.name;
-    sink_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 64;
-    sink_config.reconnect_interval_ms = 1000;
+    memset(&output_config, 0, sizeof(output_config));
+    output_config.name = impl->config.name;
+    output_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 64;
+    output_config.reconnect_interval_ms = 1000;
     /* 点播建立后先等关键帧，确保首批对外发送就是可解码起点。 */
-    sink_config.drop_until_keyframe_after_reconnect = 1;
+    output_config.drop_until_keyframe_after_reconnect = 1;
 
-    if (media_sink_init(sink, &sink_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[ERROR] gb28181_sink_setup failed: media_sink_init name=%s\n",
+    if (media_output_init(output, &output_config, &vtable, impl) != 0) {
+        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: media_output_init name=%s\n",
                 impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;
     }
+    output->type = MEDIA_OUTPUT_TYPE_GB28181;
     return 0;
 }
 
-int gb28181_sink_consume_external_idr_request(MediaSink *sink) {
-    Gb28181SinkImpl *impl = NULL;
-    if (!sink) {
+int media_output_gb28181_consume_external_idr_request(MediaOutput *output) {
+    Gb28181OutputImpl *impl = NULL;
+    if (!output) {
         return 0;
     }
-    impl = (Gb28181SinkImpl *)sink->impl;
+    impl = (Gb28181OutputImpl *)output->impl;
     if (!impl || !impl->started) {
         return 0;
     }

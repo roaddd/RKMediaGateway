@@ -12,11 +12,12 @@ endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/logger/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/gb28181/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/defValue/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
@@ -54,17 +55,14 @@ link_directories(${THIRDPARTY_OPENSSL_LIB_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
+file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
-list(APPEND MEDIA_GATEWAY_SRC
-    ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/mediaGatewayCaptureWorker.c
-)
-list(REMOVE_DUPLICATES MEDIA_GATEWAY_SRC)
+file(GLOB MEDIA_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/src/*.c)
+file(GLOB_RECURSE MEDIA_OUTPUT_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/*.c)
 file(GLOB LOGGER_SRC ${PROJECT_SOURCE_DIR}/bussiness/logger/src/*.c)
-file(GLOB GB28181_SRC ${PROJECT_SOURCE_DIR}/bussiness/gb28181/src/*.c)
-file(GLOB RTSP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtspStreamer/src/*.c)
-file(GLOB RTMP_STREAMER_SRC ${PROJECT_SOURCE_DIR}/bussiness/rtmpStreamer/src/*.c)
+file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
 
-option(ENABLE_RTMP "Build RTMP sink skeleton" ON)
+option(ENABLE_RTMP "Build RTMP output support" ON)
 set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
 
 if(ENABLE_RTMP)
@@ -157,23 +155,22 @@ endif()
 if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     set(GATEWAY_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
-        ${RTSP_STREAMER_SRC}
-        ${GB28181_SRC}
+        ${MEDIA_OUTPUT_SRC}
     )
-    if(ENABLE_RTMP)
-        list(APPEND GATEWAY_OUTPUT_SRC ${RTMP_STREAMER_SRC})
-    endif()
 
     add_executable(rtsp_gateway
         ${PROJECT_SOURCE_DIR}/main/main.cpp
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
+        ${MEDIA_CORE_SRC}
+        ${MEDIA_FRAME_SOURCE_SRC}
+        ${DEF_VALUE_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
     if(ENABLE_RTMP)
-        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_SINK=1)
+        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_OUTPUT=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
             target_include_directories(rtsp_gateway PRIVATE ${LIBRTMP_INCLUDE_DIR} ${LIBRTMP_COMPAT_INCLUDE_DIR})
             target_link_libraries(rtsp_gateway PRIVATE ${LIBRTMP_LIBRARY})
@@ -190,23 +187,21 @@ endif()
 if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     set(DUAL_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
-        ${RTSP_STREAMER_SRC}
-        ${GB28181_SRC}
+        ${MEDIA_OUTPUT_SRC}
     )
-    if(ENABLE_RTMP)
-        list(APPEND DUAL_OUTPUT_SRC ${RTMP_STREAMER_SRC})
-    endif()
 
     add_executable(dual_output_test
         ${PROJECT_SOURCE_DIR}/main/main_dual_output_test.cpp
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
+        ${MEDIA_CORE_SRC}
+        ${MEDIA_FRAME_SOURCE_SRC}
         ${DUAL_OUTPUT_SRC}
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
     if(ENABLE_RTMP)
-        target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_SINK=1)
+        target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_OUTPUT=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
             target_include_directories(dual_output_test PRIVATE ${LIBRTMP_INCLUDE_DIR} ${LIBRTMP_COMPAT_INCLUDE_DIR})
             target_link_libraries(dual_output_test PRIVATE ${LIBRTMP_LIBRARY})
@@ -226,9 +221,11 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
+        ${MEDIA_CORE_SRC}
+        ${MEDIA_FRAME_SOURCE_SRC}
+        ${DEF_VALUE_SRC}
+        ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}
-        ${RTSP_STREAMER_SRC}
-        ${GB28181_SRC}
     )
     target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto pthread m)
     target_include_directories(all_services PRIVATE

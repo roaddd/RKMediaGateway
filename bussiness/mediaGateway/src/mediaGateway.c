@@ -1,6 +1,6 @@
 ﻿#include "mediaGateway.h"
 
-#include "mediaGatewayCaptureWorker.h"
+#include "mediaFrameSource.h"
 
 #include "logger.h"
 
@@ -221,10 +221,10 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
 
 }
 
-static void fill_default_capture_source(MediaGatewayCaptureSourceConfig *dst,
-                                        const MediaGatewayCaptureSourceConfig *src,
+static void fill_default_capture_source(CaptureSourceConfig *dst,
+                                        const CaptureSourceConfig *src,
                                         int source_idx) {
-    MediaGatewayCaptureSourceConfig src_copy;
+    CaptureSourceConfig src_copy;
     int has_src = 0;
 
     if (src) {
@@ -552,15 +552,15 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
 }
 
 static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx) {
-    /* Bridge external sink key-frame request to encoder IDR request. */
-    int sink_idx;
+    /* Bridge external output key-frame request to encoder IDR request. */
+    int output_idx;
     int need_idr = 0;
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) return;
 
     /* GB28181: 点播建立后可请求上游尽快补关键帧。 */
-    sink_idx = ctx->gb28181_sink_index[stream_idx];
-    if (sink_idx >= 0 && sink_idx < ctx->sink_count) {
-        if (gb28181_sink_consume_external_idr_request(&ctx->sinks[sink_idx])) {
+    output_idx = ctx->gb28181_output_index[stream_idx];
+    if (output_idx >= 0 && output_idx < ctx->output_count) {
+        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
             need_idr = 1;
         }
     }
@@ -569,16 +569,16 @@ static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx)
      * RTSP: 检测到“新客户端连入”后，也触发一次 IDR。
      * 这样新观看端不必长时间等待下一个自然 GOP 关键帧。
      */
-    sink_idx = ctx->rtsp_sink_index[stream_idx];
-    if (sink_idx >= 0 && sink_idx < ctx->sink_count) {
-        if (rtsp_sink_consume_external_idr_request(&ctx->sinks[sink_idx])) {
+    output_idx = ctx->rtsp_output_index[stream_idx];
+    if (output_idx >= 0 && output_idx < ctx->output_count) {
+        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
             need_idr = 1;
         }
     }
 
     if (need_idr) {
         if (mpp_encoder_request_idr(&ctx->encoders[stream_idx]) != 0) {
-            fprintf(stderr, "[WARN] stream=%d failed to request IDR from external sink event\n", stream_idx);
+            fprintf(stderr, "[WARN] stream=%d failed to request IDR from external output event\n", stream_idx);
         }
     }
 }
@@ -607,78 +607,77 @@ static int reset_encoder(MediaGatewayCtx *ctx, int stream_idx) {
     return 0;
 }
 
-/**
- * @description: sinks[0] = rtspSink     sink_stream_index[0] = 0         
- *               sinks[1] = rtmpSink     sink_stream_index[1] = 0
- *               sinks[2] = gb28181Sink  sink_stream_index[2] = 0
- *               sinks[3] = rtspSink     sink_stream_index[3] = 1
- *               sinks[4] = rtmpSink     sink_stream_index[4] = 1
- *               sinks[5] = gb28181Sink  sink_stream_index[5] = 1
- * @param {MediaGatewayCtx} *ctx
- * @param {int} stream_idx
- * @return {*}
- */
-static int setup_sinks_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
-    /* Create and map protocol sinks for one enabled stream. */
+static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
+    /* Create and map protocol outputs for one enabled stream. */
     const MediaGatewayStreamConfig *s = &ctx->config.streams[stream_idx];
+    MediaOutputConfig output_config;
     if (!s->enabled) return 0;
 
     if (s->enable_rtsp) {
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=rtsp max=%d\n",
+                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=rtsp max=%d\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_SINKS);
+                    MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
-        if (rtsp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtsp) != 0) {
+        memset(&output_config, 0, sizeof(output_config));
+        output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
+        output_config.protocol.rtsp = s->rtsp;
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: rtsp_sink_setup stream=%d name=%s session=%s port=%d\n",
+                    "[ERROR] setup_outputs_for_stream failed: rtsp output stream=%d name=%s session=%s port=%d\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
                     s->rtsp.session_name ? s->rtsp.session_name : "unknown",
                     s->rtsp.server_port);
             return -1;
         }
-        ctx->sink_stream_index[ctx->sink_count] = stream_idx;
-        ctx->rtsp_sink_index[stream_idx] = ctx->sink_count;
-        ctx->sink_count++;
+        ctx->output_stream_index[ctx->output_count] = stream_idx;
+        ctx->rtsp_output_index[stream_idx] = ctx->output_count;
+        ctx->output_count++;
     }
     if (s->enable_rtmp) {
-#if defined(ENABLE_RTMP_SINK)
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+#if defined(ENABLE_RTMP_OUTPUT)
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=rtmp max=%d\n",
+                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=rtmp max=%d\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_SINKS);
+                    MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
-        if (rtmp_sink_setup(&ctx->sinks[ctx->sink_count], &s->rtmp) != 0) {
+        memset(&output_config, 0, sizeof(output_config));
+        output_config.type = MEDIA_OUTPUT_TYPE_RTMP;
+        output_config.protocol.rtmp = s->rtmp;
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: rtmp_sink_setup stream=%d name=%s url=%s\n",
+                    "[ERROR] setup_outputs_for_stream failed: rtmp output stream=%d name=%s url=%s\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
                     s->rtmp.publish_url ? s->rtmp.publish_url : "");
             return -1;
         }
-        ctx->sink_stream_index[ctx->sink_count] = stream_idx;
-        ctx->sink_count++;
+        ctx->output_stream_index[ctx->output_count] = stream_idx;
+        ctx->output_count++;
 #endif
     }
     if (s->enable_gb28181) {
-        if (ctx->sink_count >= MEDIA_GATEWAY_MAX_SINKS) {
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: too many sinks stream=%d name=%s type=gb28181 max=%d\n",
+                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=gb28181 max=%d\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_SINKS);
+                    MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
-        if (gb28181_sink_setup(&ctx->sinks[ctx->sink_count], &s->gb28181) != 0) {
+        memset(&output_config, 0, sizeof(output_config));
+        output_config.type = MEDIA_OUTPUT_TYPE_GB28181;
+        output_config.protocol.gb28181 = s->gb28181;
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
             fprintf(stderr,
-                    "[ERROR] setup_sinks_for_stream failed: gb28181_sink_setup stream=%d name=%s server=%s:%d device=%s\n",
+                    "[ERROR] setup_outputs_for_stream failed: gb28181 output stream=%d name=%s server=%s:%d device=%s\n",
                     stream_idx,
                     s->name ? s->name : "unknown",
                     s->gb28181.server_ip ? s->gb28181.server_ip : "unknown",
@@ -686,74 +685,74 @@ static int setup_sinks_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
                     s->gb28181.device_id ? s->gb28181.device_id : "unknown");
             return -1;
         }
-        ctx->sink_stream_index[ctx->sink_count] = stream_idx;
-        ctx->gb28181_sink_index[stream_idx] = ctx->sink_count;
-        ctx->sink_count++;
+        ctx->output_stream_index[ctx->output_count] = stream_idx;
+        ctx->gb28181_output_index[stream_idx] = ctx->output_count;
+        ctx->output_count++;
     }
     return 0;
 }
 
-static int setup_sinks(MediaGatewayCtx *ctx) {
-    /* Setup sinks for all enabled streams. */
+static int setup_outputs(MediaGatewayCtx *ctx) {
+    /* Setup outputs for all enabled streams. */
     int i;
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         if (!ctx->stream_enabled[i]) continue;
-        if (setup_sinks_for_stream(ctx, i) != 0) {
-            fprintf(stderr, "[ERROR] setup_sinks failed: stream=%d name=%s\n",
+        if (setup_outputs_for_stream(ctx, i) != 0) {
+            fprintf(stderr, "[ERROR] setup_outputs failed: stream=%d name=%s\n",
                     i,
                     ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
             return -1;
         }
     }
-    if (ctx->sink_count <= 0) {
-        fprintf(stderr, "[ERROR] setup_sinks failed: no enabled sink configured\n");
+    if (ctx->output_count <= 0) {
+        fprintf(stderr, "[ERROR] setup_outputs failed: no enabled output configured\n");
         return -1;
     }
     return 0;
 }
 
-static int start_sinks(MediaGatewayCtx *ctx) {
-    /* Start all sinks so enqueue can be consumed immediately. */
+static int start_outputs(MediaGatewayCtx *ctx) {
+    /* Start all outputs so enqueue can be consumed immediately. */
     int i;
-    for (i = 0; i < ctx->sink_count; ++i) {
-        if (media_sink_start(&ctx->sinks[i]) != 0) {
-            fprintf(stderr, "[ERROR] start_sinks failed: idx=%d name=%s stream=%d\n",
+    for (i = 0; i < ctx->output_count; ++i) {
+        if (media_output_start(&ctx->outputs[i]) != 0) {
+            fprintf(stderr, "[ERROR] start_outputs failed: idx=%d name=%s stream=%d\n",
                     i,
-                    ctx->sinks[i].config.name ? ctx->sinks[i].config.name : "unknown",
-                    ctx->sink_stream_index[i]);
+                    ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
+                    ctx->output_stream_index[i]);
             return -1;
         }
     }
     return 0;
 }
 
-static void stop_sinks(MediaGatewayCtx *ctx) {
-    /* Stop sink workers before deinit to avoid concurrent accesses. */
+static void stop_outputs(MediaGatewayCtx *ctx) {
+    /* Stop output workers before deinit to avoid concurrent accesses. */
     int i;
-    for (i = 0; i < ctx->sink_count; ++i) media_sink_stop(&ctx->sinks[i]);
+    for (i = 0; i < ctx->output_count; ++i) media_output_stop(&ctx->outputs[i]);
 }
 
-static void deinit_sinks(MediaGatewayCtx *ctx) {
-    /* Release sink objects and their implementation payloads. */
+static void deinit_outputs(MediaGatewayCtx *ctx) {
+    /* Release output objects and their implementation payloads. */
     int i;
-    for (i = 0; i < ctx->sink_count; ++i) {
-        void *impl = ctx->sinks[i].impl;
-        media_sink_deinit(&ctx->sinks[i]);
+    for (i = 0; i < ctx->output_count; ++i) {
+        void *impl = ctx->outputs[i].impl;
+        media_output_deinit(&ctx->outputs[i]);
         free(impl);
     }
-    ctx->sink_count = 0;
+    ctx->output_count = 0;
 }
 
-static void log_sink_stats(MediaGatewayCtx *ctx) {
-    /* Periodic sink-level health and queue diagnostics. */
+static void log_output_stats(MediaGatewayCtx *ctx) {
+    /* Periodic output-level health and queue diagnostics. */
     int i;
-    for (i = 0; i < ctx->sink_count; ++i) {
-        MediaSinkStats stats;
-        media_sink_get_stats(&ctx->sinks[i], &stats);
-        printf("[SINK] stream=%d name=%s connected=%d queue=%d dropped=%" PRIu64 " sent=%" PRIu64
+    for (i = 0; i < ctx->output_count; ++i) {
+        MediaOutputStats stats;
+        media_output_get_stats(&ctx->outputs[i], &stats);
+        printf("[OUTPUT] stream=%d name=%s connected=%d queue=%d dropped=%" PRIu64 " sent=%" PRIu64
                " bytes=%" PRIu64 " reconnects=%" PRIu64 " wait_key=%d\n",
-               ctx->sink_stream_index[i],
-               ctx->sinks[i].config.name ? ctx->sinks[i].config.name : "unknown",
+               ctx->output_stream_index[i],
+               ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
                stats.connected,
                stats.queue_depth,
                stats.dropped_frames,
@@ -788,7 +787,7 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
            cfg->record_flush_interval_frames);
 
     for (i = 0; i < cfg->capture_source_count && i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
-        const MediaGatewayCaptureSourceConfig *source = &cfg->capture_sources[i];
+        const CaptureSourceConfig *source = &cfg->capture_sources[i];
         printf("[CFG] capture_source=%d name=%s enabled=%d device=%s size=%dx%d format=0x%x buffers=%d\n",
                i,
                source->name ? source->name : "unknown",
@@ -846,7 +845,7 @@ static void log_effective_config(const MediaGatewayConfig *cfg) {
 }
 
 int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
-    /* Full startup: config normalize, capture/encoders/sinks, optional file record. */
+    /* Full startup: config normalize, capture/encoders/outputs, optional file record. */
     int i;
     if (!ctx) {
         fprintf(stderr, "[ERROR] media_gateway_init failed: ctx is NULL\n");
@@ -857,13 +856,13 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
     fill_default_config(&ctx->config, config);
     log_effective_config(&ctx->config);
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-        ctx->rtsp_sink_index[i] = -1;
-        ctx->gb28181_sink_index[i] = -1;
+        ctx->rtsp_output_index[i] = -1;
+        ctx->gb28181_output_index[i] = -1;
     }
 
     for (i = 0; i < ctx->config.capture_source_count; ++i) {
         V4L2CaptureConfig capture_config;
-        const MediaGatewayCaptureSourceConfig *source = &ctx->config.capture_sources[i];
+        const CaptureSourceConfig *source = &ctx->config.capture_sources[i];
         if (!source->enabled) continue;
 
         memset(&capture_config, 0, sizeof(capture_config));
@@ -912,12 +911,12 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         ctx->stream_enabled[i] = 1;
     }
 
-    if (setup_sinks(ctx) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: setup_sinks\n");
+    if (setup_outputs(ctx) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: setup_outputs\n");
         goto fail;
     }
-    if (start_sinks(ctx) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: start_sinks\n");
+    if (start_outputs(ctx) != 0) {
+        fprintf(stderr, "[ERROR] media_gateway_init failed: start_outputs\n");
         goto fail;
     }
 
@@ -960,7 +959,7 @@ fail:
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {MediaGatewayRunState *} state 运行期状态，用于记录 fallback 告警。
  * @param {int} stream_idx 码流下标。
- * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {MediaFrame *} frame 当前采集帧。
  * @param {const uint8_t **} encode_input 输出编码输入数据指针。
  * @param {size_t *} encode_input_len 输出编码输入数据长度。
  * @return {int} 0 成功，-1 失败。
@@ -968,7 +967,7 @@ fail:
 static int ensure_stream_input(MediaGatewayCtx *ctx,
                                MediaGatewayRunState *state,
                                int stream_idx,
-                               const MediaGatewayCapturedFrame *frame,
+                               const MediaFrame *frame,
                                const uint8_t **encode_input,
                                size_t *encode_input_len) {
     ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
@@ -1001,7 +1000,7 @@ static int ensure_stream_input(MediaGatewayCtx *ctx,
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {MediaGatewayRunState *} state 运行期状态，用于记录连续编码失败次数。
  * @param {int} stream_idx 码流下标。
- * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {MediaFrame *} frame 当前采集帧。
  * @param {uint8_t *} encode_input 编码输入数据。
  * @param {size_t} encode_input_len 编码输入数据长度。
  * @param {uint8_t **} h264_data 输出 H264 数据指针。
@@ -1015,7 +1014,7 @@ static int ensure_stream_input(MediaGatewayCtx *ctx,
 static int encode_stream_frame(MediaGatewayCtx *ctx,
                                MediaGatewayRunState *state,
                                int stream_idx,
-                               const MediaGatewayCapturedFrame *frame,
+                               const MediaFrame *frame,
                                const uint8_t *encode_input,
                                size_t encode_input_len,
                                uint8_t **h264_data,
@@ -1055,10 +1054,10 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
 }
 
 /**
- * @description: 将编码后的 H264 数据封装为 MediaPacket，并分发到该码流绑定的所有 sink。
+ * @description: 将编码后的 H264 数据封装为 MediaPacket，并分发到该码流绑定的所有输出通道。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {int} stream_idx 码流下标。
- * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {MediaFrame *} frame 当前采集帧。
  * @param {uint8_t *} h264_data H264 数据指针。
  * @param {size_t} h264_len H264 数据长度。
  * @param {int} is_key_frame 是否关键帧。
@@ -1066,14 +1065,14 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
  */
 static int enqueue_stream_packet(MediaGatewayCtx *ctx,
                                  int stream_idx,
-                                 const MediaGatewayCapturedFrame *frame,
+                                 const MediaFrame *frame,
                                  uint8_t *h264_data,
                                  size_t h264_len,
                                  int is_key_frame) {
     MediaBuffer *buffer = NULL;
     MediaPacket packet;
     int i;
-    int sink_hit = 0;
+    int output_hit = 0;
 
     if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
         fprintf(stderr, "[ERROR] media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu\n",
@@ -1091,13 +1090,13 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.dts_us = frame->dqbuf_ts_us;
     packet.is_key_frame = is_key_frame;
 
-    for (i = 0; i < ctx->sink_count; ++i) {
-        if (ctx->sink_stream_index[i] != stream_idx) continue;
-        sink_hit = 1;
-        media_sink_enqueue(&ctx->sinks[i], &packet);
+    for (i = 0; i < ctx->output_count; ++i) {
+        if (ctx->output_stream_index[i] != stream_idx) continue;
+        output_hit = 1;
+        media_output_enqueue(&ctx->outputs[i], &packet);
     }
 
-    if (sink_hit) {
+    if (output_hit) {
         ctx->stat_frames++;
         ctx->stat_bytes += h264_len;
         ctx->stream_stat_frames[stream_idx]++;
@@ -1111,7 +1110,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
  * @description: 按配置采样并累计指定码流的 BENCH 性能埋点。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {int} stream_idx 码流下标，目前只统计 stream 0。
- * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {MediaFrame *} frame 当前采集帧。
  * @param {uint64_t} encode_put_ts_us encode_put_frame 前时间戳。
  * @param {uint64_t} encode_get_ts_us encode_get_packet 后时间戳。
  * @param {MppEncoderTiming *} mpp_timing MPP 内部分段耗时。
@@ -1119,7 +1118,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
  */
 static void record_stream_benchmark(MediaGatewayCtx *ctx,
                                     int stream_idx,
-                                    const MediaGatewayCapturedFrame *frame,
+                                    const MediaFrame *frame,
                                     uint64_t encode_put_ts_us,
                                     uint64_t encode_get_ts_us,
                                     const MppEncoderTiming *mpp_timing) {
@@ -1210,13 +1209,13 @@ static void maybe_record_stream_file(MediaGatewayCtx *ctx,
  * @description: 完成单个码流的一帧处理，包括准备输入、编码、分发、统计和可选录像。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @param {MediaGatewayRunState *} state 运行期状态。
- * @param {MediaGatewayCapturedFrame *} frame 当前采集帧。
+ * @param {MediaFrame *} frame 当前采集帧。
  * @param {int} stream_idx 码流下标。
  * @return {int} 0 成功或本帧可跳过，-1 发生不可恢复错误。
  */
 static int process_gateway_stream(MediaGatewayCtx *ctx,
                                   MediaGatewayRunState *state,
-                                  const MediaGatewayCapturedFrame *frame,
+                                  const MediaFrame *frame,
                                   int stream_idx) {
     const uint8_t *encode_input = NULL;
     size_t encode_input_len = 0;
@@ -1274,7 +1273,7 @@ static void reset_throughput_window(MediaGatewayCtx *ctx) {
 }
 
 /**
- * @description: 到达配置周期后打印吞吐、sink 状态和 BENCH 信息，并重置统计窗口。
+ * @description: 到达配置周期后打印吞吐、输出状态和 BENCH 信息，并重置统计窗口。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @return {void}
  */
@@ -1309,24 +1308,24 @@ static void log_throughput_if_due(MediaGatewayCtx *ctx) {
                ctx->stream_stat_bytes[i]);
     }
 
-    log_sink_stats(ctx);
+    log_output_stats(ctx);
     bench_log_and_reset_if_due(ctx);
     reset_throughput_window(ctx);
     ctx->stat_last_ts_us = now;
 }
 
 /**
- * @description: 网关主循环。采集工作由独立 worker 线程完成，本线程只取最新帧并执行编码/分发。
+ * @description: 网关主循环。采集工作由独立帧源线程完成，本线程只取最新帧并执行编码/分发。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
  * @return {int} 0 正常退出，-1 发生不可恢复错误。
  */
 int media_gateway_run(MediaGatewayCtx *ctx) {
     MediaGatewayRunState state;
-    MediaGatewayCaptureWorker capture_workers[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
-    int worker_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
-    int worker_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
     int ret = 0;
-    MediaGatewayCapturedFrame frame;
+    MediaFrame frame;
     int source_idx = -1;
     int stream_idx = -1;
     int slot_index = -1;
@@ -1338,27 +1337,27 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     }
 
     memset(&state, 0, sizeof(state));
-    memset(capture_workers, 0, sizeof(capture_workers));
-    memset(worker_inited, 0, sizeof(worker_inited));
-    memset(worker_started, 0, sizeof(worker_started));
+    memset(frame_sources, 0, sizeof(frame_sources));
+    memset(frame_source_inited, 0, sizeof(frame_source_inited));
+    memset(frame_source_started, 0, sizeof(frame_source_started));
 
     for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
         if (!ctx->capture_ready[source_idx]) continue;
-        if (media_gateway_capture_worker_init(&capture_workers[source_idx],
-                                              &ctx->captures[source_idx],
-                                              ctx->config.capture_retry_ms,
-                                              ctx->config.max_consecutive_failures) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: init capture worker source=%d\n", source_idx);
+        if (media_frame_source_init(&frame_sources[source_idx],
+                                    &ctx->captures[source_idx],
+                                    ctx->config.capture_retry_ms,
+                                    ctx->config.max_consecutive_failures) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: init frame source source=%d\n", source_idx);
             ret = -1;
             goto out;
         }
-        worker_inited[source_idx] = 1;
-        if (media_gateway_capture_worker_start(&capture_workers[source_idx]) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: start capture worker source=%d\n", source_idx);
+        frame_source_inited[source_idx] = 1;
+        if (media_frame_source_start(&frame_sources[source_idx]) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: start frame source source=%d\n", source_idx);
             ret = -1;
             goto out;
         }
-        worker_started[source_idx] = 1;
+        frame_source_started[source_idx] = 1;
     }
 
     while (ctx->running)
@@ -1366,16 +1365,16 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
         int got_frame = 0;
 
         for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
-            if (!worker_started[source_idx]) continue;
+            if (!frame_source_started[source_idx]) continue;
 
             /*
              * 每个采集源最多等待 10ms，避免某一路无帧时拖住其它码流。
              * 超时不算错误，主循环继续检查其它 source 和退出标志。
              */
             slot_index = -1;
-            acquire_ret = media_gateway_capture_worker_acquire_latest(&capture_workers[source_idx], &frame, &slot_index, 10);
+            acquire_ret = media_frame_source_acquire_latest(&frame_sources[source_idx], &frame, &slot_index, 10);
             if (acquire_ret < 0) {
-                fprintf(stderr, "[ERROR] media_gateway_run failed: capture worker stopped by fatal error source=%d\n", source_idx);
+                fprintf(stderr, "[ERROR] media_gateway_run failed: frame source stopped by fatal error source=%d\n", source_idx);
                 ret = -1;
                 break;
             }
@@ -1383,7 +1382,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             got_frame = 1;
 
             /*
-             * frame.raw_frame 指向 worker 槽位缓存，必须在 release 之前完成所有绑定到该 source 的码流处理。
+             * frame.raw_frame 指向帧源槽位缓存，必须在 release 之前完成所有绑定到该 source 的码流处理。
              * 当前策略是每个 source 只处理最新帧，编码来不及时允许丢旧帧，以保证实时性优先。
              */
             for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
@@ -1399,7 +1398,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
                 }
             }
 
-            media_gateway_capture_worker_release(&capture_workers[source_idx], slot_index);
+            media_frame_source_release(&frame_sources[source_idx], slot_index);
             if (ret != 0) break;
         }
 
@@ -1410,7 +1409,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
 
 out:
     for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx) {
-        if (worker_inited[source_idx]) media_gateway_capture_worker_deinit(&capture_workers[source_idx]);
+        if (frame_source_inited[source_idx]) media_frame_source_deinit(&frame_sources[source_idx]);
     }
     return ret;
 }
@@ -1422,12 +1421,12 @@ void media_gateway_stop(MediaGatewayCtx *ctx) {
 }
 
 void media_gateway_deinit(MediaGatewayCtx *ctx) {
-    /* Full teardown in safe order: sinks -> record file -> encoders -> capture. */
+    /* Full teardown in safe order: outputs -> record file -> encoders -> capture. */
     int i;
     if (!ctx) return;
 
-    stop_sinks(ctx);
-    deinit_sinks(ctx);
+    stop_outputs(ctx);
+    deinit_outputs(ctx);
 
     if (ctx->record_fp) {
         fflush(ctx->record_fp);
