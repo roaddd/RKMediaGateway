@@ -131,11 +131,14 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
     if (audio_capture_normalize_config(&normalized, config) != 0) {
         return -1;
     }
+    /* 获取每个声道的一个采样点占多少字节 */
     bytes_per_sample = audio_capture_bytes_per_sample(normalized.format);
     if (bytes_per_sample <= 0) {
         return -1;
     }
-
+    /**
+     * period_frames 是时间维度上的采样帧数
+     */
     period_buffer_size = (size_t)normalized.period_frames * normalized.channels * bytes_per_sample;
     ctx->period_buffer = (uint8_t *)malloc(period_buffer_size);
     if (!ctx->period_buffer) {
