@@ -165,8 +165,25 @@ static int gb28181_output_send_packet(MediaOutput *output, const MediaPacket *pa
         return -1;
     }
 
-    /* 非 H264 直接忽略，保持通道宽容，不影响主循环。 */
-    if (packet->codec != MEDIA_CODEC_H264) {
+    /* 非 H264/G711 直接忽略，保持通道宽容，不影响主循环。 */
+    if (packet->codec != MEDIA_CODEC_H264 &&
+        packet->codec != MEDIA_CODEC_G711A &&
+        packet->codec != MEDIA_CODEC_G711U) {
+        return 0;
+    }
+
+    if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
+        if (gb28181_device_send_g711(&impl->device_ctx,
+                                     packet->buffer->data,
+                                     packet->buffer->size,
+                                     packet->codec,
+                                     packet->pts_us) != 0) {
+            fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: send_g711 size=%zu codec=%d pts=%" PRIu64 "\n",
+                    packet->buffer->size,
+                    packet->codec,
+                    packet->pts_us);
+            return -1;
+        }
         return 0;
     }
 

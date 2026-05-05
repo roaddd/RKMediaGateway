@@ -6,6 +6,8 @@
 #include "mppEncoder.h"
 #include "v4l2Capture.h"
 #include "mediaOutput.h"
+#include "audioCapture.h"
+#include "g711Encoder.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,6 +26,21 @@ typedef struct {
     uint32_t pixelformat;            /* V4L2 像素格式，例如 V4L2_PIX_FMT_NV12。 */
     int buffer_count;                /* V4L2 mmap buffer 数量。 */
 } CaptureSourceConfig;
+
+typedef struct {
+    int enabled;                     /* 是否启用音频采集与编码。 */
+    const char *device_name;         /* ALSA 采集设备，例如 default/hw:0,0。 */
+    int sample_rate;                 /* 音频采样率，G711 常用 8000。 */
+    int channels;                    /* 声道数，当前 G711 编码路径要求 mono。 */
+    AudioSampleFormat format;        /* 采集 PCM 格式，当前支持 S16LE。 */
+    int period_frames;               /* 每个采集周期的单声道采样数。 */
+    int buffer_periods;              /* ALSA 设备缓冲周期数。 */
+    int source_slots;                /* audioFrameSource ring buffer 槽位数。 */
+    int retry_ms;                    /* 音频采集失败后的重试间隔。 */
+    int max_consecutive_failures;    /* 连续音频采集失败阈值。 */
+    G711EncoderMode g711_mode;       /* G711 A-law / mu-law。 */
+    int bind_stream_index;           /* 音频包投递到哪一路码流绑定的输出。 */
+} AudioSourceConfig;
 
 typedef struct {
     int enabled;                     /* 该码流是否启用。 */
@@ -82,6 +99,7 @@ typedef struct {
     int bench_print_interval_sec;    /* 性能埋点日志打印周期，单位秒。 */
     int capture_source_count;        /* 采集源数量。 */
     CaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
+    AudioSourceConfig audio;         /* 音频采集与编码配置。 */
     int stream_count;                /* 流配置数量，<=0 表示使用兼容模式自动生成 main 流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
     MediaOutputRtspConfig rtsp;      /* RTSP 协议专用配置块。 */
@@ -98,9 +116,13 @@ typedef struct {
 
 typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
+    AudioCaptureCtx audio_capture;               /* 音频采集上下文。 */
+    G711EncoderCtx audio_encoder;                /* G711 音频编码上下文。 */
     MppEncoderCtx encoders[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块上下文。 */
     int stream_enabled[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流是否启用。 */
     int capture_ready[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源是否已初始化成功。 */
+    int audio_capture_ready;                 /* 音频采集是否已初始化。 */
+    int audio_encoder_ready;                 /* 音频编码器是否已初始化。 */
     MediaOutput outputs[MEDIA_GATEWAY_MAX_OUTPUTS];  /* 已启用的输出通道集合。 */
     int output_stream_index[MEDIA_GATEWAY_MAX_OUTPUTS]; /* 每个输出通道绑定的 stream 下标。 */
     int output_count;                           /* 当前启用的输出通道数量。 */
@@ -115,6 +137,8 @@ typedef struct {
     uint64_t stat_bytes;                       /* 当前统计窗口内累计字节数。 */
     uint64_t stream_stat_frames[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流窗口内累计帧数。 */
     uint64_t stream_stat_bytes[MEDIA_GATEWAY_MAX_STREAMS];  /* 各码流窗口内累计字节数。 */
+    uint64_t audio_stat_frames;              /* 当前统计窗口内累计音频帧数。 */
+    uint64_t audio_stat_bytes;               /* 当前统计窗口内累计音频字节数。 */
     uint8_t *scaled_frame_cache[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放后的 NV12 帧缓存。 */
     size_t scaled_frame_cache_size[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放缓存容量。 */
 

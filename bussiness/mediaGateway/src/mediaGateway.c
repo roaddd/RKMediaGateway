@@ -1,5 +1,6 @@
 ﻿#include "mediaGateway.h"
 
+#include "audioFrameSource.h"
 #include "mediaFrameSource.h"
 
 #include "logger.h"
@@ -28,6 +29,10 @@
 #define DEFAULT_BENCH_ENABLE 0
 #define DEFAULT_BENCH_SAMPLE_EVERY 1
 #define DEFAULT_BENCH_PRINT_INTERVAL_SEC 1
+#define DEFAULT_ENABLE_AUDIO 0
+#define DEFAULT_AUDIO_BIND_STREAM_INDEX 0
+#define DEFAULT_AUDIO_RETRY_MS 5
+#define DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES 30
 
 static const char *safe_str(const char *value, const char *fallback) {
     /* Return configured string when valid; otherwise use fallback. */
@@ -357,6 +362,26 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
     for (i = dst->capture_source_count; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
         memset(&dst->capture_sources[i], 0, sizeof(dst->capture_sources[i]));
         dst->capture_sources[i].name = (i == 0) ? "main_path" : "self_path";
+    }
+
+    /*
+     * 音频默认关闭，保持既有视频网关行为不变。
+     * 打开后默认走 8k/mono/20ms/G711A，优先服务 GB28181 语音链路。
+     */
+    dst->audio.enabled = dst->audio.enabled ? 1 : DEFAULT_ENABLE_AUDIO;
+    dst->audio.device_name = safe_str(dst->audio.device_name, AUDIO_CAPTURE_DEFAULT_DEVICE);
+    if (dst->audio.sample_rate <= 0) dst->audio.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
+    if (dst->audio.channels <= 0) dst->audio.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
+    if (dst->audio.format == 0) dst->audio.format = AUDIO_SAMPLE_FORMAT_S16LE;
+    if (dst->audio.period_frames <= 0) dst->audio.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
+    if (dst->audio.buffer_periods <= 0) dst->audio.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
+    if (dst->audio.source_slots <= 0) dst->audio.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
+    if (dst->audio.retry_ms <= 0) dst->audio.retry_ms = DEFAULT_AUDIO_RETRY_MS;
+    if (dst->audio.max_consecutive_failures <= 0) {
+        dst->audio.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
+    }
+    if (dst->audio.bind_stream_index < 0 || dst->audio.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS) {
+        dst->audio.bind_stream_index = DEFAULT_AUDIO_BIND_STREAM_INDEX;
     }
 
     if (dst->stream_count <= 0) {
@@ -714,6 +739,10 @@ static int setup_outputs(MediaGatewayCtx *ctx) {
 static int start_outputs(MediaGatewayCtx *ctx) {
     /* Start all outputs so enqueue can be consumed immediately. */
     int i;
+    /*
+     * 音频先只投递到未来会消费音频的协议输出。
+     * RTSP 当前未声明音频 track，直接投递会造成协议面和媒体面不一致。
+     */
     for (i = 0; i < ctx->output_count; ++i) {
         if (media_output_start(&ctx->outputs[i]) != 0) {
             fprintf(stderr, "[ERROR] start_outputs failed: idx=%d name=%s stream=%d\n",
@@ -911,6 +940,42 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         ctx->stream_enabled[i] = 1;
     }
 
+    if (ctx->config.audio.enabled) {
+        AudioCaptureConfig audio_capture_config;
+        G711EncoderConfig g711_config;
+
+        /* 音频采集和编码器在 init 阶段建好，run 阶段只启动音频帧源线程。 */
+        memset(&audio_capture_config, 0, sizeof(audio_capture_config));
+        audio_capture_config.device_name = ctx->config.audio.device_name;
+        audio_capture_config.sample_rate = ctx->config.audio.sample_rate;
+        audio_capture_config.channels = ctx->config.audio.channels;
+        audio_capture_config.format = ctx->config.audio.format;
+        audio_capture_config.period_frames = ctx->config.audio.period_frames;
+        audio_capture_config.buffer_periods = ctx->config.audio.buffer_periods;
+        if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0) {
+            fprintf(stderr,
+                    "[ERROR] media_gateway_init failed: audio_capture device=%s rate=%d channels=%d\n",
+                    ctx->config.audio.device_name ? ctx->config.audio.device_name : "unknown",
+                    ctx->config.audio.sample_rate,
+                    ctx->config.audio.channels);
+            goto fail;
+        }
+        ctx->audio_capture_ready = 1;
+        ctx->config.audio.sample_rate = ctx->audio_capture.config.sample_rate;
+        ctx->config.audio.period_frames = ctx->audio_capture.config.period_frames;
+
+        memset(&g711_config, 0, sizeof(g711_config));
+        g711_config.mode = ctx->config.audio.g711_mode;
+        g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
+        g711_config.channels = ctx->audio_capture.config.channels;
+        g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
+        if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_init failed: g711_encoder\n");
+            goto fail;
+        }
+        ctx->audio_encoder_ready = 1;
+    }
+
     if (setup_outputs(ctx) != 0) {
         fprintf(stderr, "[ERROR] media_gateway_init failed: setup_outputs\n");
         goto fail;
@@ -1106,6 +1171,90 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     return 0;
 }
 
+static int enqueue_audio_packet(MediaGatewayCtx *ctx,
+                                int stream_idx,
+                                const AudioFrame *frame,
+                                const uint8_t *audio_data,
+                                size_t audio_len,
+                                MediaCodecType codec) {
+    MediaBuffer *buffer = NULL;
+    MediaPacket packet;
+    int i;
+    int output_hit = 0;
+
+    if (!ctx || !frame || !audio_data || audio_len == 0) return -1;
+    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count) return -1;
+
+    if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0) {
+        fprintf(stderr, "[ERROR] enqueue_audio_packet failed: media_buffer_create_copy stream=%d size=%zu\n",
+                stream_idx,
+                audio_len);
+        return -1;
+    }
+
+    media_packet_init(&packet);
+    packet.frame_type = MEDIA_FRAME_TYPE_AUDIO;
+    packet.codec = codec;
+    packet.buffer = buffer;
+    packet.frame_id = frame->frame_id;
+    packet.pts_us = frame->pts_us;
+    packet.dts_us = frame->pts_us;
+    packet.is_key_frame = 0;
+
+    for (i = 0; i < ctx->output_count; ++i) {
+        if (ctx->output_stream_index[i] != stream_idx) continue;
+        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
+            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181) {
+            continue;
+        }
+        output_hit = 1;
+        media_output_enqueue(&ctx->outputs[i], &packet);
+    }
+
+    if (output_hit) {
+        ctx->audio_stat_frames++;
+        ctx->audio_stat_bytes += audio_len;
+    }
+    media_packet_reset(&packet);
+    return 0;
+}
+
+static int process_gateway_audio(MediaGatewayCtx *ctx, const AudioFrame *frame) {
+    const uint8_t *g711_data = NULL;
+    size_t g711_len = 0;
+    MediaCodecType codec = MEDIA_CODEC_NONE;
+    int stream_idx;
+
+    if (!ctx || !frame || !frame->data || frame->size == 0) return -1;
+    if (!ctx->audio_encoder_ready) return 0;
+    if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE || frame->channels != 1) {
+        fprintf(stderr,
+                "[ERROR] process_gateway_audio failed: unsupported format=%d channels=%d\n",
+                frame->format,
+                frame->channels);
+        return -1;
+    }
+
+    stream_idx = ctx->config.audio.bind_stream_index;
+    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx]) {
+        return 0;
+    }
+    /*
+     * gateway 层负责“PCM -> 编码音频包”的一次性转换，
+     * 下游输出只做协议适配，避免每个输出重复编码。
+     */
+    if (g711_encoder_encode_s16le(&ctx->audio_encoder,
+                                  (const int16_t *)frame->data,
+                                  frame->samples_per_channel,
+                                  &g711_data,
+                                  &g711_len,
+                                  &codec) != 0) {
+        fprintf(stderr, "[ERROR] process_gateway_audio failed: g711 encode frame=%" PRIu64 "\n", frame->frame_id);
+        return -1;
+    }
+    return enqueue_audio_packet(ctx, stream_idx, frame, g711_data, g711_len, codec);
+}
+
 /**
  * @description: 按配置采样并累计指定码流的 BENCH 性能埋点。
  * @param {MediaGatewayCtx *} ctx 网关上下文。
@@ -1270,6 +1419,8 @@ static void reset_throughput_window(MediaGatewayCtx *ctx) {
         ctx->stream_stat_frames[i] = 0;
         ctx->stream_stat_bytes[i] = 0;
     }
+    ctx->audio_stat_frames = 0;
+    ctx->audio_stat_bytes = 0;
 }
 
 /**
@@ -1307,6 +1458,15 @@ static void log_throughput_if_due(MediaGatewayCtx *ctx) {
                ctx->stream_stat_frames[i],
                ctx->stream_stat_bytes[i]);
     }
+    if (ctx->config.audio.enabled) {
+        double afps = (span_sec > 0.0) ? ((double)ctx->audio_stat_frames / span_sec) : 0.0;
+        double akbps = (span_sec > 0.0) ? ((double)ctx->audio_stat_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+        fprintf(stderr, "[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
+                afps,
+                akbps,
+                ctx->audio_stat_frames,
+                ctx->audio_stat_bytes);
+    }
 
     log_output_stats(ctx);
     bench_log_and_reset_if_due(ctx);
@@ -1324,11 +1484,16 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
     int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
     int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    AudioFrameSource audio_source;
+    int audio_source_inited = 0;
+    int audio_source_started = 0;
     int ret = 0;
     MediaFrame frame;
+    AudioFrame audio_frame;
     int source_idx = -1;
     int stream_idx = -1;
     int slot_index = -1;
+    int audio_slot_index = -1;
     int acquire_ret = 0;
 
     if (!ctx || !ctx->running) {
@@ -1340,6 +1505,7 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
     memset(frame_sources, 0, sizeof(frame_sources));
     memset(frame_source_inited, 0, sizeof(frame_source_inited));
     memset(frame_source_started, 0, sizeof(frame_source_started));
+    memset(&audio_source, 0, sizeof(audio_source));
 
     for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
         if (!ctx->capture_ready[source_idx]) continue;
@@ -1358,6 +1524,26 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             goto out;
         }
         frame_source_started[source_idx] = 1;
+    }
+
+    if (ctx->config.audio.enabled && ctx->audio_capture_ready) {
+        /* audioFrameSource 和 video frame source 一样，只在 run 生命周期内拥有采集线程。 */
+        if (audio_frame_source_init(&audio_source,
+                                    &ctx->audio_capture,
+                                    ctx->config.audio.source_slots,
+                                    ctx->config.audio.retry_ms,
+                                    ctx->config.audio.max_consecutive_failures) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: init audio frame source\n");
+            ret = -1;
+            goto out;
+        }
+        audio_source_inited = 1;
+        if (audio_frame_source_start(&audio_source) != 0) {
+            fprintf(stderr, "[ERROR] media_gateway_run failed: start audio frame source\n");
+            ret = -1;
+            goto out;
+        }
+        audio_source_started = 1;
     }
 
     while (ctx->running)
@@ -1402,12 +1588,41 @@ int media_gateway_run(MediaGatewayCtx *ctx) {
             if (ret != 0) break;
         }
 
+        if (ret == 0 && audio_source_started) {
+            int audio_drain_count = 0;
+            /*
+             * 一轮最多 drain 8 个音频包，防止音频积压时长时间占住主循环，
+             * 让视频采集/编码仍然有调度机会。
+             */
+            while (audio_drain_count < 8) {
+                audio_slot_index = -1;
+                acquire_ret = audio_frame_source_acquire(&audio_source, &audio_frame, &audio_slot_index, 0);
+                if (acquire_ret < 0) {
+                    fprintf(stderr, "[ERROR] media_gateway_run failed: audio frame source fatal error\n");
+                    ret = -1;
+                    break;
+                }
+                if (acquire_ret == 0) break;
+                got_frame = 1;
+                if (process_gateway_audio(ctx, &audio_frame) != 0) {
+                    fprintf(stderr,
+                            "[ERROR] media_gateway_run failed: process_gateway_audio frame=%" PRIu64 "\n",
+                            audio_frame.frame_id);
+                    ret = -1;
+                }
+                audio_frame_source_release(&audio_source, audio_slot_index);
+                if (ret != 0) break;
+                audio_drain_count++;
+            }
+        }
+
         log_throughput_if_due(ctx);
         if (!got_frame) usleep(1000);
         if (ret != 0) break;
     }
 
 out:
+    if (audio_source_inited) audio_frame_source_deinit(&audio_source);
     for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx) {
         if (frame_source_inited[source_idx]) media_frame_source_deinit(&frame_sources[source_idx]);
     }
@@ -1432,6 +1647,14 @@ void media_gateway_deinit(MediaGatewayCtx *ctx) {
         fflush(ctx->record_fp);
         fclose(ctx->record_fp);
         ctx->record_fp = NULL;
+    }
+    if (ctx->audio_encoder_ready) {
+        g711_encoder_deinit(&ctx->audio_encoder);
+        ctx->audio_encoder_ready = 0;
+    }
+    if (ctx->audio_capture_ready) {
+        audio_capture_deinit(&ctx->audio_capture);
+        ctx->audio_capture_ready = 0;
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
         if (ctx->encoder_ready[i]) {

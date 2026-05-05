@@ -11,6 +11,9 @@ if(NOT DEFINED BUILD_TARGET)
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
@@ -54,6 +57,9 @@ link_directories(${THIRDPARTY_OSIP_LIB_DIR})
 link_directories(${THIRDPARTY_OPENSSL_LIB_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
+file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
+file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
+file(GLOB G711_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
@@ -63,7 +69,38 @@ file(GLOB LOGGER_SRC ${PROJECT_SOURCE_DIR}/bussiness/logger/src/*.c)
 file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
+option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
 set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
+
+if(ENABLE_ALSA_AUDIO)
+    find_path(ALSA_INCLUDE_DIR NAMES alsa/asoundlib.h)
+    find_library(ALSA_LIBRARY NAMES asound)
+    if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        message(STATUS "ALSA audio capture enabled")
+    else()
+        message(WARNING "ENABLE_ALSA_AUDIO=ON but ALSA headers/library not found; audio capture will build without real device support")
+    endif()
+endif()
+
+if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(audio_pipeline_test
+        ${PROJECT_SOURCE_DIR}/main/main_audio_pipeline_test.cpp
+        ${LOGGER_SRC}
+        ${MEDIA_CORE_SRC}
+        ${AUDIO_CAPTURE_SRC}
+        ${AUDIO_FRAME_SOURCE_SRC}
+        ${G711_ENCODER_SRC}
+    )
+    target_link_libraries(audio_pipeline_test PRIVATE pthread m)
+    if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        target_include_directories(audio_pipeline_test PRIVATE ${ALSA_INCLUDE_DIR})
+        target_link_libraries(audio_pipeline_test PRIVATE ${ALSA_LIBRARY})
+        target_compile_definitions(audio_pipeline_test PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
+    set_target_properties(audio_pipeline_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
 
 if(ENABLE_RTMP)
     set(LIBRTMP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/rtmp_include)
@@ -128,6 +165,22 @@ if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "audio_capture_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(audio_capture_test
+        ${PROJECT_SOURCE_DIR}/main/main_audio_capture_test.cpp
+        ${AUDIO_CAPTURE_SRC}
+    )
+    target_link_libraries(audio_capture_test PRIVATE pthread m)
+    if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        target_include_directories(audio_capture_test PRIVATE ${ALSA_INCLUDE_DIR})
+        target_link_libraries(audio_capture_test PRIVATE ${ALSA_LIBRARY})
+        target_compile_definitions(audio_capture_test PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
+    set_target_properties(audio_capture_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(video0_fps_test
         ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
@@ -162,6 +215,9 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${PROJECT_SOURCE_DIR}/main/main.cpp
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
+        ${AUDIO_CAPTURE_SRC}
+        ${AUDIO_FRAME_SOURCE_SRC}
+        ${G711_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -179,6 +235,11 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
             message(WARNING "ENABLE_RTMP=ON but librtmp not found; building RTMP skeleton without real transport")
         endif()
     endif()
+    if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        target_include_directories(rtsp_gateway PRIVATE ${ALSA_INCLUDE_DIR})
+        target_link_libraries(rtsp_gateway PRIVATE ${ALSA_LIBRARY})
+        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
     set_target_properties(rtsp_gateway PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -194,6 +255,9 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${PROJECT_SOURCE_DIR}/main/main_dual_output_test.cpp
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
+        ${AUDIO_CAPTURE_SRC}
+        ${AUDIO_FRAME_SOURCE_SRC}
+        ${G711_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -210,6 +274,11 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
             message(WARNING "ENABLE_RTMP=ON but librtmp not found; building dual_output_test without real RTMP transport")
         endif()
     endif()
+    if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        target_include_directories(dual_output_test PRIVATE ${ALSA_INCLUDE_DIR})
+        target_link_libraries(dual_output_test PRIVATE ${ALSA_LIBRARY})
+        target_compile_definitions(dual_output_test PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
     set_target_properties(dual_output_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -220,6 +289,9 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${PROJECT_SOURCE_DIR}/main/main_all_services.cpp
         ${LOGGER_SRC}
         ${V4L2_CAPTURE_SRC}
+        ${AUDIO_CAPTURE_SRC}
+        ${AUDIO_FRAME_SOURCE_SRC}
+        ${G711_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -233,6 +305,11 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${EXOSIP_COMPAT_INCLUDE_DIR}
         ${OPENSSL_COMPAT_INCLUDE_DIR}
     )
+    if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
+        target_include_directories(all_services PRIVATE ${ALSA_INCLUDE_DIR})
+        target_link_libraries(all_services PRIVATE ${ALSA_LIBRARY})
+        target_compile_definitions(all_services PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
     set_target_properties(all_services PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -240,6 +317,9 @@ endif()
 
 message(STATUS "BUILD_TARGET=${BUILD_TARGET}")
 message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
+message(STATUS "ENABLE_ALSA_AUDIO=${ENABLE_ALSA_AUDIO}")
+message(STATUS "ALSA_INCLUDE_DIR=${ALSA_INCLUDE_DIR}")
+message(STATUS "ALSA_LIBRARY=${ALSA_LIBRARY}")
 message(STATUS "LIBRTMP_INCLUDE_DIR=${LIBRTMP_INCLUDE_DIR}")
 message(STATUS "LIBRTMP_LIBRARY=${LIBRTMP_LIBRARY}")
 message(STATUS "EXOSIP_COMPAT_INCLUDE_DIR=${EXOSIP_COMPAT_INCLUDE_DIR}")

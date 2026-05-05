@@ -15,9 +15,12 @@ typedef enum {
 } MediaFrameType;
 
 typedef enum {
-    MEDIA_CODEC_NONE = 0, /* 未指定编码类型 */
-    MEDIA_CODEC_H264 = 1, /* H264 视频编码 */
-    MEDIA_CODEC_AAC = 2   /* AAC 音频编码 */
+    MEDIA_CODEC_NONE = 0,      /* 未指定编码类型 */
+    MEDIA_CODEC_H264 = 1,      /* H264 视频编码 */
+    MEDIA_CODEC_AAC = 2,       /* AAC 音频编码 */
+    MEDIA_CODEC_PCM_S16LE = 3, /* PCM S16LE 原始音频 */
+    MEDIA_CODEC_G711A = 4,     /* G.711 A-law 音频 */
+    MEDIA_CODEC_G711U = 5      /* G.711 mu-law 音频 */
 } MediaCodecType;
 
 typedef struct {

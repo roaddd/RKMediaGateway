@@ -1,5 +1,7 @@
 ﻿#include "../inc/gb28181Device.h"
 
+#include "mediaPacket.h"
+
 #include <arpa/inet.h>
 #include <eXosip2/eXosip.h>
 #include <netinet/in.h>
@@ -41,6 +43,10 @@
 #define GB28181_RTP_PAYLOAD_TYPE 96
 #define GB28181_RTP_MAX_PAYLOAD 1400
 #define GB28181_PS_STREAM_ID_VIDEO 0xE0
+#define GB28181_PS_STREAM_ID_AUDIO 0xC0
+#define GB28181_PS_STREAM_TYPE_H264 0x1B
+#define GB28181_PS_STREAM_TYPE_G711A 0x90
+#define GB28181_PS_STREAM_TYPE_G711U 0x91
 #define GB28181_PS_BUFFER_INIT_SIZE (2 * 1024 * 1024)
 
 /*
@@ -513,14 +519,29 @@ static int ps_write_pack_header(Gb28181Buffer *buffer, uint64_t scr_90k)
 /* 写入 PS system header（关键帧前附带）。 */
 static int ps_write_system_header(Gb28181Buffer *buffer)
 {
-    const uint8_t system_header[] = {0x00, 0x00, 0x01, 0xBB, 0x00, 0x0C, 0x80, 0x04, 0x04, 0xE1, 0x7F, 0xE0, 0xE0, 0xE8, 0xC0, 0x20, 0xBD, 0xE0};
+    const uint8_t system_header[] = {
+        0x00, 0x00, 0x01, 0xBB,
+        0x00, 0x0C,
+        0x80, 0x04, 0x04, 0xE1, 0x7F,
+        0xE0, 0xE0, 0xE8,
+        0xC0, 0x20, 0x20
+    };
     return gb_buffer_append(buffer, system_header, sizeof(system_header));
 }
 
-/* 写入 PS program stream map（关键帧前附带）。 */
-static int ps_write_program_stream_map(Gb28181Buffer *buffer)
+/* 写入 PS program stream map，声明 H264 视频和 G711 音频 stream。 */
+static int ps_write_program_stream_map(Gb28181Buffer *buffer, uint8_t audio_stream_type)
 {
-    const uint8_t psm[] = {0x00, 0x00, 0x01, 0xBC, 0x00, 0x12, 0xE0, 0xFF, 0x00, 0x00, 0x00, 0x08, 0x1B, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x45, 0xBD, 0xDC, 0xF4};
+    const uint8_t psm[] = {
+        0x00, 0x00, 0x01, 0xBC,
+        0x00, 0x12,
+        0xE0, 0xFF,
+        0x00, 0x00,
+        0x00, 0x08,
+        GB28181_PS_STREAM_TYPE_H264, GB28181_PS_STREAM_ID_VIDEO, 0x00, 0x00,
+        audio_stream_type, GB28181_PS_STREAM_ID_AUDIO, 0x00, 0x00,
+        0x45, 0xBD, 0xDC, 0xF4
+    };
     return gb_buffer_append(buffer, psm, sizeof(psm));
 }
 
@@ -581,6 +602,75 @@ static int ps_write_video_pes(Gb28181Buffer *buffer, const uint8_t *payload, siz
     return 0;
 }
 
+/* 写入音频 PES 包头与 G711 payload。 */
+static int ps_write_audio_pes(Gb28181Buffer *buffer, const uint8_t *payload, size_t payload_len, uint64_t pts_90k)
+{
+    uint8_t header[14];
+    size_t pes_packet_length = payload_len + 8;
+    if (!buffer || !payload || payload_len == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_audio_pes invalid args payload_len=%zu\n", payload_len);
+        return -1;
+    }
+    if (pes_packet_length > 0xFFFF)
+        pes_packet_length = 0;
+    memset(header, 0, sizeof(header));
+    header[0] = 0x00;
+    header[1] = 0x00;
+    header[2] = 0x01;
+    header[3] = GB28181_PS_STREAM_ID_AUDIO;
+    header[4] = (uint8_t)((pes_packet_length >> 8) & 0xFF);
+    header[5] = (uint8_t)(pes_packet_length & 0xFF);
+    header[6] = 0x80;
+    header[7] = 0x80;
+    header[8] = 0x05;
+    ps_write_pts_field(header + 9, 0x02, pts_90k);
+    if (gb_buffer_append(buffer, header, sizeof(header)) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_audio_pes append header failed\n");
+        return -1;
+    }
+    if (gb_buffer_append(buffer, payload, payload_len) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] ps_write_audio_pes append payload failed len=%zu\n", payload_len);
+        return -1;
+    }
+    return 0;
+}
+
+/* 将一帧 G711 音频封装为一帧 PS，RTP 层仍按 PS/90000 发送。 */
+static int build_ps_audio_frame(const uint8_t *g711_data, size_t g711_len, int codec, uint64_t pts_us, Gb28181Buffer *ps_buffer)
+{
+    uint64_t pts_90k = pts_us * 90ULL / 1000ULL;
+    uint8_t audio_stream_type = (codec == MEDIA_CODEC_G711U) ? GB28181_PS_STREAM_TYPE_G711U : GB28181_PS_STREAM_TYPE_G711A;
+    if (!g711_data || g711_len == 0 || !ps_buffer)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_audio_frame invalid args len=%zu\n", g711_len);
+        return -1;
+    }
+    gb_buffer_reset(ps_buffer);
+    if (ps_write_pack_header(ps_buffer, pts_90k) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_audio_frame write pack header failed\n");
+        return -1;
+    }
+    /*
+     * 音频包也带 PSM，确保平台在只先收到音频 PS 时也能识别 G711 类型。
+     * 视频关键帧仍会周期性带 PSM，二者互不依赖。
+     */
+    if (ps_write_program_stream_map(ps_buffer, audio_stream_type) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_audio_frame write program stream map failed\n");
+        return -1;
+    }
+    if (ps_write_audio_pes(ps_buffer, g711_data, g711_len, pts_90k) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] build_ps_audio_frame write audio PES failed len=%zu\n", g711_len);
+        return -1;
+    }
+    return 0;
+}
+
 /*
  * 将一帧 Annex-B H264 封装为 PS。
  * 关键帧时会附带 system header + PSM，提升下游识别成功率。
@@ -620,7 +710,7 @@ static int build_ps_frame(const uint8_t *annexb_data, size_t annexb_len, int is_
             fprintf(stderr, "[GB28181][ERROR] build_ps_frame write system header failed\n");
             return -1;
         }
-        if (ps_write_program_stream_map(ps_buffer) != 0)
+        if (ps_write_program_stream_map(ps_buffer, GB28181_PS_STREAM_TYPE_G711A) != 0)
         {
             fprintf(stderr, "[GB28181][ERROR] build_ps_frame write program stream map failed\n");
             return -1;
@@ -1536,6 +1626,79 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
                 session_snapshot.cid,
                 ps_buffer.size);
         /* 发送失败时主动关闭当前会话，促使上层重新拉起点播。 */
+        pthread_mutex_lock(&ctx->session_lock);
+        if (ctx->media_session.cid == session_snapshot.cid)
+        {
+            close_rtp_socket(&ctx->media_session);
+            reset_media_session(&ctx->media_session);
+        }
+        pthread_mutex_unlock(&ctx->session_lock);
+        return -1;
+    }
+    gb_buffer_deinit(&ps_buffer);
+
+    pthread_mutex_lock(&ctx->session_lock);
+    if (ctx->media_session.active && ctx->media_session.established && ctx->media_session.cid == session_snapshot.cid)
+    {
+        ctx->media_session.rtp_sequence = session_snapshot.rtp_sequence;
+        ctx->media_session.last_rtp_timestamp = session_snapshot.last_rtp_timestamp;
+    }
+    pthread_mutex_unlock(&ctx->session_lock);
+    return 0;
+}
+
+/*
+ * 外部输入 G711 音频发送接口。
+ * 发送策略和 H264 一致：先快照会话，再在锁外完成 PS 封装与 UDP 发送。
+ */
+int gb28181_device_send_g711(Gb28181DeviceCtx *ctx,
+                             const uint8_t *g711_data,
+                             size_t g711_len,
+                             int codec,
+                             uint64_t pts_us)
+{
+    Gb28181MediaSession session_snapshot;
+    Gb28181Buffer ps_buffer;
+    uint32_t rtp_timestamp = 0;
+
+    if (!ctx || !g711_data || g711_len == 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_g711 invalid args len=%zu\n", g711_len);
+        return -1;
+    }
+    if (codec != MEDIA_CODEC_G711A && codec != MEDIA_CODEC_G711U)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_g711 unsupported codec=%d\n", codec);
+        return -1;
+    }
+
+    pthread_mutex_lock(&ctx->session_lock);
+    if (!ctx->media_session.active || !ctx->media_session.established || ctx->media_session.rtp_socket_fd < 0)
+    {
+        pthread_mutex_unlock(&ctx->session_lock);
+        return 0;
+    }
+    session_snapshot = ctx->media_session;
+    pthread_mutex_unlock(&ctx->session_lock);
+
+    if (gb_buffer_init(&ps_buffer, 4096) != 0)
+    {
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_g711 ps buffer init failed\n");
+        return -1;
+    }
+    if (build_ps_audio_frame(g711_data, g711_len, codec, pts_us, &ps_buffer) != 0)
+    {
+        gb_buffer_deinit(&ps_buffer);
+        return 0;
+    }
+
+    rtp_timestamp = (uint32_t)((pts_us * 90ULL / 1000ULL) & 0xFFFFFFFFU);
+    if (send_ps_over_rtp(&session_snapshot, ps_buffer.data, ps_buffer.size, rtp_timestamp) != 0)
+    {
+        gb_buffer_deinit(&ps_buffer);
+        fprintf(stderr, "[GB28181][ERROR] gb28181_device_send_g711 send_ps_over_rtp failed cid=%d size=%zu\n",
+                session_snapshot.cid,
+                ps_buffer.size);
         pthread_mutex_lock(&ctx->session_lock);
         if (ctx->media_session.cid == session_snapshot.cid)
         {

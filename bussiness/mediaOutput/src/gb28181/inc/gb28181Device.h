@@ -153,6 +153,23 @@ int gb28181_device_send_h264(Gb28181DeviceCtx *ctx,
                              int is_key_frame,
                              uint64_t pts_us);
 
+/**
+ * @brief 外部输入 G711 音频帧并发送为 GB28181 PS/RTP。
+ *
+ * 当前设备 SDP 仍声明单路 PS/90000，音频作为 PS 内部音频 PES 发送。
+ * @param ctx 设备上下文。
+ * @param g711_data G711A/G711U 原始负载。
+ * @param g711_len 数据长度。
+ * @param codec MediaCodecType，支持 MEDIA_CODEC_G711A / MEDIA_CODEC_G711U。
+ * @param pts_us 音频帧起点时间戳，单位微秒。
+ * @return 0 成功或当前无会话无需发送，<0 发送链路异常。
+ */
+int gb28181_device_send_g711(Gb28181DeviceCtx *ctx,
+                             const uint8_t *g711_data,
+                             size_t g711_len,
+                             int codec,
+                             uint64_t pts_us);
+
 /*
  * external 模式下：查询并“消费”一次 ACK 触发的 IDR 请求。
  * 返回 1 表示上游应立即请求一次 IDR；返回 0 表示当前无需请求。

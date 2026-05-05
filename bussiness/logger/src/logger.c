@@ -65,7 +65,14 @@ static void log_format_time(char *buf, size_t buf_size) {
 
     if (!buf || buf_size == 0) return;
     gettimeofday(&tv, NULL);
+#if defined(_WIN32)
+    {
+        time_t sec = (time_t)tv.tv_sec;
+        localtime_s(&tm_value, &sec);
+    }
+#else
     localtime_r(&tv.tv_sec, &tm_value);
+#endif
     snprintf(buf,
              buf_size,
              "%04d-%02d-%02d %02d:%02d:%02d.%03ld",
