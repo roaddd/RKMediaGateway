@@ -1,4 +1,8 @@
 ﻿#include "mediaGateway.h"
+#include "mediaGatewayClock.h"
+#include "mediaGatewayPipeline.h"
+#include "mediaGatewayProcess.h"
+#include "mediaGatewayStats.h"
 
 #include "audioFrameSource.h"
 #include "mediaFrameSource.h"
@@ -29,687 +33,365 @@
 #define DEFAULT_BENCH_ENABLE 0
 #define DEFAULT_BENCH_SAMPLE_EVERY 1
 #define DEFAULT_BENCH_PRINT_INTERVAL_SEC 1
-#define DEFAULT_ENABLE_AUDIO 0
+#define DEFAULT_ENABLE_AUDIO 1
 #define DEFAULT_AUDIO_BIND_STREAM_INDEX 0
 #define DEFAULT_AUDIO_RETRY_MS 5
 #define DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES 30
 
-static const char *safe_str(const char *value, const char *fallback) {
-    /* Return configured string when valid; otherwise use fallback. */
+typedef struct {
+    MediaGatewayPipeline pipeline;                               /* 运行期音视频编码流水线。 */
+    MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 视频帧源线程对象。 */
+    int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];  /* 对应视频帧源是否已初始化。 */
+    int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 对应视频帧源是否已启动。 */
+    AudioFrameSource audio_source;                               /* 音频帧源线程对象。 */
+    int audio_source_inited;                                     /* 音频帧源是否已初始化。 */
+    int audio_source_started;                                    /* 音频帧源是否已启动。 */
+} MediaGatewayRunResources;
+
+/**
+ * @description: 返回非空字符串；输入为空时返回 fallback。
+ */
+static const char *safe_str(const char *value, const char *fallback)
+{
     return (value && value[0] != '\0') ? value : fallback;
 }
 
-static uint64_t get_now_us(void) {
-    /* Monotonic timestamp in microseconds for latency/throughput stats. */
+/**
+ * @description: 获取单调时钟时间戳，单位微秒。
+ */
+uint64_t media_gateway_get_now_us(void)
+{
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
-static int ensure_scaled_frame_cache(MediaGatewayCtx *ctx, int stream_idx, size_t need_size) {
-    /* Grow per-stream scale cache once and reuse it for later frames. */
-    uint8_t *new_buf;
-    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) {
-        return -1;
-    }
-    if (ctx->scaled_frame_cache_size[stream_idx] >= need_size) {
-        return 0;
-    }
-    new_buf = (uint8_t *)realloc(ctx->scaled_frame_cache[stream_idx], need_size);
-    if (!new_buf) {
-        fprintf(stderr, "[ERROR] realloc scaled frame cache failed stream=%d need=%zu\n", stream_idx, need_size);
-        return -1;
-    }
-    ctx->scaled_frame_cache[stream_idx] = new_buf;
-    ctx->scaled_frame_cache_size[stream_idx] = need_size;
-    return 0;
-}
-
-/*
- * CPU fallback scaler.
- * Policy in this file is:
- *   1) ISP direct output (no scale needed, same resolution as capture)
- *   2) RGA scale (if enabled and available)
- *   3) CPU nearest-neighbor fallback
+/**
+ * @description: 归一化一个视频采集源配置。
  */
-static int scale_nv12_nearest(const uint8_t *src,
-                              int src_w,
-                              int src_h,
-                              uint8_t *dst,
-                              int dst_w,
-                              int dst_h) {
-    const uint8_t *src_y;
-    const uint8_t *src_uv;
-    uint8_t *dst_y;
-    uint8_t *dst_uv;
-    int x;
-    int y;
-
-    if (!src || !dst || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0) {
-        return -1;
-    }
-    if ((src_w & 1) || (src_h & 1) || (dst_w & 1) || (dst_h & 1)) {
-        return -1;
-    }
-
-    src_y = src;
-    src_uv = src + (size_t)src_w * src_h;
-    dst_y = dst;
-    dst_uv = dst + (size_t)dst_w * dst_h;
-
-    for (y = 0; y < dst_h; ++y) {
-        int sy = (y * src_h) / dst_h;
-        const uint8_t *src_line = src_y + (size_t)sy * src_w;
-        uint8_t *dst_line = dst_y + (size_t)y * dst_w;
-        for (x = 0; x < dst_w; ++x) {
-            int sx = (x * src_w) / dst_w;
-            dst_line[x] = src_line[sx];
-        }
-    }
-
-    for (y = 0; y < dst_h / 2; ++y) {
-        int sy = (y * (src_h / 2)) / (dst_h / 2);
-        const uint8_t *src_line = src_uv + (size_t)sy * src_w;
-        uint8_t *dst_line = dst_uv + (size_t)y * dst_w;
-        for (x = 0; x < dst_w; x += 2) {
-            int sx = ((x / 2) * (src_w / 2)) / (dst_w / 2);
-            dst_line[x] = src_line[sx * 2];
-            dst_line[x + 1] = src_line[sx * 2 + 1];
-        }
-    }
-    return 0;
-}
-
-typedef enum {
-    SCALE_PATH_ISP_DIRECT = 0,
-    SCALE_PATH_RGA = 1,
-    SCALE_PATH_CPU_NEAREST = 2
-} ScalePath;
-
-#if defined(ENABLE_RGA_SCALER)
-/*
- * Optional external RGA hook.
- * Integrator can provide this symbol from an RGA module.
- */
-__attribute__((weak)) int media_gateway_rga_scale_nv12(const uint8_t *src,
-                                                        int src_w,
-                                                        int src_h,
-                                                        uint8_t *dst,
-                                                        int dst_w,
-                                                        int dst_h);
-#endif
-
-static int scale_nv12_rga_if_available(const uint8_t *src,
-                                       int src_w,
-                                       int src_h,
-                                       uint8_t *dst,
-                                       int dst_w,
-                                       int dst_h) {
-#if defined(ENABLE_RGA_SCALER)
-    if (media_gateway_rga_scale_nv12) {
-        return media_gateway_rga_scale_nv12(src, src_w, src_h, dst, dst_w, dst_h);
-    }
-#endif
-    (void)src;
-    (void)src_w;
-    (void)src_h;
-    (void)dst;
-    (void)dst_w;
-    (void)dst_h;
-    return -1;
-}
-
-static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
-                                       int stream_idx,
-                                       const uint8_t *raw_frame,
-                                       size_t raw_len,
-                                       const uint8_t **encode_input,
-                                       size_t *encode_input_len,
-                                       ScalePath *path_used) {
-    const MediaGatewayStreamConfig *stream_cfg;
-    size_t scaled_len;
-
-    if (!ctx || !raw_frame || !encode_input || !encode_input_len || !path_used) return -1;
-    if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) return -1;
-
-    stream_cfg = &ctx->config.streams[stream_idx];
-
-    /*
-     * ISP direct path: capture output already matches target stream size.
-     * Here "ISP direct" means no extra scaling in media gateway.
-     */
-    {
-        int source_idx = stream_cfg->source_index;
-        int capture_width;
-        int capture_height;
-
-        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count) return -1;
-        capture_width = ctx->config.capture_sources[source_idx].width;
-        capture_height = ctx->config.capture_sources[source_idx].height;
-
-        if (stream_cfg->width == capture_width && stream_cfg->height == capture_height) {
-            *encode_input = raw_frame;
-            *encode_input_len = raw_len;
-            *path_used = SCALE_PATH_ISP_DIRECT;
-            return 0;
-        }
-
-        scaled_len = (size_t)stream_cfg->width * stream_cfg->height * 3 / 2;
-        if (ensure_scaled_frame_cache(ctx, stream_idx, scaled_len) != 0) return -1;
-
-        if (scale_nv12_rga_if_available(raw_frame,
-                                        capture_width,
-                                        capture_height,
-                                        ctx->scaled_frame_cache[stream_idx],
-                                        stream_cfg->width,
-                                        stream_cfg->height) == 0) {
-            *encode_input = ctx->scaled_frame_cache[stream_idx];
-            *encode_input_len = scaled_len;
-            *path_used = SCALE_PATH_RGA;
-            return 0;
-        }
-
-        if (scale_nv12_nearest(raw_frame,
-                               capture_width,
-                               capture_height,
-                               ctx->scaled_frame_cache[stream_idx],
-                               stream_cfg->width,
-                               stream_cfg->height) != 0) {
-            return -1;
-        }
-
-        *encode_input = ctx->scaled_frame_cache[stream_idx];
-        *encode_input_len = scaled_len;
-        *path_used = SCALE_PATH_CPU_NEAREST;
-        return 0;
-    }
-
-}
-
 static void fill_default_capture_source(CaptureSourceConfig *dst,
                                         const CaptureSourceConfig *src,
-                                        int source_idx) {
+                                        int source_idx)
+{
     CaptureSourceConfig src_copy;
     int has_src = 0;
 
-    if (src) {
+    if (src)
+    {
         src_copy = *src;
         has_src = 1;
     }
 
     memset(dst, 0, sizeof(*dst));
-    if (has_src) {
+    if (has_src)
         *dst = src_copy;
-    }
 
     dst->enabled = dst->enabled ? 1 : 0;
     dst->name = safe_str(dst->name, (source_idx == 0) ? "main_path" : "self_path");
     dst->device_path = safe_str(dst->device_path, (source_idx == 0) ? "/dev/video0" : "/dev/video1");
-    if (dst->width <= 0) dst->width = (source_idx == 0) ? CAPTURE_WIDTH : 1280;
-    if (dst->height <= 0) dst->height = (source_idx == 0) ? CAPTURE_HEIGHT : 720;
-    if (dst->width & 1) dst->width -= 1;
-    if (dst->height & 1) dst->height -= 1;
-    if (dst->pixelformat == 0) dst->pixelformat = CAPTURE_FORMAT;
-    if (dst->buffer_count <= 0) dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
-    if (dst->buffer_count > V4L2_CAPTURE_BUFFER_COUNT) dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    if (dst->width <= 0)
+        dst->width = (source_idx == 0) ? CAPTURE_WIDTH : 1280;
+    if (dst->height <= 0)
+        dst->height = (source_idx == 0) ? CAPTURE_HEIGHT : 720;
+    if (dst->width & 1)
+        dst->width -= 1;
+    if (dst->height & 1)
+        dst->height -= 1;
+    if (dst->pixelformat == 0)
+        dst->pixelformat = CAPTURE_FORMAT;
+    if (dst->buffer_count <= 0)
+        dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    if (dst->buffer_count > V4L2_CAPTURE_BUFFER_COUNT)
+        dst->buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
 }
 
+/**
+ * @description: 归一化一个码流配置及其协议输出子配置。
+ */
 static void fill_default_stream(MediaGatewayStreamConfig *dst,
                                 const MediaGatewayStreamConfig *src,
-                                int stream_idx) {
-    /* Normalize one stream config: defaults, bounds and protocol sub-configs. */
+                                int stream_idx)
+{
     int default_width = (stream_idx == 0) ? CAPTURE_WIDTH : (CAPTURE_WIDTH / 2);
     int default_height = (stream_idx == 0) ? CAPTURE_HEIGHT : (CAPTURE_HEIGHT / 2);
     MediaGatewayStreamConfig src_copy;
     int has_src = 0;
 
-    if (src) {
+    if (src)
+    {
         src_copy = *src;
         has_src = 1;
     }
 
     memset(dst, 0, sizeof(*dst));
-    if (has_src) {
+    if (has_src)
         *dst = src_copy;
-    }
 
     dst->enabled = dst->enabled ? 1 : 0;
     dst->name = safe_str(dst->name, (stream_idx == 0) ? "main" : "sub");
-    if (!has_src || dst->source_index < 0 || dst->source_index >= MEDIA_GATEWAY_MAX_CAPTURE_SOURCES) {
+    if (!has_src || dst->source_index < 0 || dst->source_index >= MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
         dst->source_index = stream_idx;
-    }
-    if (dst->width <= 0) dst->width = default_width;
-    if (dst->height <= 0) dst->height = default_height;
-    if (dst->width & 1) dst->width -= 1;
-    if (dst->height & 1) dst->height -= 1;
-    if (dst->fps <= 0) dst->fps = DEFAULT_ENCODE_FPS;
-    if (dst->bitrate <= 0) dst->bitrate = (stream_idx == 0) ? DEFAULT_ENCODE_BITRATE : (DEFAULT_ENCODE_BITRATE / 2);
-    if (dst->gop <= 0) dst->gop = DEFAULT_ENCODE_GOP;
-    if (dst->rc_mode <= 0) dst->rc_mode = DEFAULT_RC_MODE;
-    if (dst->h264_profile <= 0) dst->h264_profile = DEFAULT_H264_PROFILE;
-    if (dst->h264_level <= 0) dst->h264_level = DEFAULT_H264_LEVEL;
-    if (dst->h264_cabac_en <= 0) dst->h264_cabac_en = DEFAULT_H264_CABAC_EN;
+    if (dst->width <= 0)
+        dst->width = default_width;
+    if (dst->height <= 0)
+        dst->height = default_height;
+    if (dst->width & 1)
+        dst->width -= 1;
+    if (dst->height & 1)
+        dst->height -= 1;
+    if (dst->fps <= 0)
+        dst->fps = DEFAULT_ENCODE_FPS;
+    if (dst->bitrate <= 0)
+        dst->bitrate = (stream_idx == 0) ? DEFAULT_ENCODE_BITRATE : (DEFAULT_ENCODE_BITRATE / 2);
+    if (dst->gop <= 0)
+        dst->gop = DEFAULT_ENCODE_GOP;
+    if (dst->rc_mode <= 0)
+        dst->rc_mode = DEFAULT_RC_MODE;
+    if (dst->h264_profile <= 0)
+        dst->h264_profile = DEFAULT_H264_PROFILE;
+    if (dst->h264_level <= 0)
+        dst->h264_level = DEFAULT_H264_LEVEL;
+    if (dst->h264_cabac_en <= 0)
+        dst->h264_cabac_en = DEFAULT_H264_CABAC_EN;
 
     dst->rtsp.name = safe_str(dst->rtsp.name, (stream_idx == 0) ? "rtsp-main" : "rtsp-sub");
     dst->rtsp.session_name = safe_str(dst->rtsp.session_name, (stream_idx == 0) ? "live_main" : "live_sub");
     dst->rtsp.server_ip = safe_str(dst->rtsp.server_ip, "0.0.0.0");
-    if (dst->rtsp.server_port <= 0) dst->rtsp.server_port = 8554;
+    if (dst->rtsp.server_port <= 0)
+        dst->rtsp.server_port = 8554;
     dst->rtsp.user = safe_str(dst->rtsp.user, "admin");
     dst->rtsp.password = safe_str(dst->rtsp.password, "123456");
-    if (dst->rtsp.queue_capacity <= 0) dst->rtsp.queue_capacity = 32;
-    if (dst->rtsp.immediate_sps_pps_on_new_client != 0) dst->rtsp.immediate_sps_pps_on_new_client = 1;
+    if (dst->rtsp.queue_capacity <= 0)
+        dst->rtsp.queue_capacity = 32;
+    if (dst->rtsp.immediate_sps_pps_on_new_client != 0)
+        dst->rtsp.immediate_sps_pps_on_new_client = 1;
 
     dst->rtmp.name = safe_str(dst->rtmp.name, (stream_idx == 0) ? "rtmp-main" : "rtmp-sub");
     dst->rtmp.video_codec_name = safe_str(dst->rtmp.video_codec_name, "H264");
     dst->rtmp.encoder_name = safe_str(dst->rtmp.encoder_name, "RKMediaGateway");
-    if (dst->rtmp.queue_capacity <= 0) dst->rtmp.queue_capacity = 64;
-    if (dst->rtmp.reconnect_interval_ms <= 0) dst->rtmp.reconnect_interval_ms = 1000;
-    if (dst->rtmp.connect_timeout_ms <= 0) dst->rtmp.connect_timeout_ms = 3000;
-    if (dst->rtmp.video_width <= 0) dst->rtmp.video_width = dst->width;
-    if (dst->rtmp.video_height <= 0) dst->rtmp.video_height = dst->height;
-    if (dst->rtmp.video_fps <= 0) dst->rtmp.video_fps = dst->fps;
-    if (dst->rtmp.video_bitrate <= 0) dst->rtmp.video_bitrate = dst->bitrate;
+    if (dst->rtmp.queue_capacity <= 0)
+        dst->rtmp.queue_capacity = 64;
+    if (dst->rtmp.reconnect_interval_ms <= 0)
+        dst->rtmp.reconnect_interval_ms = 1000;
+    if (dst->rtmp.connect_timeout_ms <= 0)
+        dst->rtmp.connect_timeout_ms = 3000;
+    if (dst->rtmp.video_width <= 0)
+        dst->rtmp.video_width = dst->width;
+    if (dst->rtmp.video_height <= 0)
+        dst->rtmp.video_height = dst->height;
+    if (dst->rtmp.video_fps <= 0)
+        dst->rtmp.video_fps = dst->fps;
+    if (dst->rtmp.video_bitrate <= 0)
+        dst->rtmp.video_bitrate = dst->bitrate;
 
     dst->gb28181.name = safe_str(dst->gb28181.name, (stream_idx == 0) ? "gb28181-main" : "gb28181-sub");
     dst->gb28181.server_ip = safe_str(dst->gb28181.server_ip, "192.168.1.1");
-    if (dst->gb28181.server_port <= 0) dst->gb28181.server_port = 5060;
+    if (dst->gb28181.server_port <= 0)
+        dst->gb28181.server_port = 5060;
     dst->gb28181.server_domain = safe_str(dst->gb28181.server_domain, "3402000000");
     dst->gb28181.server_id = safe_str(dst->gb28181.server_id, "34020000002000000001");
     dst->gb28181.device_id = safe_str(dst->gb28181.device_id, "34020000001320000001");
     dst->gb28181.device_domain = safe_str(dst->gb28181.device_domain, dst->gb28181.server_domain);
     dst->gb28181.device_password = safe_str(dst->gb28181.device_password, "12345678");
     dst->gb28181.bind_ip = safe_str(dst->gb28181.bind_ip, "0.0.0.0");
-    if (dst->gb28181.local_sip_port <= 0) dst->gb28181.local_sip_port = 5060;
+    if (dst->gb28181.local_sip_port <= 0)
+        dst->gb28181.local_sip_port = 5060;
     dst->gb28181.sip_contact_ip = safe_str(dst->gb28181.sip_contact_ip, "127.0.0.1");
     dst->gb28181.media_ip = safe_str(dst->gb28181.media_ip, dst->gb28181.sip_contact_ip);
-    if (dst->gb28181.media_port <= 0) dst->gb28181.media_port = 30000;
-    if (dst->gb28181.register_expires <= 0) dst->gb28181.register_expires = 3600;
-    if (dst->gb28181.keepalive_interval_sec <= 0) dst->gb28181.keepalive_interval_sec = 60;
-    if (dst->gb28181.register_retry_interval_sec <= 0) dst->gb28181.register_retry_interval_sec = 5;
+    if (dst->gb28181.media_port <= 0)
+        dst->gb28181.media_port = 30000;
+    if (dst->gb28181.register_expires <= 0)
+        dst->gb28181.register_expires = 3600;
+    if (dst->gb28181.keepalive_interval_sec <= 0)
+        dst->gb28181.keepalive_interval_sec = 60;
+    if (dst->gb28181.register_retry_interval_sec <= 0)
+        dst->gb28181.register_retry_interval_sec = 5;
     dst->gb28181.device_name = safe_str(dst->gb28181.device_name, "RK3568 Camera");
     dst->gb28181.manufacturer = safe_str(dst->gb28181.manufacturer, "Topeet");
     dst->gb28181.model = safe_str(dst->gb28181.model, "RKMediaGateway");
     dst->gb28181.firmware = safe_str(dst->gb28181.firmware, "1.0.0");
     dst->gb28181.channel_id = safe_str(dst->gb28181.channel_id, dst->gb28181.device_id);
     dst->gb28181.user_agent = safe_str(dst->gb28181.user_agent, "RKMediaGateway-GB28181/1.0");
-    if (dst->gb28181.queue_capacity <= 0) dst->gb28181.queue_capacity = 64;
+    if (dst->gb28181.queue_capacity <= 0)
+        dst->gb28181.queue_capacity = 64;
 }
 
-static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig *src) {
-    /* Normalize top-level config and make sure at least one stream is valid. */
+/**
+ * @description: 归一化 gateway 顶层配置，补齐兼容模式默认值。
+ */
+static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig *src)
+{
     int i;
-    MediaGatewayStreamConfig s0;
+    MediaGatewayConfig src_copy;
+    int has_src = 0;
+
+    if (src)
+    {
+        src_copy = *src;
+        has_src = 1;
+    }
     memset(dst, 0, sizeof(*dst));
-    if (src) {
-        *dst = *src;
-    }
+    if (has_src)
+        *dst = src_copy;
 
-    if (dst->low_latency_mode <= 0) dst->low_latency_mode = DEFAULT_LOW_LATENCY_MODE;
-    if (dst->stats_interval_sec <= 0) dst->stats_interval_sec = DEFAULT_STATS_INTERVAL_SEC;
-    if (dst->capture_retry_ms <= 0) dst->capture_retry_ms = DEFAULT_CAPTURE_RETRY_MS;
-    if (dst->max_consecutive_failures <= 0) dst->max_consecutive_failures = DEFAULT_MAX_CONSECUTIVE_FAILURES;
-    if (dst->record_flush_interval_frames <= 0) dst->record_flush_interval_frames = DEFAULT_RECORD_FLUSH_INTERVAL_FRAMES;
+    dst->enable_rtsp = dst->enable_rtsp ? 1 : DEFAULT_ENABLE_RTSP;
+    dst->enable_rtmp = dst->enable_rtmp ? 1 : 0;
+    dst->enable_gb28181 = dst->enable_gb28181 ? 1 : 0;
+    if (dst->fps <= 0)
+        dst->fps = DEFAULT_ENCODE_FPS;
+    if (dst->bitrate <= 0)
+        dst->bitrate = DEFAULT_ENCODE_BITRATE;
+    if (dst->gop <= 0)
+        dst->gop = DEFAULT_ENCODE_GOP;
+    if (dst->rc_mode <= 0)
+        dst->rc_mode = DEFAULT_RC_MODE;
+    if (dst->h264_profile <= 0)
+        dst->h264_profile = DEFAULT_H264_PROFILE;
+    if (dst->h264_level <= 0)
+        dst->h264_level = DEFAULT_H264_LEVEL;
+    if (dst->h264_cabac_en <= 0)
+        dst->h264_cabac_en = DEFAULT_H264_CABAC_EN;
+    dst->low_latency_mode = dst->low_latency_mode ? 1 : DEFAULT_LOW_LATENCY_MODE;
+    if (dst->stats_interval_sec <= 0)
+        dst->stats_interval_sec = DEFAULT_STATS_INTERVAL_SEC;
+    if (dst->capture_retry_ms <= 0)
+        dst->capture_retry_ms = DEFAULT_CAPTURE_RETRY_MS;
+    if (dst->max_consecutive_failures <= 0)
+        dst->max_consecutive_failures = DEFAULT_MAX_CONSECUTIVE_FAILURES;
+    if (dst->record_flush_interval_frames <= 0)
+        dst->record_flush_interval_frames = DEFAULT_RECORD_FLUSH_INTERVAL_FRAMES;
     dst->bench_enable = dst->bench_enable ? 1 : DEFAULT_BENCH_ENABLE;
-    if (dst->bench_sample_every <= 0) dst->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
-    if (dst->bench_print_interval_sec <= 0) dst->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
-    if (dst->capture_source_count <= 0) dst->capture_source_count = 1;
-    if (dst->capture_source_count > MEDIA_GATEWAY_MAX_CAPTURE_SOURCES) {
-        dst->capture_source_count = MEDIA_GATEWAY_MAX_CAPTURE_SOURCES;
-    }
-    for (i = 0; i < dst->capture_source_count; ++i) {
-        fill_default_capture_source(&dst->capture_sources[i], &dst->capture_sources[i], i);
-    }
-    for (i = dst->capture_source_count; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
-        memset(&dst->capture_sources[i], 0, sizeof(dst->capture_sources[i]));
-        dst->capture_sources[i].name = (i == 0) ? "main_path" : "self_path";
-    }
+    if (dst->bench_sample_every <= 0)
+        dst->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
+    if (dst->bench_print_interval_sec <= 0)
+        dst->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
 
-    /*
-     * 音频默认关闭，保持既有视频网关行为不变。
-     * 打开后默认走 8k/mono/20ms/G711A，优先服务 GB28181 语音链路。
-     */
+    if (dst->capture_source_count <= 0)
+        dst->capture_source_count = 1;
+    if (dst->capture_source_count > MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
+        dst->capture_source_count = MEDIA_GATEWAY_MAX_CAPTURE_SOURCES;
+    for (i = 0; i < dst->capture_source_count; ++i)
+        fill_default_capture_source(&dst->capture_sources[i], has_src ? &src_copy.capture_sources[i] : NULL, i);
+    for (i = dst->capture_source_count; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
+        memset(&dst->capture_sources[i], 0, sizeof(dst->capture_sources[i]));
+
     dst->audio.enabled = dst->audio.enabled ? 1 : DEFAULT_ENABLE_AUDIO;
     dst->audio.device_name = safe_str(dst->audio.device_name, AUDIO_CAPTURE_DEFAULT_DEVICE);
-    if (dst->audio.sample_rate <= 0) dst->audio.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
-    if (dst->audio.channels <= 0) dst->audio.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
-    if (dst->audio.format == 0) dst->audio.format = AUDIO_SAMPLE_FORMAT_S16LE;
-    if (dst->audio.period_frames <= 0) dst->audio.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
-    if (dst->audio.buffer_periods <= 0) dst->audio.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
-    if (dst->audio.source_slots <= 0) dst->audio.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
-    if (dst->audio.retry_ms <= 0) dst->audio.retry_ms = DEFAULT_AUDIO_RETRY_MS;
-    if (dst->audio.max_consecutive_failures <= 0) {
+    if (dst->audio.sample_rate <= 0)
+        dst->audio.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
+    if (dst->audio.channels <= 0)
+        dst->audio.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
+    if (dst->audio.format == 0)
+        dst->audio.format = AUDIO_SAMPLE_FORMAT_S16LE;
+    if (dst->audio.period_frames <= 0)
+        dst->audio.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
+    if (dst->audio.buffer_periods <= 0)
+        dst->audio.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
+    if (dst->audio.source_slots <= 0)
+        dst->audio.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
+    if (dst->audio.retry_ms <= 0)
+        dst->audio.retry_ms = DEFAULT_AUDIO_RETRY_MS;
+    if (dst->audio.max_consecutive_failures <= 0)
         dst->audio.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
-    }
-    if (dst->audio.bind_stream_index < 0 || dst->audio.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS) {
+    if (dst->audio.bind_stream_index < 0 || dst->audio.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS)
         dst->audio.bind_stream_index = DEFAULT_AUDIO_BIND_STREAM_INDEX;
-    }
 
-    if (dst->stream_count <= 0) {
+    if (dst->stream_count <= 0)
+    {
+        MediaGatewayStreamConfig s0;
         memset(&s0, 0, sizeof(s0));
         s0.enabled = 1;
         s0.name = "main";
         s0.source_index = 0;
         s0.width = CAPTURE_WIDTH;
         s0.height = CAPTURE_HEIGHT;
-        s0.fps = (dst->fps > 0) ? dst->fps : DEFAULT_ENCODE_FPS;
-        s0.bitrate = (dst->bitrate > 0) ? dst->bitrate : DEFAULT_ENCODE_BITRATE;
-        s0.gop = (dst->gop > 0) ? dst->gop : DEFAULT_ENCODE_GOP;
-        s0.rc_mode = (dst->rc_mode > 0) ? dst->rc_mode : DEFAULT_RC_MODE;
-        s0.h264_profile = (dst->h264_profile > 0) ? dst->h264_profile : DEFAULT_H264_PROFILE;
-        s0.h264_level = (dst->h264_level > 0) ? dst->h264_level : DEFAULT_H264_LEVEL;
-        s0.h264_cabac_en = (dst->h264_cabac_en > 0) ? dst->h264_cabac_en : DEFAULT_H264_CABAC_EN;
-        s0.qp_init = dst->qp_init;
-        s0.qp_min = dst->qp_min;
-        s0.qp_max = dst->qp_max;
-        s0.qp_min_i = dst->qp_min_i;
-        s0.qp_max_i = dst->qp_max_i;
-        s0.qp_max_step = dst->qp_max_step;
+        s0.fps = dst->fps;
+        s0.bitrate = dst->bitrate;
+        s0.gop = dst->gop;
+        s0.rc_mode = dst->rc_mode;
+        s0.h264_profile = dst->h264_profile;
+        s0.h264_level = dst->h264_level;
+        s0.h264_cabac_en = dst->h264_cabac_en;
         s0.enable_rtsp = dst->enable_rtsp;
         s0.enable_rtmp = dst->enable_rtmp;
         s0.enable_gb28181 = dst->enable_gb28181;
         s0.rtsp = dst->rtsp;
         s0.rtmp = dst->rtmp;
         s0.gb28181 = dst->gb28181;
-        if (s0.enable_rtsp == 0 && s0.enable_rtmp == 0 && s0.enable_gb28181 == 0) {
-            s0.enable_rtsp = DEFAULT_ENABLE_RTSP;
-        }
         fill_default_stream(&dst->streams[0], &s0, 0);
-        dst->capture_sources[0].enabled = 1;
         dst->stream_count = 1;
-    } else {
-        if (dst->stream_count > MEDIA_GATEWAY_MAX_STREAMS) dst->stream_count = MEDIA_GATEWAY_MAX_STREAMS;
-        for (i = 0; i < dst->stream_count; ++i) {
-            fill_default_stream(&dst->streams[i], &dst->streams[i], i);
-            if (dst->streams[i].enabled) {
-                int source_idx = dst->streams[i].source_index;
-                if (source_idx < 0 || source_idx >= dst->capture_source_count) {
-                    source_idx = 0;
-                    dst->streams[i].source_index = 0;
-                }
-                dst->capture_sources[source_idx].enabled = 1;
-            }
-        }
     }
-
-    for (i = dst->stream_count; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+    else
+    {
+        if (dst->stream_count > MEDIA_GATEWAY_MAX_STREAMS)
+            dst->stream_count = MEDIA_GATEWAY_MAX_STREAMS;
+        for (i = 0; i < dst->stream_count; ++i)
+            fill_default_stream(&dst->streams[i], has_src ? &src_copy.streams[i] : &dst->streams[i], i);
+    }
+    for (i = dst->stream_count; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
         memset(&dst->streams[i], 0, sizeof(dst->streams[i]));
-        dst->streams[i].name = (i == 0) ? "main" : "sub";
-    }
-}
 
-static void build_encoder_options(const MediaGatewayStreamConfig *cfg, MppEncoderOptions *opt) {
-    /* Translate stream config fields into encoder option struct. */
-    memset(opt, 0, sizeof(*opt));
-    opt->rc_mode = cfg->rc_mode;
-    opt->h264_profile = cfg->h264_profile;
-    opt->h264_level = cfg->h264_level;
-    opt->h264_cabac_en = cfg->h264_cabac_en;
-    opt->qp_init = cfg->qp_init;
-    opt->qp_min = cfg->qp_min;
-    opt->qp_max = cfg->qp_max;
-    opt->qp_min_i = cfg->qp_min_i;
-    opt->qp_max_i = cfg->qp_max_i;
-    opt->qp_max_step = cfg->qp_max_step;
-}
-
-static void bench_reset_window(MediaGatewayCtx *ctx) {
-    /* Reset benchmark accumulators for the next report window. */
-    if (!ctx) return;
-    ctx->bench_sample_count = 0;
-    ctx->bench_driver_to_dqbuf_sum_us = 0;
-    ctx->bench_driver_to_dqbuf_max_us = 0;
-    ctx->bench_dqbuf_ioctl_sum_us = 0;
-    ctx->bench_dqbuf_ioctl_max_us = 0;
-    ctx->bench_capture_call_sum_us = 0;
-    ctx->bench_capture_call_max_us = 0;
-    ctx->bench_capture_copy_sum_us = 0;
-    ctx->bench_capture_copy_max_us = 0;
-    ctx->bench_dqbuf_to_put_sum_us = 0;
-    ctx->bench_dqbuf_to_put_max_us = 0;
-    ctx->bench_put_to_get_sum_us = 0;
-    ctx->bench_put_to_get_max_us = 0;
-    ctx->bench_mpp_input_copy_sum_us = 0;
-    ctx->bench_mpp_input_copy_max_us = 0;
-    ctx->bench_mpp_put_frame_sum_us = 0;
-    ctx->bench_mpp_put_frame_max_us = 0;
-    ctx->bench_mpp_get_packet_sum_us = 0;
-    ctx->bench_mpp_get_packet_max_us = 0;
-    ctx->bench_mpp_packet_copy_sum_us = 0;
-    ctx->bench_mpp_packet_copy_max_us = 0;
-    ctx->bench_mpp_total_sum_us = 0;
-    ctx->bench_mpp_total_max_us = 0;
-    ctx->bench_dqbuf_to_get_sum_us = 0;
-    ctx->bench_dqbuf_to_get_max_us = 0;
-    ctx->bench_dqbuf_to_fanout_sum_us = 0;
-    ctx->bench_dqbuf_to_fanout_max_us = 0;
-}
-
-static void bench_record_sample(MediaGatewayCtx *ctx,
-                                uint64_t driver_to_dqbuf_us,
-                                uint64_t dqbuf_ioctl_us,
-                                uint64_t capture_call_us,
-                                uint64_t capture_copy_us,
-                                uint64_t dqbuf_to_put_us,
-                                uint64_t put_to_get_us,
-                                const MppEncoderTiming *mpp_timing,
-                                uint64_t dqbuf_to_get_us,
-                                uint64_t dqbuf_to_fanout_us) {
-    /* Accumulate one sampled frame's stage latencies. */
-    if (!ctx) return;
-    ctx->bench_sample_count++;
-    ctx->bench_driver_to_dqbuf_sum_us += driver_to_dqbuf_us;
-    ctx->bench_dqbuf_ioctl_sum_us += dqbuf_ioctl_us;
-    ctx->bench_capture_call_sum_us += capture_call_us;
-    ctx->bench_capture_copy_sum_us += capture_copy_us;
-    ctx->bench_dqbuf_to_put_sum_us += dqbuf_to_put_us;
-    ctx->bench_put_to_get_sum_us += put_to_get_us;
-    if (mpp_timing) {
-        ctx->bench_mpp_input_copy_sum_us += mpp_timing->input_copy_us;
-        ctx->bench_mpp_put_frame_sum_us += mpp_timing->put_frame_us;
-        ctx->bench_mpp_get_packet_sum_us += mpp_timing->get_packet_us;
-        ctx->bench_mpp_packet_copy_sum_us += mpp_timing->packet_copy_us;
-        ctx->bench_mpp_total_sum_us += mpp_timing->total_us;
-    }
-    ctx->bench_dqbuf_to_get_sum_us += dqbuf_to_get_us;
-    ctx->bench_dqbuf_to_fanout_sum_us += dqbuf_to_fanout_us;
-    if (driver_to_dqbuf_us > ctx->bench_driver_to_dqbuf_max_us) ctx->bench_driver_to_dqbuf_max_us = driver_to_dqbuf_us;
-    if (dqbuf_ioctl_us > ctx->bench_dqbuf_ioctl_max_us) ctx->bench_dqbuf_ioctl_max_us = dqbuf_ioctl_us;
-    if (capture_call_us > ctx->bench_capture_call_max_us) ctx->bench_capture_call_max_us = capture_call_us;
-    if (capture_copy_us > ctx->bench_capture_copy_max_us) ctx->bench_capture_copy_max_us = capture_copy_us;
-    if (dqbuf_to_put_us > ctx->bench_dqbuf_to_put_max_us) ctx->bench_dqbuf_to_put_max_us = dqbuf_to_put_us;
-    if (put_to_get_us > ctx->bench_put_to_get_max_us) ctx->bench_put_to_get_max_us = put_to_get_us;
-    if (mpp_timing) {
-        if (mpp_timing->input_copy_us > ctx->bench_mpp_input_copy_max_us) ctx->bench_mpp_input_copy_max_us = mpp_timing->input_copy_us;
-        if (mpp_timing->put_frame_us > ctx->bench_mpp_put_frame_max_us) ctx->bench_mpp_put_frame_max_us = mpp_timing->put_frame_us;
-        if (mpp_timing->get_packet_us > ctx->bench_mpp_get_packet_max_us) ctx->bench_mpp_get_packet_max_us = mpp_timing->get_packet_us;
-        if (mpp_timing->packet_copy_us > ctx->bench_mpp_packet_copy_max_us) ctx->bench_mpp_packet_copy_max_us = mpp_timing->packet_copy_us;
-        if (mpp_timing->total_us > ctx->bench_mpp_total_max_us) ctx->bench_mpp_total_max_us = mpp_timing->total_us;
-    }
-    if (dqbuf_to_get_us > ctx->bench_dqbuf_to_get_max_us) ctx->bench_dqbuf_to_get_max_us = dqbuf_to_get_us;
-    if (dqbuf_to_fanout_us > ctx->bench_dqbuf_to_fanout_max_us) ctx->bench_dqbuf_to_fanout_max_us = dqbuf_to_fanout_us;
-}
-
-static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx) {
-    /* Print benchmark summary on interval and then clear the window. */
-    uint64_t now;
-    uint64_t span_us;
-    double sample_count;
-    if (!ctx || !ctx->bench_enable) return;
-    now = get_now_us();
-    span_us = now - ctx->bench_last_ts_us;
-    if (span_us < (uint64_t)ctx->bench_print_interval_sec * 1000000ULL) return;
-
-    if (ctx->bench_sample_count > 0) {
-        sample_count = (double)ctx->bench_sample_count;
-        LOG_INFO("[BENCH_SUMMARY] samples=%" PRIu64
-                 " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us"
-                 " avg_dqbuf_ioctl=%.2fus max_dqbuf_ioctl=%" PRIu64 "us"
-                 " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us"
-                 " avg_capture_copy=%.2fus max_capture_copy=%" PRIu64 "us"
-                 " avg_dqbuf_to_put=%.2fus max_dqbuf_to_put=%" PRIu64 "us"
-                 " avg_put_to_get=%.2fus max_put_to_get=%" PRIu64 "us"
-                 " avg_mpp_input_copy=%.2fus max_mpp_input_copy=%" PRIu64 "us"
-                 " avg_mpp_put_frame=%.2fus max_mpp_put_frame=%" PRIu64 "us"
-                 " avg_mpp_get_packet=%.2fus max_mpp_get_packet=%" PRIu64 "us"
-                 " avg_mpp_packet_copy=%.2fus max_mpp_packet_copy=%" PRIu64 "us"
-                 " avg_mpp_total=%.2fus max_mpp_total=%" PRIu64 "us"
-                 " avg_dqbuf_to_get=%.2fus max_dqbuf_to_get=%" PRIu64 "us"
-                 " avg_dqbuf_to_fanout=%.2fus max_dqbuf_to_fanout=%" PRIu64 "us",
-                 ctx->bench_sample_count,
-                 (double)ctx->bench_driver_to_dqbuf_sum_us / sample_count, ctx->bench_driver_to_dqbuf_max_us,
-                 (double)ctx->bench_dqbuf_ioctl_sum_us / sample_count, ctx->bench_dqbuf_ioctl_max_us,
-                 (double)ctx->bench_capture_call_sum_us / sample_count, ctx->bench_capture_call_max_us,
-                 (double)ctx->bench_capture_copy_sum_us / sample_count, ctx->bench_capture_copy_max_us,
-                 (double)ctx->bench_dqbuf_to_put_sum_us / sample_count, ctx->bench_dqbuf_to_put_max_us,
-                 (double)ctx->bench_put_to_get_sum_us / sample_count, ctx->bench_put_to_get_max_us,
-                 (double)ctx->bench_mpp_input_copy_sum_us / sample_count, ctx->bench_mpp_input_copy_max_us,
-                 (double)ctx->bench_mpp_put_frame_sum_us / sample_count, ctx->bench_mpp_put_frame_max_us,
-                 (double)ctx->bench_mpp_get_packet_sum_us / sample_count, ctx->bench_mpp_get_packet_max_us,
-                 (double)ctx->bench_mpp_packet_copy_sum_us / sample_count, ctx->bench_mpp_packet_copy_max_us,
-                 (double)ctx->bench_mpp_total_sum_us / sample_count, ctx->bench_mpp_total_max_us,
-                 (double)ctx->bench_dqbuf_to_get_sum_us / sample_count, ctx->bench_dqbuf_to_get_max_us,
-                 (double)ctx->bench_dqbuf_to_fanout_sum_us / sample_count, ctx->bench_dqbuf_to_fanout_max_us);
-    } else {
-        LOG_INFO("[BENCH_SUMMARY] samples=0 no sampled frames in this interval");
-    }
-    ctx->bench_last_ts_us = now;
-    bench_reset_window(ctx);
-}
-
-static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx) {
-    /* Bridge external output key-frame request to encoder IDR request. */
-    int output_idx;
-    int need_idr = 0;
-    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) return;
-
-    /* GB28181: 点播建立后可请求上游尽快补关键帧。 */
-    output_idx = ctx->gb28181_output_index[stream_idx];
-    if (output_idx >= 0 && output_idx < ctx->output_count) {
-        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
-            need_idr = 1;
-        }
-    }
-
-    /*
-     * RTSP: 检测到“新客户端连入”后，也触发一次 IDR。
-     * 这样新观看端不必长时间等待下一个自然 GOP 关键帧。
-     */
-    output_idx = ctx->rtsp_output_index[stream_idx];
-    if (output_idx >= 0 && output_idx < ctx->output_count) {
-        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
-            need_idr = 1;
-        }
-    }
-
-    if (need_idr) {
-        if (mpp_encoder_request_idr(&ctx->encoders[stream_idx]) != 0) {
-            fprintf(stderr, "[WARN] stream=%d failed to request IDR from external output event\n", stream_idx);
+    for (i = 0; i < dst->stream_count; ++i)
+    {
+        if (dst->streams[i].enabled)
+        {
+            int source_idx = dst->streams[i].source_index;
+            if (source_idx < 0 || source_idx >= dst->capture_source_count)
+            {
+                source_idx = 0;
+                dst->streams[i].source_index = 0;
+            }
+            dst->capture_sources[source_idx].enabled = 1;
         }
     }
 }
 
-static int reset_encoder(MediaGatewayCtx *ctx, int stream_idx) {
-    /* Recreate one encoder instance using current stream settings. */
-    MppEncoderOptions options;
-    const MediaGatewayStreamConfig *stream_cfg;
-    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS) return -1;
-    stream_cfg = &ctx->config.streams[stream_idx];
-    build_encoder_options(stream_cfg, &options);
-    if (ctx->encoder_ready[stream_idx]) {
-        mpp_encoder_deinit(&ctx->encoders[stream_idx]);
-        ctx->encoder_ready[stream_idx] = 0;
-    }
-    if (mpp_encoder_init(&ctx->encoders[stream_idx],
-                         stream_cfg->width,
-                         stream_cfg->height,
-                         stream_cfg->fps,
-                         stream_cfg->bitrate,
-                         stream_cfg->gop,
-                         &options) < 0) {
-        return -1;
-    }
-    ctx->encoder_ready[stream_idx] = 1;
-    return 0;
-}
-
-static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
-    /* Create and map protocol outputs for one enabled stream. */
+/**
+ * @description: 为指定 stream 创建其启用的协议输出通道。
+ */
+static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
+{
     const MediaGatewayStreamConfig *s = &ctx->config.streams[stream_idx];
     MediaOutputConfig output_config;
-    if (!s->enabled) return 0;
+    if (!s->enabled)
+        return 0;
 
-    if (s->enable_rtsp) {
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=rtsp max=%d\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_OUTPUTS);
+    if (s->enable_rtsp)
+    {
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
             return -1;
-        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
         output_config.protocol.rtsp = s->rtsp;
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: rtsp output stream=%d name=%s session=%s port=%d\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    s->rtsp.session_name ? s->rtsp.session_name : "unknown",
-                    s->rtsp.server_port);
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
             return -1;
-        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->rtsp_output_index[stream_idx] = ctx->output_count;
         ctx->output_count++;
     }
-    if (s->enable_rtmp) {
+    if (s->enable_rtmp)
+    {
 #if defined(ENABLE_RTMP_OUTPUT)
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=rtmp max=%d\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_OUTPUTS);
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
             return -1;
-        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_RTMP;
         output_config.protocol.rtmp = s->rtmp;
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: rtmp output stream=%d name=%s url=%s\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    s->rtmp.publish_url ? s->rtmp.publish_url : "");
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
             return -1;
-        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->output_count++;
 #endif
     }
-    if (s->enable_gb28181) {
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: too many outputs stream=%d name=%s type=gb28181 max=%d\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    MEDIA_GATEWAY_MAX_OUTPUTS);
+    if (s->enable_gb28181)
+    {
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
             return -1;
-        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_GB28181;
         output_config.protocol.gb28181 = s->gb28181;
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0) {
-            fprintf(stderr,
-                    "[ERROR] setup_outputs_for_stream failed: gb28181 output stream=%d name=%s server=%s:%d device=%s\n",
-                    stream_idx,
-                    s->name ? s->name : "unknown",
-                    s->gb28181.server_ip ? s->gb28181.server_ip : "unknown",
-                    s->gb28181.server_port,
-                    s->gb28181.device_id ? s->gb28181.device_id : "unknown");
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
             return -1;
-        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->gb28181_output_index[stream_idx] = ctx->output_count;
         ctx->output_count++;
@@ -717,54 +399,70 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx) {
     return 0;
 }
 
-static int setup_outputs(MediaGatewayCtx *ctx) {
-    /* Setup outputs for all enabled streams. */
+/**
+ * @description: 为全部启用 stream 创建输出通道。
+ */
+static int setup_outputs(MediaGatewayCtx *ctx)
+{
     int i;
-    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-        if (!ctx->stream_enabled[i]) continue;
-        if (setup_outputs_for_stream(ctx, i) != 0) {
-            fprintf(stderr, "[ERROR] setup_outputs failed: stream=%d name=%s\n",
-                    i,
-                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
+        if (!ctx->stream_enabled[i])
+            continue;
+        if (setup_outputs_for_stream(ctx, i) != 0)
+        {
+            LOG_ERROR("setup_outputs failed: stream=%d name=%s",
+                      i,
+                      ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
             return -1;
         }
     }
-    if (ctx->output_count <= 0) {
-        fprintf(stderr, "[ERROR] setup_outputs failed: no enabled output configured\n");
+    if (ctx->output_count <= 0)
+    {
+        LOG_ERROR("setup_outputs failed: no enabled output configured");
         return -1;
     }
     return 0;
 }
 
-static int start_outputs(MediaGatewayCtx *ctx) {
-    /* Start all outputs so enqueue can be consumed immediately. */
+/**
+ * @description: 启动所有已创建的输出线程。
+ */
+static int start_outputs(MediaGatewayCtx *ctx)
+{
     int i;
-    /*
-     * 音频先只投递到未来会消费音频的协议输出。
-     * RTSP 当前未声明音频 track，直接投递会造成协议面和媒体面不一致。
-     */
-    for (i = 0; i < ctx->output_count; ++i) {
-        if (media_output_start(&ctx->outputs[i]) != 0) {
-            fprintf(stderr, "[ERROR] start_outputs failed: idx=%d name=%s stream=%d\n",
-                    i,
-                    ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
-                    ctx->output_stream_index[i]);
+    for (i = 0; i < ctx->output_count; ++i)
+    {
+        if (media_output_start(&ctx->outputs[i]) != 0)
+        {
+            LOG_ERROR("start_outputs failed: idx=%d name=%s stream=%d",
+                      i,
+                      ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
+                      ctx->output_stream_index[i]);
             return -1;
         }
     }
     return 0;
 }
 
-static void stop_outputs(MediaGatewayCtx *ctx) {
-    /* Stop output workers before deinit to avoid concurrent accesses. */
+/**
+ * @description: 停止所有输出线程。
+ */
+static void stop_outputs(MediaGatewayCtx *ctx)
+{
     int i;
-    for (i = 0; i < ctx->output_count; ++i) media_output_stop(&ctx->outputs[i]);
+    for (i = 0; i < ctx->output_count; ++i)
+        media_output_stop(&ctx->outputs[i]);
 }
 
-static void deinit_outputs(MediaGatewayCtx *ctx) {
-    /* Release output objects and their implementation payloads. */
+/**
+ * @description: 释放所有输出对象及其协议实现对象。
+ */
+static void deinit_outputs(MediaGatewayCtx *ctx)
+{
     int i;
-    for (i = 0; i < ctx->output_count; ++i) {
+    for (i = 0; i < ctx->output_count; ++i)
+    {
         void *impl = ctx->outputs[i].impl;
         media_output_deinit(&ctx->outputs[i]);
         free(impl);
@@ -772,127 +470,58 @@ static void deinit_outputs(MediaGatewayCtx *ctx) {
     ctx->output_count = 0;
 }
 
-static void log_output_stats(MediaGatewayCtx *ctx) {
-    /* Periodic output-level health and queue diagnostics. */
-    int i;
-    for (i = 0; i < ctx->output_count; ++i) {
-        MediaOutputStats stats;
-        media_output_get_stats(&ctx->outputs[i], &stats);
-        printf("[OUTPUT] stream=%d name=%s connected=%d queue=%d dropped=%" PRIu64 " sent=%" PRIu64
-               " bytes=%" PRIu64 " reconnects=%" PRIu64 " wait_key=%d\n",
-               ctx->output_stream_index[i],
-               ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
-               stats.connected,
-               stats.queue_depth,
-               stats.dropped_frames,
-               stats.sent_frames,
-               stats.sent_bytes,
-               stats.reconnect_count,
-               stats.waiting_for_keyframe);
-    }
+/**
+ * @description: 打印归一化后的关键配置。
+ */
+static void log_effective_config(const MediaGatewayConfig *cfg)
+{
+    if (!cfg)
+        return;
+    LOG_INFO("[CFG] capture_source_count=%d stream_count=%d low_latency=%d stats_interval_sec=%d",
+             cfg->capture_source_count,
+             cfg->stream_count,
+             cfg->low_latency_mode,
+             cfg->stats_interval_sec);
 }
 
 /**
- * @description: 打印传入的所有配置参数
- * @param {MediaGatewayConfig} *cfg
- * @return {*}
+ * @description: 初始化基础上下文、统计锁和归一化配置。
  */
-static void log_effective_config(const MediaGatewayConfig *cfg) {
+static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
+{
     int i;
-    if (!cfg) return;
-
-    printf("[CFG] capture_source_count=%d stream_count=%d low_latency=%d stats_interval_sec=%d capture_retry_ms=%d max_failures=%d bench(enable=%d sample_every=%d print_interval_sec=%d)\n",
-           cfg->capture_source_count,
-           cfg->stream_count,
-           cfg->low_latency_mode,
-           cfg->stats_interval_sec,
-           cfg->capture_retry_ms,
-           cfg->max_consecutive_failures,
-           cfg->bench_enable,
-           cfg->bench_sample_every,
-           cfg->bench_print_interval_sec);
-    printf("[CFG] record_file=%s record_flush_interval_frames=%d\n",
-           (cfg->record_file_path && cfg->record_file_path[0] != '\0') ? cfg->record_file_path : "(disabled)",
-           cfg->record_flush_interval_frames);
-
-    for (i = 0; i < cfg->capture_source_count && i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
-        const CaptureSourceConfig *source = &cfg->capture_sources[i];
-        printf("[CFG] capture_source=%d name=%s enabled=%d device=%s size=%dx%d format=0x%x buffers=%d\n",
-               i,
-               source->name ? source->name : "unknown",
-               source->enabled,
-               source->device_path ? source->device_path : "unknown",
-               source->width,
-               source->height,
-               source->pixelformat,
-               source->buffer_count);
-    }
-
-    for (i = 0; i < cfg->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-        const MediaGatewayStreamConfig *s = &cfg->streams[i];
-        printf("[CFG] stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d gop=%d rc=%d\n",
-               i,
-               s->name ? s->name : "unknown",
-               s->enabled,
-               s->source_index,
-               s->width,
-               s->height,
-               s->fps,
-               s->bitrate,
-               s->gop,
-               s->rc_mode);
-        printf("[CFG] stream=%d outputs rtsp=%d rtmp=%d gb28181=%d\n",
-               i,
-               s->enable_rtsp,
-               s->enable_rtmp,
-               s->enable_gb28181);
-        if (s->enable_rtsp) {
-            printf("[CFG] stream=%d rtsp url=rtsp://%s:%d/%s auth=%d immediate_sps_pps=%d\n",
-                   i,
-                   s->rtsp.server_ip ? s->rtsp.server_ip : "0.0.0.0",
-                   s->rtsp.server_port,
-                   s->rtsp.session_name ? s->rtsp.session_name : "live",
-                   s->rtsp.auth_enable,
-                   s->rtsp.immediate_sps_pps_on_new_client);
-        }
-        if (s->enable_rtmp) {
-            printf("[CFG] stream=%d rtmp publish_url=%s\n",
-                   i,
-                   (s->rtmp.publish_url && s->rtmp.publish_url[0] != '\0') ? s->rtmp.publish_url : "(empty)");
-        }
-        if (s->enable_gb28181) {
-            printf("[CFG] stream=%d gb28181 server=%s:%d device=%s local_sip=%d media=%s:%d\n",
-                   i,
-                   s->gb28181.server_ip ? s->gb28181.server_ip : "unknown",
-                   s->gb28181.server_port,
-                   s->gb28181.device_id ? s->gb28181.device_id : "unknown",
-                   s->gb28181.local_sip_port,
-                   s->gb28181.media_ip ? s->gb28181.media_ip : "unknown",
-                   s->gb28181.media_port);
-        }
-    }
-}
-
-int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
-    /* Full startup: config normalize, capture/encoders/outputs, optional file record. */
-    int i;
-    if (!ctx) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: ctx is NULL\n");
-        return -1;
-    }
 
     memset(ctx, 0, sizeof(*ctx));
+    if (pthread_mutex_init(&ctx->stats_lock, NULL) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: pthread_mutex_init stats_lock");
+        return -1;
+    }
+    ctx->stats_lock_ready = 1;
     fill_default_config(&ctx->config, config);
+    log_set_level((LogLevel)ctx->config.log_level);
     log_effective_config(&ctx->config);
-    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
         ctx->rtsp_output_index[i] = -1;
         ctx->gb28181_output_index[i] = -1;
     }
+    return 0;
+}
 
-    for (i = 0; i < ctx->config.capture_source_count; ++i) {
+/**
+ * @description: 初始化所有启用的视频采集设备。
+ */
+static int init_gateway_captures(MediaGatewayCtx *ctx)
+{
+    int i;
+
+    for (i = 0; i < ctx->config.capture_source_count; ++i)
+    {
         V4L2CaptureConfig capture_config;
         const CaptureSourceConfig *source = &ctx->config.capture_sources[i];
-        if (!source->enabled) continue;
+        if (!source->enabled)
+            continue;
 
         memset(&capture_config, 0, sizeof(capture_config));
         capture_config.device_path = source->device_path;
@@ -900,51 +529,65 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         capture_config.height = source->height;
         capture_config.pixelformat = source->pixelformat;
         capture_config.buffer_count = source->buffer_count;
-        if (v4l2_capture_init_with_config(&ctx->captures[i], &capture_config) < 0) {
-            fprintf(stderr,
-                    "[ERROR] media_gateway_init failed: capture source=%d name=%s device=%s\n",
-                    i,
-                    source->name ? source->name : "unknown",
-                    source->device_path ? source->device_path : "unknown");
-            goto fail;
+        if (v4l2_capture_init_with_config(&ctx->captures[i], &capture_config) < 0)
+        {
+            LOG_ERROR("media_gateway_init failed: capture source=%d name=%s device=%s",
+                      i,
+                      source->name ? source->name : "unknown",
+                      source->device_path ? source->device_path : "unknown");
+            return -1;
         }
         ctx->capture_ready[i] = 1;
         ctx->config.capture_sources[i].width = ctx->captures[i].width;
         ctx->config.capture_sources[i].height = ctx->captures[i].height;
         ctx->config.capture_sources[i].pixelformat = ctx->captures[i].pixelformat;
-        printf("[CFG] capture_source=%d actual size=%dx%d format=0x%x\n",
-               i,
-               ctx->captures[i].width,
-               ctx->captures[i].height,
-               ctx->captures[i].pixelformat);
     }
+    return 0;
+}
 
-    for (i = 0; i < ctx->config.stream_count; ++i) {
+/**
+ * @description: 初始化所有启用 stream 的视频编码器。
+ */
+static int init_gateway_video_encoders(MediaGatewayCtx *ctx)
+{
+    int i;
+
+    for (i = 0; i < ctx->config.stream_count; ++i)
+    {
         int source_idx;
-        if (!ctx->config.streams[i].enabled) continue;
+        if (!ctx->config.streams[i].enabled)
+            continue;
         source_idx = ctx->config.streams[i].source_index;
-        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count || !ctx->capture_ready[source_idx]) {
-            fprintf(stderr,
-                    "[ERROR] media_gateway_init failed: stream=%d name=%s capture source not ready index=%d\n",
-                    i,
-                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
-                    source_idx);
-            goto fail;
+        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count || !ctx->capture_ready[source_idx])
+        {
+            LOG_ERROR("media_gateway_init failed: stream=%d name=%s capture source not ready index=%d",
+                      i,
+                      ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
+                      source_idx);
+            return -1;
         }
-        if (reset_encoder(ctx, i) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_init failed: reset_encoder stream=%d name=%s\n",
-                    i,
-                    ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
-            goto fail;
+        if (media_gateway_reset_encoder(ctx, i) != 0)
+        {
+            LOG_ERROR("media_gateway_init failed: reset_encoder stream=%d name=%s",
+                      i,
+                      ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown");
+            return -1;
         }
         ctx->stream_enabled[i] = 1;
     }
+    return 0;
+}
 
-    if (ctx->config.audio.enabled) {
+/**
+ * @description: 初始化音频采集设备和 G711 编码器。
+ */
+static int init_gateway_audio(MediaGatewayCtx *ctx)
+{
+    if (ctx->config.audio.enabled)
+    {
         AudioCaptureConfig audio_capture_config;
         G711EncoderConfig g711_config;
 
-        /* 音频采集和编码器在 init 阶段建好，run 阶段只启动音频帧源线程。 */
         memset(&audio_capture_config, 0, sizeof(audio_capture_config));
         audio_capture_config.device_name = ctx->config.audio.device_name;
         audio_capture_config.sample_rate = ctx->config.audio.sample_rate;
@@ -952,13 +595,13 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         audio_capture_config.format = ctx->config.audio.format;
         audio_capture_config.period_frames = ctx->config.audio.period_frames;
         audio_capture_config.buffer_periods = ctx->config.audio.buffer_periods;
-        if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0) {
-            fprintf(stderr,
-                    "[ERROR] media_gateway_init failed: audio_capture device=%s rate=%d channels=%d\n",
-                    ctx->config.audio.device_name ? ctx->config.audio.device_name : "unknown",
-                    ctx->config.audio.sample_rate,
-                    ctx->config.audio.channels);
-            goto fail;
+        if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0)
+        {
+            LOG_ERROR("media_gateway_init failed: audio_capture device=%s rate=%d channels=%d",
+                      ctx->config.audio.device_name ? ctx->config.audio.device_name : "unknown",
+                      ctx->config.audio.sample_rate,
+                      ctx->config.audio.channels);
+            return -1;
         }
         ctx->audio_capture_ready = 1;
         ctx->config.audio.sample_rate = ctx->audio_capture.config.sample_rate;
@@ -969,728 +612,427 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config) {
         g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
         g711_config.channels = ctx->audio_capture.config.channels;
         g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
-        if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_init failed: g711_encoder\n");
-            goto fail;
+        if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0)
+        {
+            LOG_ERROR("media_gateway_init failed: g711_encoder");
+            return -1;
         }
         ctx->audio_encoder_ready = 1;
     }
+    return 0;
+}
 
-    if (setup_outputs(ctx) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: setup_outputs\n");
-        goto fail;
-    }
-    if (start_outputs(ctx) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_init failed: start_outputs\n");
-        goto fail;
-    }
+/**
+ * @description: 创建并启动全部输出通道。
+ */
+static int init_gateway_outputs(MediaGatewayCtx *ctx)
+{
+    if (setup_outputs(ctx) != 0)
+        return -1;
+    if (start_outputs(ctx) != 0)
+        return -1;
+    return 0;
+}
 
-    if (ctx->config.record_file_path && ctx->config.record_file_path[0] != '\0') {
+/**
+ * @description: 按配置打开本地录像文件。
+ */
+static int init_gateway_record_file(MediaGatewayCtx *ctx)
+{
+    if (ctx->config.record_file_path && ctx->config.record_file_path[0] != '\0')
+    {
         ctx->record_fp = fopen(ctx->config.record_file_path, "ab");
-        if (!ctx->record_fp) {
-            fprintf(stderr,
-                    "[ERROR] media_gateway_init failed: open record file path=%s errno=%d(%s)\n",
-                    ctx->config.record_file_path,
-                    errno,
-                    strerror(errno));
-            goto fail;
+        if (!ctx->record_fp)
+        {
+            LOG_ERROR("media_gateway_init failed: open record file path=%s errno=%d(%s)",
+                      ctx->config.record_file_path,
+                      errno,
+                      strerror(errno));
+            return -1;
         }
     }
+    return 0;
+}
 
+/**
+ * @description: 初始化运行期统计和 benchmark 窗口。
+ */
+static void init_gateway_runtime_stats(MediaGatewayCtx *ctx)
+{
     ctx->running = 1;
-    ctx->stat_last_ts_us = get_now_us();
-    ctx->bench_enable = ctx->config.bench_enable ? 1 : 0;
-    ctx->bench_sample_every = ctx->config.bench_sample_every;
-    ctx->bench_print_interval_sec = ctx->config.bench_print_interval_sec;
-    if (ctx->bench_sample_every <= 0) ctx->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
-    if (ctx->bench_print_interval_sec <= 0) ctx->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
-    ctx->bench_last_ts_us = ctx->stat_last_ts_us;
-    /* 打印调试信息的配置 */
-    fprintf(stderr, "[CFG] bench enable=%d sample_every=%d print_interval_sec=%d\n",
-            ctx->bench_enable,
-            ctx->bench_sample_every,
-            ctx->bench_print_interval_sec);
-    bench_reset_window(ctx);
+    ctx->stats.last_ts_us = media_gateway_get_now_us();
+    ctx->bench.enable = ctx->config.bench_enable ? 1 : 0;
+    ctx->bench.sample_every = ctx->config.bench_sample_every;
+    ctx->bench.print_interval_sec = ctx->config.bench_print_interval_sec;
+    if (ctx->bench.sample_every <= 0)
+        ctx->bench.sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
+    if (ctx->bench.print_interval_sec <= 0)
+        ctx->bench.print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
+    ctx->bench.last_ts_us = ctx->stats.last_ts_us;
+    LOG_INFO("[CFG] bench enable=%d sample_every=%d print_interval_sec=%d",
+             ctx->bench.enable,
+             ctx->bench.sample_every,
+             ctx->bench.print_interval_sec);
+    media_gateway_bench_reset_window(ctx);
+}
+
+/**
+ * @description: 初始化 media gateway 上下文和所有长期持有的资源。
+ */
+int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
+{
+    if (!ctx)
+    {
+        LOG_ERROR("media_gateway_init failed: ctx is NULL");
+        return -1;
+    }
+    if (init_gateway_base(ctx, config) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway base");
+        return -1;
+    }
+    if (init_gateway_captures(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway captures");
+        goto fail;
+    }
+    if (init_gateway_video_encoders(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway video encoders");
+        goto fail;
+    }
+    if (init_gateway_audio(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway audio");
+        goto fail;
+    }
+    if (init_gateway_outputs(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway outputs");
+        goto fail;
+    }
+    if (init_gateway_record_file(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway record file");
+        goto fail;
+    }
+
+    init_gateway_runtime_stats(ctx);
     return 0;
 
 fail:
-    fprintf(stderr, "[ERROR] media_gateway_init rollback: deinit partially initialized resources\n");
+    LOG_ERROR("media_gateway_init rollback: deinit partially initialized resources");
     media_gateway_deinit(ctx);
     return -1;
 }
 
 /**
- * @description: 为指定码流准备编码输入，必要时执行缩放。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {MediaGatewayRunState *} state 运行期状态，用于记录 fallback 告警。
- * @param {int} stream_idx 码流下标。
- * @param {MediaFrame *} frame 当前采集帧。
- * @param {const uint8_t **} encode_input 输出编码输入数据指针。
- * @param {size_t *} encode_input_len 输出编码输入数据长度。
- * @return {int} 0 成功，-1 失败。
+ * @description: 启动 run 生命周期内的视频采集帧源。
  */
-static int ensure_stream_input(MediaGatewayCtx *ctx,
-                               MediaGatewayRunState *state,
-                               int stream_idx,
-                               const MediaFrame *frame,
-                               const uint8_t **encode_input,
-                               size_t *encode_input_len) {
-    ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
-    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+static int start_run_frame_sources(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
+{
+    int source_idx;
 
-    if (prepare_stream_encode_input(ctx,
-                                    stream_idx,
-                                    frame->raw_frame,
-                                    (size_t)frame->raw_len,
-                                    encode_input,
-                                    encode_input_len,
-                                    &scale_path) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: prepare_stream_encode_input stream=%d name=%s\n",
-                stream_idx,
-                stream_cfg->name ? stream_cfg->name : "unknown");
-        return -1;
-    }
-
-    if (scale_path == SCALE_PATH_CPU_NEAREST && !state->rga_fallback_warned[stream_idx]) {
-        fprintf(stderr,
-                "[WARN] stream=%d fallback to CPU nearest scaler (RGA unavailable or failed)\n",
-                stream_idx);
-        state->rga_fallback_warned[stream_idx] = 1;
-    }
-    return 0;
-}
-
-/**
- * @description: 编码指定码流的一帧数据，并在连续失败时重建对应编码器。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {MediaGatewayRunState *} state 运行期状态，用于记录连续编码失败次数。
- * @param {int} stream_idx 码流下标。
- * @param {MediaFrame *} frame 当前采集帧。
- * @param {uint8_t *} encode_input 编码输入数据。
- * @param {size_t} encode_input_len 编码输入数据长度。
- * @param {uint8_t **} h264_data 输出 H264 数据指针。
- * @param {size_t *} h264_len 输出 H264 数据长度。
- * @param {int *} is_key_frame 输出是否关键帧。
- * @param {uint64_t *} encode_put_ts_us 输出 encode_put_frame 前时间戳。
- * @param {uint64_t *} encode_get_ts_us 输出 encode_get_packet 后时间戳。
- * @param {MppEncoderTiming *} mpp_timing 输出 MPP 内部分段耗时。
- * @return {int} 0 编码成功；1 本帧编码失败但可继续；-1 编码器重建失败。
- */
-static int encode_stream_frame(MediaGatewayCtx *ctx,
-                               MediaGatewayRunState *state,
-                               int stream_idx,
-                               const MediaFrame *frame,
-                               const uint8_t *encode_input,
-                               size_t encode_input_len,
-                               uint8_t **h264_data,
-                               size_t *h264_len,
-                               int *is_key_frame,
-                               uint64_t *encode_put_ts_us,
-                               uint64_t *encode_get_ts_us,
-                               MppEncoderTiming *mpp_timing) {
-    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
-
-    trigger_external_idr_if_needed(ctx, stream_idx);
-    if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
-                                 encode_input,
-                                 encode_input_len,
-                                 frame->frame_id,
-                                 h264_data,
-                                 h264_len,
-                                 is_key_frame,
-                                 encode_put_ts_us,
-                                 encode_get_ts_us,
-                                 mpp_timing) == 0) {
-        state->consecutive_encode_fail[stream_idx] = 0;
-        return 0;
-    }
-
-    state->consecutive_encode_fail[stream_idx]++;
-    if (state->consecutive_encode_fail[stream_idx] >= 3) {
-        if (reset_encoder(ctx, stream_idx) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: reset_encoder stream=%d name=%s\n",
-                    stream_idx,
-                    stream_cfg->name ? stream_cfg->name : "unknown");
-            return -1;
-        }
-        state->consecutive_encode_fail[stream_idx] = 0;
-    }
-    return 1;
-}
-
-/**
- * @description: 将编码后的 H264 数据封装为 MediaPacket，并分发到该码流绑定的所有输出通道。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {int} stream_idx 码流下标。
- * @param {MediaFrame *} frame 当前采集帧。
- * @param {uint8_t *} h264_data H264 数据指针。
- * @param {size_t} h264_len H264 数据长度。
- * @param {int} is_key_frame 是否关键帧。
- * @return {int} 0 成功，-1 失败。
- */
-static int enqueue_stream_packet(MediaGatewayCtx *ctx,
-                                 int stream_idx,
-                                 const MediaFrame *frame,
-                                 uint8_t *h264_data,
-                                 size_t h264_len,
-                                 int is_key_frame) {
-    MediaBuffer *buffer = NULL;
-    MediaPacket packet;
-    int i;
-    int output_hit = 0;
-
-    if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0) {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu\n",
-                stream_idx,
-                h264_len);
-        return -1;
-    }
-
-    media_packet_init(&packet);
-    packet.frame_type = MEDIA_FRAME_TYPE_VIDEO;
-    packet.codec = MEDIA_CODEC_H264;
-    packet.buffer = buffer;
-    packet.frame_id = frame->frame_id;
-    packet.pts_us = frame->dqbuf_ts_us;
-    packet.dts_us = frame->dqbuf_ts_us;
-    packet.is_key_frame = is_key_frame;
-
-    for (i = 0; i < ctx->output_count; ++i) {
-        if (ctx->output_stream_index[i] != stream_idx) continue;
-        output_hit = 1;
-        media_output_enqueue(&ctx->outputs[i], &packet);
-    }
-
-    if (output_hit) {
-        ctx->stat_frames++;
-        ctx->stat_bytes += h264_len;
-        ctx->stream_stat_frames[stream_idx]++;
-        ctx->stream_stat_bytes[stream_idx] += h264_len;
-    }
-    media_packet_reset(&packet);
-    return 0;
-}
-
-static int enqueue_audio_packet(MediaGatewayCtx *ctx,
-                                int stream_idx,
-                                const AudioFrame *frame,
-                                const uint8_t *audio_data,
-                                size_t audio_len,
-                                MediaCodecType codec) {
-    MediaBuffer *buffer = NULL;
-    MediaPacket packet;
-    int i;
-    int output_hit = 0;
-
-    if (!ctx || !frame || !audio_data || audio_len == 0) return -1;
-    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count) return -1;
-
-    if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0) {
-        fprintf(stderr, "[ERROR] enqueue_audio_packet failed: media_buffer_create_copy stream=%d size=%zu\n",
-                stream_idx,
-                audio_len);
-        return -1;
-    }
-
-    media_packet_init(&packet);
-    packet.frame_type = MEDIA_FRAME_TYPE_AUDIO;
-    packet.codec = codec;
-    packet.buffer = buffer;
-    packet.frame_id = frame->frame_id;
-    packet.pts_us = frame->pts_us;
-    packet.dts_us = frame->pts_us;
-    packet.is_key_frame = 0;
-
-    for (i = 0; i < ctx->output_count; ++i) {
-        if (ctx->output_stream_index[i] != stream_idx) continue;
-        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
-            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181) {
+    for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx)
+    {
+        if (!ctx->capture_ready[source_idx])
             continue;
-        }
-        output_hit = 1;
-        media_output_enqueue(&ctx->outputs[i], &packet);
-    }
-
-    if (output_hit) {
-        ctx->audio_stat_frames++;
-        ctx->audio_stat_bytes += audio_len;
-    }
-    media_packet_reset(&packet);
-    return 0;
-}
-
-static int process_gateway_audio(MediaGatewayCtx *ctx, const AudioFrame *frame) {
-    const uint8_t *g711_data = NULL;
-    size_t g711_len = 0;
-    MediaCodecType codec = MEDIA_CODEC_NONE;
-    int stream_idx;
-
-    if (!ctx || !frame || !frame->data || frame->size == 0) return -1;
-    if (!ctx->audio_encoder_ready) return 0;
-    if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE || frame->channels != 1) {
-        fprintf(stderr,
-                "[ERROR] process_gateway_audio failed: unsupported format=%d channels=%d\n",
-                frame->format,
-                frame->channels);
-        return -1;
-    }
-
-    stream_idx = ctx->config.audio.bind_stream_index;
-    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx]) {
-        return 0;
-    }
-    /*
-     * gateway 层负责“PCM -> 编码音频包”的一次性转换，
-     * 下游输出只做协议适配，避免每个输出重复编码。
-     */
-    if (g711_encoder_encode_s16le(&ctx->audio_encoder,
-                                  (const int16_t *)frame->data,
-                                  frame->samples_per_channel,
-                                  &g711_data,
-                                  &g711_len,
-                                  &codec) != 0) {
-        fprintf(stderr, "[ERROR] process_gateway_audio failed: g711 encode frame=%" PRIu64 "\n", frame->frame_id);
-        return -1;
-    }
-    return enqueue_audio_packet(ctx, stream_idx, frame, g711_data, g711_len, codec);
-}
-
-/**
- * @description: 按配置采样并累计指定码流的 BENCH 性能埋点。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {int} stream_idx 码流下标，目前只统计 stream 0。
- * @param {MediaFrame *} frame 当前采集帧。
- * @param {uint64_t} encode_put_ts_us encode_put_frame 前时间戳。
- * @param {uint64_t} encode_get_ts_us encode_get_packet 后时间戳。
- * @param {MppEncoderTiming *} mpp_timing MPP 内部分段耗时。
- * @return {void}
- */
-static void record_stream_benchmark(MediaGatewayCtx *ctx,
-                                    int stream_idx,
-                                    const MediaFrame *frame,
-                                    uint64_t encode_put_ts_us,
-                                    uint64_t encode_get_ts_us,
-                                    const MppEncoderTiming *mpp_timing) {
-    uint64_t now;
-    uint64_t dqbuf_to_put_us;
-    uint64_t put_to_get_us;
-    uint64_t dqbuf_to_get_us;
-    uint64_t dqbuf_to_fanout_us;
-
-    if (!ctx->bench_enable || stream_idx != 0) return;
-    if ((frame->frame_id % (uint64_t)ctx->bench_sample_every) != 0) return;
-
-    now = get_now_us();
-    dqbuf_to_put_us = (encode_put_ts_us >= frame->dqbuf_ts_us) ? (encode_put_ts_us - frame->dqbuf_ts_us) : 0;
-    put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
-    dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
-    dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
-#if 0
-    /*
-     * 逐帧 BENCH 日志：用于观察单帧时间线。
-     * 配置 GATEWAY_BENCH_SAMPLE_EVERY=1 时每一帧都会打印。
-     */
-    LOG_INFO("[BENCH_FRAME] stream=%d frame=%" PRIu64
-             " driver_to_dqbuf=%" PRIu64 "us"
-             " dqbuf_ioctl=%" PRIu64 "us"
-             " capture_call=%" PRIu64 "us"
-             " capture_copy=%" PRIu64 "us"
-             " dqbuf_to_put=%" PRIu64 "us"
-             " put_to_get=%" PRIu64 "us"
-             " mpp_input_copy=%" PRIu64 "us"
-             " mpp_put_frame=%" PRIu64 "us"
-             " mpp_get_packet=%" PRIu64 "us"
-             " mpp_packet_copy=%" PRIu64 "us"
-             " mpp_total=%" PRIu64 "us"
-             " dqbuf_to_get=%" PRIu64 "us"
-             " dqbuf_to_fanout=%" PRIu64 "us",
-             stream_idx,
-             frame->frame_id,
-             frame->driver_to_dqbuf_us,
-             frame->dqbuf_ioctl_us,
-             frame->capture_call_us,
-             frame->frame_copy_us,
-             dqbuf_to_put_us,
-             put_to_get_us,
-             mpp_timing ? mpp_timing->input_copy_us : 0,
-             mpp_timing ? mpp_timing->put_frame_us : 0,
-             mpp_timing ? mpp_timing->get_packet_us : 0,
-             mpp_timing ? mpp_timing->packet_copy_us : 0,
-             mpp_timing ? mpp_timing->total_us : 0,
-             dqbuf_to_get_us,
-             dqbuf_to_fanout_us);
-#endif
-    bench_record_sample(ctx,
-                        frame->driver_to_dqbuf_us,
-                        frame->dqbuf_ioctl_us,
-                        frame->capture_call_us,
-                        frame->frame_copy_us,
-                        dqbuf_to_put_us,
-                        put_to_get_us,
-                        mpp_timing,
-                        dqbuf_to_get_us,
-                        dqbuf_to_fanout_us);
-}
-
-/**
- * @description: 可选地把 stream 0 的 H264 码流写入本地文件，便于离线分析。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {int} stream_idx 码流下标。
- * @param {uint64_t} frame_id 当前帧号。
- * @param {uint8_t *} h264_data H264 数据指针。
- * @param {size_t} h264_len H264 数据长度。
- * @return {void}
- */
-static void maybe_record_stream_file(MediaGatewayCtx *ctx,
-                                     int stream_idx,
-                                     uint64_t frame_id,
-                                     const uint8_t *h264_data,
-                                     size_t h264_len) {
-    size_t written;
-    if (!ctx->record_fp || stream_idx != 0) return;
-
-    written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
-    if (written != h264_len) fprintf(stderr, "[WARN] local record write short: %zu/%zu\n", written, h264_len);
-    if ((frame_id % (uint64_t)ctx->config.record_flush_interval_frames) == 0) fflush(ctx->record_fp);
-}
-
-/**
- * @description: 完成单个码流的一帧处理，包括准备输入、编码、分发、统计和可选录像。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @param {MediaGatewayRunState *} state 运行期状态。
- * @param {MediaFrame *} frame 当前采集帧。
- * @param {int} stream_idx 码流下标。
- * @return {int} 0 成功或本帧可跳过，-1 发生不可恢复错误。
- */
-static int process_gateway_stream(MediaGatewayCtx *ctx,
-                                  MediaGatewayRunState *state,
-                                  const MediaFrame *frame,
-                                  int stream_idx) {
-    const uint8_t *encode_input = NULL;
-    size_t encode_input_len = 0;
-    uint8_t *h264_data = NULL;
-    size_t h264_len = 0;
-    int is_key_frame = 0;
-    uint64_t encode_put_ts_us = 0;
-    uint64_t encode_get_ts_us = 0;
-    MppEncoderTiming mpp_timing;
-    int encode_ret;
-
-    if (!ctx->stream_enabled[stream_idx]) {
-        return 0;
-    }
-
-    if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0) return -1;
-
-    encode_ret = encode_stream_frame(ctx,
-                                     state,
-                                     stream_idx,
-                                     frame,
-                                     encode_input,
-                                     encode_input_len,
-                                     &h264_data,
-                                     &h264_len,
-                                     &is_key_frame,
-                                     &encode_put_ts_us,
-                                     &encode_get_ts_us,
-                                     &mpp_timing);
-    if (encode_ret != 0) return (encode_ret < 0) ? -1 : 0;
-    if (!h264_data || h264_len == 0) return 0;
-
-    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0) {
-        return -1;
-    }
-
-    record_stream_benchmark(ctx, stream_idx, frame, encode_put_ts_us, encode_get_ts_us, &mpp_timing);
-    maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
-    return 0;
-}
-
-/**
- * @description: 清空当前吞吐统计窗口。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @return {void}
- */
-static void reset_throughput_window(MediaGatewayCtx *ctx) {
-    int i;
-    ctx->stat_frames = 0;
-    ctx->stat_bytes = 0;
-    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-        ctx->stream_stat_frames[i] = 0;
-        ctx->stream_stat_bytes[i] = 0;
-    }
-    ctx->audio_stat_frames = 0;
-    ctx->audio_stat_bytes = 0;
-}
-
-/**
- * @description: 到达配置周期后打印吞吐、输出状态和 BENCH 信息，并重置统计窗口。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @return {void}
- */
-static void log_throughput_if_due(MediaGatewayCtx *ctx) {
-    uint64_t now = get_now_us();
-    uint64_t span_us = now - ctx->stat_last_ts_us;
-    double span_sec;
-    double fps;
-    double kbps;
-    int i;
-
-    if (span_us < (uint64_t)ctx->config.stats_interval_sec * 1000000ULL) return;
-
-    span_sec = (double)span_us / 1000000.0;
-    fps = (span_sec > 0.0) ? ((double)ctx->stat_frames / span_sec) : 0.0;
-    kbps = (span_sec > 0.0) ? ((double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
-    fprintf(stderr, "[STAT] total_fps=%.2f total_bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
-           fps, kbps, ctx->stat_frames, ctx->stat_bytes);
-
-    for (i = 0; i < ctx->config.stream_count; ++i) {
-        double sfps;
-        double skbps;
-        if (!ctx->stream_enabled[i]) continue;
-        sfps = (span_sec > 0.0) ? ((double)ctx->stream_stat_frames[i] / span_sec) : 0.0;
-        skbps = (span_sec > 0.0) ? ((double)ctx->stream_stat_bytes[i] * 8.0 / 1000.0 / span_sec) : 0.0;
-        fprintf(stderr, "[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
-                i,
-               ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
-               sfps,
-               skbps,
-               ctx->stream_stat_frames[i],
-               ctx->stream_stat_bytes[i]);
-    }
-    if (ctx->config.audio.enabled) {
-        double afps = (span_sec > 0.0) ? ((double)ctx->audio_stat_frames / span_sec) : 0.0;
-        double akbps = (span_sec > 0.0) ? ((double)ctx->audio_stat_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
-        fprintf(stderr, "[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64 "\n",
-                afps,
-                akbps,
-                ctx->audio_stat_frames,
-                ctx->audio_stat_bytes);
-    }
-
-    log_output_stats(ctx);
-    bench_log_and_reset_if_due(ctx);
-    reset_throughput_window(ctx);
-    ctx->stat_last_ts_us = now;
-}
-
-/**
- * @description: 网关主循环。采集工作由独立帧源线程完成，本线程只取最新帧并执行编码/分发。
- * @param {MediaGatewayCtx *} ctx 网关上下文。
- * @return {int} 0 正常退出，-1 发生不可恢复错误。
- */
-int media_gateway_run(MediaGatewayCtx *ctx) {
-    MediaGatewayRunState state;
-    MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
-    int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
-    int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
-    AudioFrameSource audio_source;
-    int audio_source_inited = 0;
-    int audio_source_started = 0;
-    int ret = 0;
-    MediaFrame frame;
-    AudioFrame audio_frame;
-    int source_idx = -1;
-    int stream_idx = -1;
-    int slot_index = -1;
-    int audio_slot_index = -1;
-    int acquire_ret = 0;
-
-    if (!ctx || !ctx->running) {
-        fprintf(stderr, "[ERROR] media_gateway_run failed: invalid ctx or not running\n");
-        return -1;
-    }
-
-    memset(&state, 0, sizeof(state));
-    memset(frame_sources, 0, sizeof(frame_sources));
-    memset(frame_source_inited, 0, sizeof(frame_source_inited));
-    memset(frame_source_started, 0, sizeof(frame_source_started));
-    memset(&audio_source, 0, sizeof(audio_source));
-
-    for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
-        if (!ctx->capture_ready[source_idx]) continue;
-        if (media_frame_source_init(&frame_sources[source_idx],
+        if (media_frame_source_init(&res->frame_sources[source_idx],
                                     &ctx->captures[source_idx],
                                     ctx->config.capture_retry_ms,
-                                    ctx->config.max_consecutive_failures) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: init frame source source=%d\n", source_idx);
-            ret = -1;
-            goto out;
+                                    ctx->config.max_consecutive_failures) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: init frame source source=%d", source_idx);
+            return -1;
         }
-        frame_source_inited[source_idx] = 1;
-        if (media_frame_source_start(&frame_sources[source_idx]) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: start frame source source=%d\n", source_idx);
-            ret = -1;
-            goto out;
+        res->frame_source_inited[source_idx] = 1;
+        if (media_frame_source_start(&res->frame_sources[source_idx]) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: start frame source source=%d", source_idx);
+            return -1;
         }
-        frame_source_started[source_idx] = 1;
+        res->frame_source_started[source_idx] = 1;
     }
+    return 0;
+}
 
-    if (ctx->config.audio.enabled && ctx->audio_capture_ready) {
-        /* audioFrameSource 和 video frame source 一样，只在 run 生命周期内拥有采集线程。 */
-        if (audio_frame_source_init(&audio_source,
+/**
+ * @description: 启动 run 生命周期内的音频采集帧源。
+ */
+static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
+{
+    if (ctx->config.audio.enabled && ctx->audio_capture_ready)
+    {
+        if (audio_frame_source_init(&res->audio_source,
                                     &ctx->audio_capture,
                                     ctx->config.audio.source_slots,
                                     ctx->config.audio.retry_ms,
-                                    ctx->config.audio.max_consecutive_failures) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: init audio frame source\n");
-            ret = -1;
-            goto out;
+                                    ctx->config.audio.max_consecutive_failures) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: init audio frame source");
+            return -1;
         }
-        audio_source_inited = 1;
-        if (audio_frame_source_start(&audio_source) != 0) {
-            fprintf(stderr, "[ERROR] media_gateway_run failed: start audio frame source\n");
-            ret = -1;
-            goto out;
+        res->audio_source_inited = 1;
+        if (audio_frame_source_start(&res->audio_source) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: start audio frame source");
+            return -1;
         }
-        audio_source_started = 1;
+        res->audio_source_started = 1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 从一个视频采集源取最新帧并发布到绑定的 stream 输入槽。
+ */
+static int dispatch_video_source_once(MediaGatewayCtx *ctx,
+                                      MediaGatewayRunResources *res,
+                                      int source_idx,
+                                      int *got_frame)
+{
+    MediaFrame frame;
+    int stream_idx;
+    int slot_index = -1;
+    int acquire_ret;
+    int ret = 0;
+
+    if (!res->frame_source_started[source_idx])
+        return 0;
+
+    acquire_ret = media_frame_source_acquire_latest(&res->frame_sources[source_idx], &frame, &slot_index, 10);
+    if (acquire_ret < 0)
+    {
+        LOG_ERROR("media_gateway_run failed: frame source stopped by fatal error source=%d", source_idx);
+        return -1;
+    }
+    if (acquire_ret == 0)
+        return 0;
+
+    *got_frame = 1;
+    for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx)
+    {
+        if (!ctx->stream_enabled[stream_idx])
+            continue;
+        if (ctx->config.streams[stream_idx].source_index != source_idx)
+            continue;
+        if (media_gateway_video_input_publish(&res->pipeline.video_inputs[stream_idx], &frame) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: publish video frame source=%d stream=%d",
+                      source_idx,
+                      stream_idx);
+            ret = -1;
+            ctx->running = 0;
+            break;
+        }
+    }
+
+    media_frame_source_release(&res->frame_sources[source_idx], slot_index);
+    return ret;
+}
+
+/**
+ * @description: 非阻塞 drain 音频帧并发布到音频编码 FIFO。
+ */
+static int drain_audio_source_once(MediaGatewayCtx *ctx,
+                                   MediaGatewayRunResources *res,
+                                   int *got_frame)
+{
+    AudioFrame audio_frame;
+    int audio_slot_index = -1;
+    int audio_drain_count = 0;
+    int acquire_ret;
+
+    if (!res->audio_source_started)
+        return 0;
+
+    while (audio_drain_count < ctx->config.audio.source_slots)
+    {
+        audio_slot_index = -1;
+        acquire_ret = audio_frame_source_acquire(&res->audio_source, &audio_frame, &audio_slot_index, 0);
+        if (acquire_ret < 0)
+        {
+            LOG_ERROR("media_gateway_run failed: audio frame source fatal error");
+            return -1;
+        }
+        if (acquire_ret == 0)
+            break;
+
+        *got_frame = 1;
+        if (media_gateway_audio_queue_publish(&res->pipeline.audio_queue, &audio_frame) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: publish audio frame=%" PRIu64, audio_frame.frame_id);
+            ctx->running = 0;
+            audio_frame_source_release(&res->audio_source, audio_slot_index);
+            return -1;
+        }
+        audio_frame_source_release(&res->audio_source, audio_slot_index);
+        audio_drain_count++;
+    }
+    return 0;
+}
+
+/**
+ * @description: 执行一次 run 主循环调度。
+ */
+static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res, int *got_frame)
+{
+    int source_idx;
+
+    *got_frame = 0;
+    for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx)
+    {
+        if (dispatch_video_source_once(ctx, res, source_idx, got_frame) != 0)
+            return -1;
+    }
+
+    if (drain_audio_source_once(ctx, res, got_frame) != 0)
+        return -1;
+    if (media_gateway_pipeline_get_ret(&res->pipeline) != 0)
+        return -1;
+
+    pthread_mutex_lock(&ctx->stats_lock);
+    media_gateway_log_throughput_if_due(ctx);
+    pthread_mutex_unlock(&ctx->stats_lock);
+    if (!*got_frame)
+        usleep(1000);
+    return 0;
+}
+
+/**
+ * @description: 清理 run 生命周期内创建的短期资源。
+ */
+static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
+{
+    int source_idx;
+
+    ctx->running = 0;
+    if (res->audio_source_inited)
+        audio_frame_source_deinit(&res->audio_source);
+    for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx)
+    {
+        if (res->frame_source_inited[source_idx])
+            media_frame_source_deinit(&res->frame_sources[source_idx]);
+    }
+    media_gateway_pipeline_join_workers(&res->pipeline);
+    media_gateway_pipeline_deinit(&res->pipeline);
+}
+
+/**
+ * @description: 启动 gateway 运行循环，负责采集帧分发和 worker 生命周期管理。
+ */
+int media_gateway_run(MediaGatewayCtx *ctx)
+{
+    MediaGatewayRunResources res;
+    int ret = 0;
+
+    if (!ctx || !ctx->running)
+    {
+        LOG_ERROR("media_gateway_run failed: invalid ctx or not running");
+        return -1;
+    }
+
+    memset(&res, 0, sizeof(res));
+    if (media_gateway_pipeline_init(&res.pipeline, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_run failed: init pipeline");
+        ret = -1;
+        goto out;
+    }
+    if (media_gateway_pipeline_start_workers(&res.pipeline) != 0)
+    {
+        LOG_ERROR("media_gateway_run failed: start pipeline workers");
+        ret = -1;
+        goto out;
+    }
+    if (start_run_frame_sources(ctx, &res) != 0)
+    {
+        ret = -1;
+        goto out;
+    }
+    if (start_run_audio_source(ctx, &res) != 0)
+    {
+        ret = -1;
+        goto out;
     }
 
     while (ctx->running)
     {
         int got_frame = 0;
-
-        for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx) {
-            if (!frame_source_started[source_idx]) continue;
-
-            /*
-             * 每个采集源最多等待 10ms，避免某一路无帧时拖住其它码流。
-             * 超时不算错误，主循环继续检查其它 source 和退出标志。
-             */
-            slot_index = -1;
-            acquire_ret = media_frame_source_acquire_latest(&frame_sources[source_idx], &frame, &slot_index, 10);
-            if (acquire_ret < 0) {
-                fprintf(stderr, "[ERROR] media_gateway_run failed: frame source stopped by fatal error source=%d\n", source_idx);
-                ret = -1;
-                break;
-            }
-            if (acquire_ret == 0) continue;
-            got_frame = 1;
-
-            /*
-             * frame.raw_frame 指向帧源槽位缓存，必须在 release 之前完成所有绑定到该 source 的码流处理。
-             * 当前策略是每个 source 只处理最新帧，编码来不及时允许丢旧帧，以保证实时性优先。
-             */
-            for (stream_idx = 0; stream_idx < ctx->config.stream_count; ++stream_idx) {
-                if (!ctx->stream_enabled[stream_idx]) continue;
-                if (ctx->config.streams[stream_idx].source_index != source_idx) continue;
-                if (process_gateway_stream(ctx, &state, &frame, stream_idx) != 0) {
-                    fprintf(stderr,
-                            "[ERROR] media_gateway_run failed: process_gateway_stream source=%d stream=%d\n",
-                            source_idx,
-                            stream_idx);
-                    ret = -1;
-                    break;
-                }
-            }
-
-            media_frame_source_release(&frame_sources[source_idx], slot_index);
-            if (ret != 0) break;
+        if (run_gateway_once(ctx, &res, &got_frame) != 0)
+        {
+            ret = -1;
+            break;
         }
-
-        if (ret == 0 && audio_source_started) {
-            int audio_drain_count = 0;
-            /*
-             * 一轮最多 drain 8 个音频包，防止音频积压时长时间占住主循环，
-             * 让视频采集/编码仍然有调度机会。
-             */
-            while (audio_drain_count < 8) {
-                audio_slot_index = -1;
-                acquire_ret = audio_frame_source_acquire(&audio_source, &audio_frame, &audio_slot_index, 0);
-                if (acquire_ret < 0) {
-                    fprintf(stderr, "[ERROR] media_gateway_run failed: audio frame source fatal error\n");
-                    ret = -1;
-                    break;
-                }
-                if (acquire_ret == 0) break;
-                got_frame = 1;
-                if (process_gateway_audio(ctx, &audio_frame) != 0) {
-                    fprintf(stderr,
-                            "[ERROR] media_gateway_run failed: process_gateway_audio frame=%" PRIu64 "\n",
-                            audio_frame.frame_id);
-                    ret = -1;
-                }
-                audio_frame_source_release(&audio_source, audio_slot_index);
-                if (ret != 0) break;
-                audio_drain_count++;
-            }
-        }
-
-        log_throughput_if_due(ctx);
-        if (!got_frame) usleep(1000);
-        if (ret != 0) break;
     }
 
 out:
-    if (audio_source_inited) audio_frame_source_deinit(&audio_source);
-    for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx) {
-        if (frame_source_inited[source_idx]) media_frame_source_deinit(&frame_sources[source_idx]);
-    }
+    cleanup_run_resources(ctx, &res);
     return ret;
 }
 
-void media_gateway_stop(MediaGatewayCtx *ctx) {
-    /* Signal run loop to exit gracefully. */
-    if (!ctx) return;
+/**
+ * @description: 请求 gateway 运行循环退出。
+ */
+void media_gateway_stop(MediaGatewayCtx *ctx)
+{
+    if (!ctx)
+        return;
     ctx->running = 0;
 }
 
-void media_gateway_deinit(MediaGatewayCtx *ctx) {
-    /* Full teardown in safe order: outputs -> record file -> encoders -> capture. */
+/**
+ * @description: 释放 media gateway 初始化阶段持有的全部资源。
+ */
+void media_gateway_deinit(MediaGatewayCtx *ctx)
+{
     int i;
-    if (!ctx) return;
+    if (!ctx)
+        return;
 
     stop_outputs(ctx);
     deinit_outputs(ctx);
 
-    if (ctx->record_fp) {
+    if (ctx->record_fp)
+    {
         fflush(ctx->record_fp);
         fclose(ctx->record_fp);
         ctx->record_fp = NULL;
     }
-    if (ctx->audio_encoder_ready) {
+    if (ctx->audio_encoder_ready)
+    {
         g711_encoder_deinit(&ctx->audio_encoder);
         ctx->audio_encoder_ready = 0;
     }
-    if (ctx->audio_capture_ready) {
+    if (ctx->audio_capture_ready)
+    {
         audio_capture_deinit(&ctx->audio_capture);
         ctx->audio_capture_ready = 0;
     }
-    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i) {
-        if (ctx->encoder_ready[i]) {
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
+        if (ctx->encoder_ready[i])
+        {
             mpp_encoder_deinit(&ctx->encoders[i]);
             ctx->encoder_ready[i] = 0;
         }
-        if (ctx->scaled_frame_cache[i]) {
-            free(ctx->scaled_frame_cache[i]);
-            ctx->scaled_frame_cache[i] = NULL;
-        }
+        free(ctx->scaled_frame_cache[i]);
+        ctx->scaled_frame_cache[i] = NULL;
         ctx->scaled_frame_cache_size[i] = 0;
     }
-    for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i) {
-        if (ctx->capture_ready[i]) {
+    for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
+    {
+        if (ctx->capture_ready[i])
+        {
             v4l2_capture_deinit(&ctx->captures[i]);
             ctx->capture_ready[i] = 0;
         }
     }
+    if (ctx->stats_lock_ready)
+    {
+        pthread_mutex_destroy(&ctx->stats_lock);
+        ctx->stats_lock_ready = 0;
+    }
     memset(&ctx->config, 0, sizeof(ctx->config));
     ctx->running = 0;
-}
-
-void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *throughput) {
-    /* Export current window throughput estimate without mutating counters. */
-    uint64_t now;
-    uint64_t span_us;
-    if (!ctx || !throughput) return;
-
-    memset(throughput, 0, sizeof(*throughput));
-    now = get_now_us();
-    span_us = now - ctx->stat_last_ts_us;
-    throughput->frames = ctx->stat_frames;
-    throughput->bytes = ctx->stat_bytes;
-    if (span_us > 0) {
-        double span_sec = (double)span_us / 1000000.0;
-        throughput->fps = (double)ctx->stat_frames / span_sec;
-        throughput->bitrate_kbps = (double)ctx->stat_bytes * 8.0 / 1000.0 / span_sec;
-    }
 }

@@ -191,6 +191,21 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "GB28181_QUEUE_CAPACITY").c_str(), 64);
 }
 
+static void set_audio_defaults(void) {
+    set_value_int("AUDIO_ENABLE", 0);
+    set_value("AUDIO_DEVICE", "default");
+    set_value_int("AUDIO_SAMPLE_RATE", 8000);
+    set_value_int("AUDIO_CHANNELS", 1);
+    set_value_int("AUDIO_FORMAT", AUDIO_SAMPLE_FORMAT_S16LE);
+    set_value_int("AUDIO_PERIOD_FRAMES", 160);
+    set_value_int("AUDIO_BUFFER_PERIODS", 4);
+    set_value_int("AUDIO_SOURCE_SLOTS", 8);
+    set_value_int("AUDIO_RETRY_MS", 5);
+    set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
+    set_value_int("AUDIO_G711_MODE", G711_ENCODER_MODE_ALAW);
+    set_value_int("AUDIO_BIND_STREAM_INDEX", 0);
+}
+
 static void load_defaults(void) {
     g_values.clear();
 
@@ -216,10 +231,11 @@ static void load_defaults(void) {
     set_value_int("GATEWAY_MAX_CONSECUTIVE_FAILURES", 30);
     set_value("GATEWAY_RECORD_FILE_PATH", "");
     set_value_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES", 30);
-    set_value("GATEWAY_CONFIG_FILE_PATH", "rtsp_gateway.conf");
+    set_value("GATEWAY_CONFIG_FILE_PATH", "media_gateway.conf");
     set_value_int("GATEWAY_BENCH_ENABLE", 0);
     set_value_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
     set_value_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
+    set_value_int("LOG_LEVEL", 1);
     set_value_int("GATEWAY_CAPTURE_SOURCE_COUNT", 2);
     set_value_int("GATEWAY_STREAM_COUNT", 2);
 
@@ -241,6 +257,7 @@ static void load_defaults(void) {
 
     set_stream_defaults("STREAM_MAIN_", 1, CAPTURE_WIDTH, CAPTURE_HEIGHT, 30, 2 * 1024 * 1024);
     set_stream_defaults("STREAM_SUB_", 0, 1280, 720, 15, 1024 * 1024);
+    set_audio_defaults();
 
     set_value("RTSP_NAME", "rtsp");
     set_value("RTSP_SESSION_NAME", "live");
@@ -299,6 +316,21 @@ static void fill_capture_source(CaptureSourceConfig *source, const char *prefix)
     source->height = value_int((p + "HEIGHT").c_str());
     source->pixelformat = (uint32_t)value_int((p + "PIXELFORMAT").c_str());
     source->buffer_count = value_int((p + "BUFFER_COUNT").c_str());
+}
+
+static void fill_audio_source(AudioSourceConfig *audio) {
+    audio->enabled = value_int("AUDIO_ENABLE");
+    audio->device_name = value_string("AUDIO_DEVICE");
+    audio->sample_rate = value_int("AUDIO_SAMPLE_RATE");
+    audio->channels = value_int("AUDIO_CHANNELS");
+    audio->format = (AudioSampleFormat)value_int("AUDIO_FORMAT");
+    audio->period_frames = value_int("AUDIO_PERIOD_FRAMES");
+    audio->buffer_periods = value_int("AUDIO_BUFFER_PERIODS");
+    audio->source_slots = value_int("AUDIO_SOURCE_SLOTS");
+    audio->retry_ms = value_int("AUDIO_RETRY_MS");
+    audio->max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
+    audio->g711_mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
+    audio->bind_stream_index = value_int("AUDIO_BIND_STREAM_INDEX");
 }
 
 static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
@@ -496,11 +528,13 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     config->bench_enable = value_int("GATEWAY_BENCH_ENABLE");
     config->bench_sample_every = value_int("GATEWAY_BENCH_SAMPLE_EVERY");
     config->bench_print_interval_sec = value_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC");
+    config->log_level = value_int("LOG_LEVEL");
     config->capture_source_count = value_int("GATEWAY_CAPTURE_SOURCE_COUNT");
     config->stream_count = value_int("GATEWAY_STREAM_COUNT");
 
     fill_capture_source(&config->capture_sources[0], "CAPTURE_MAIN_");
     fill_capture_source(&config->capture_sources[1], "CAPTURE_SUB_");
+    fill_audio_source(&config->audio);
     fill_stream(&config->streams[0], "STREAM_MAIN_");
     fill_stream(&config->streams[1], "STREAM_SUB_");
 

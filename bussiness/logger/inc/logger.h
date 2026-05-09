@@ -12,6 +12,9 @@ typedef enum {
     LOG_LEVEL_ERROR
 } LogLevel;
 
+void log_set_level(LogLevel level);
+LogLevel log_get_level(void);
+
 /*
  * 打印一条日志。
  * 日志格式包含：本地时间、日志级别、源码文件名、行号、用户消息。

@@ -1,0 +1,630 @@
+#include "mediaGatewayProcess.h"
+
+#include "mediaGatewayClock.h"
+#include "mediaGatewayStats.h"
+
+#include "logger.h"
+
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef enum
+{
+    SCALE_PATH_ISP_DIRECT = 0,
+    SCALE_PATH_RGA = 1,
+    SCALE_PATH_CPU_NEAREST = 2
+} ScalePath;
+
+#if defined(ENABLE_RGA_SCALER)
+__attribute__((weak)) int media_gateway_rga_scale_nv12(const uint8_t *src,
+                                                       int src_w,
+                                                       int src_h,
+                                                       uint8_t *dst,
+                                                       int dst_w,
+                                                       int dst_h);
+#endif
+
+/**
+ * @description: 确保指定 stream 的缩放缓存容量足够。
+ */
+static int ensure_scaled_frame_cache(MediaGatewayCtx *ctx, int stream_idx, size_t need_size)
+{
+    uint8_t *new_buf;
+    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return -1;
+    if (ctx->scaled_frame_cache_size[stream_idx] >= need_size)
+        return 0;
+
+    new_buf = (uint8_t *)realloc(ctx->scaled_frame_cache[stream_idx], need_size);
+    if (!new_buf)
+    {
+        LOG_ERROR("realloc scaled frame cache failed stream=%d need=%zu", stream_idx, need_size);
+        return -1;
+    }
+    ctx->scaled_frame_cache[stream_idx] = new_buf;
+    ctx->scaled_frame_cache_size[stream_idx] = need_size;
+    return 0;
+}
+
+/**
+ * @description: CPU nearest-neighbor NV12 缩放 fallback。
+ */
+static int scale_nv12_nearest(const uint8_t *src,
+                              int src_w,
+                              int src_h,
+                              uint8_t *dst,
+                              int dst_w,
+                              int dst_h)
+{
+    const uint8_t *src_y;
+    const uint8_t *src_uv;
+    uint8_t *dst_y;
+    uint8_t *dst_uv;
+    int x;
+    int y;
+
+    if (!src || !dst || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0)
+        return -1;
+    if ((src_w & 1) || (src_h & 1) || (dst_w & 1) || (dst_h & 1))
+        return -1;
+
+    src_y = src;
+    src_uv = src + (size_t)src_w * src_h;
+    dst_y = dst;
+    dst_uv = dst + (size_t)dst_w * dst_h;
+
+    for (y = 0; y < dst_h; ++y)
+    {
+        int sy = (y * src_h) / dst_h;
+        const uint8_t *src_line = src_y + (size_t)sy * src_w;
+        uint8_t *dst_line = dst_y + (size_t)y * dst_w;
+        for (x = 0; x < dst_w; ++x)
+        {
+            int sx = (x * src_w) / dst_w;
+            dst_line[x] = src_line[sx];
+        }
+    }
+
+    for (y = 0; y < dst_h / 2; ++y)
+    {
+        int sy = (y * (src_h / 2)) / (dst_h / 2);
+        const uint8_t *src_line = src_uv + (size_t)sy * src_w;
+        uint8_t *dst_line = dst_uv + (size_t)y * dst_w;
+        for (x = 0; x < dst_w; x += 2)
+        {
+            int sx = ((x / 2) * (src_w / 2)) / (dst_w / 2);
+            dst_line[x] = src_line[sx * 2];
+            dst_line[x + 1] = src_line[sx * 2 + 1];
+        }
+    }
+    return 0;
+}
+
+/**
+ * @description: 如果集成了 RGA hook，则尝试使用 RGA 缩放 NV12。
+ */
+static int scale_nv12_rga_if_available(const uint8_t *src,
+                                       int src_w,
+                                       int src_h,
+                                       uint8_t *dst,
+                                       int dst_w,
+                                       int dst_h)
+{
+#if defined(ENABLE_RGA_SCALER)
+    if (media_gateway_rga_scale_nv12)
+        return media_gateway_rga_scale_nv12(src, src_w, src_h, dst, dst_w, dst_h);
+#endif
+    (void)src;
+    (void)src_w;
+    (void)src_h;
+    (void)dst;
+    (void)dst_w;
+    (void)dst_h;
+    return -1;
+}
+
+/**
+ * @description: 为指定 stream 准备编码输入，必要时执行缩放。
+ */
+static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
+                                       int stream_idx,
+                                       const uint8_t *raw_frame,
+                                       size_t raw_len,
+                                       const uint8_t **encode_input,
+                                       size_t *encode_input_len,
+                                       ScalePath *path_used)
+{
+    const MediaGatewayStreamConfig *stream_cfg;
+    size_t scaled_len;
+
+    if (!ctx || !raw_frame || !encode_input || !encode_input_len || !path_used)
+        return -1;
+    if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return -1;
+
+    stream_cfg = &ctx->config.streams[stream_idx];
+
+    {
+        int source_idx = stream_cfg->source_index;
+        int capture_width;
+        int capture_height;
+
+        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count)
+            return -1;
+        capture_width = ctx->config.capture_sources[source_idx].width;
+        capture_height = ctx->config.capture_sources[source_idx].height;
+
+        if (stream_cfg->width == capture_width && stream_cfg->height == capture_height)
+        {
+            *encode_input = raw_frame;
+            *encode_input_len = raw_len;
+            *path_used = SCALE_PATH_ISP_DIRECT;
+            return 0;
+        }
+
+        scaled_len = (size_t)stream_cfg->width * stream_cfg->height * 3 / 2;
+        if (ensure_scaled_frame_cache(ctx, stream_idx, scaled_len) != 0)
+            return -1;
+
+        if (scale_nv12_rga_if_available(raw_frame,
+                                        capture_width,
+                                        capture_height,
+                                        ctx->scaled_frame_cache[stream_idx],
+                                        stream_cfg->width,
+                                        stream_cfg->height) == 0)
+        {
+            *encode_input = ctx->scaled_frame_cache[stream_idx];
+            *encode_input_len = scaled_len;
+            *path_used = SCALE_PATH_RGA;
+            return 0;
+        }
+
+        if (scale_nv12_nearest(raw_frame,
+                               capture_width,
+                               capture_height,
+                               ctx->scaled_frame_cache[stream_idx],
+                               stream_cfg->width,
+                               stream_cfg->height) != 0)
+        {
+            return -1;
+        }
+
+        *encode_input = ctx->scaled_frame_cache[stream_idx];
+        *encode_input_len = scaled_len;
+        *path_used = SCALE_PATH_CPU_NEAREST;
+        return 0;
+    }
+}
+
+/**
+ * @description: 将 stream 配置转换为 MPP 编码器选项。
+ */
+static void build_encoder_options(const MediaGatewayStreamConfig *cfg, MppEncoderOptions *opt)
+{
+    memset(opt, 0, sizeof(*opt));
+    opt->rc_mode = cfg->rc_mode;
+    opt->h264_profile = cfg->h264_profile;
+    opt->h264_level = cfg->h264_level;
+    opt->h264_cabac_en = cfg->h264_cabac_en;
+    opt->qp_init = cfg->qp_init;
+    opt->qp_min = cfg->qp_min;
+    opt->qp_max = cfg->qp_max;
+    opt->qp_min_i = cfg->qp_min_i;
+    opt->qp_max_i = cfg->qp_max_i;
+    opt->qp_max_step = cfg->qp_max_step;
+}
+
+/**
+ * @description: 按当前 stream 配置重建 MPP 编码器。
+ */
+int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
+{
+    MppEncoderOptions options;
+    const MediaGatewayStreamConfig *stream_cfg;
+    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return -1;
+
+    stream_cfg = &ctx->config.streams[stream_idx];
+    build_encoder_options(stream_cfg, &options);
+    if (ctx->encoder_ready[stream_idx])
+    {
+        mpp_encoder_deinit(&ctx->encoders[stream_idx]);
+        ctx->encoder_ready[stream_idx] = 0;
+    }
+    if (mpp_encoder_init(&ctx->encoders[stream_idx],
+                         stream_cfg->width,
+                         stream_cfg->height,
+                         stream_cfg->fps,
+                         stream_cfg->bitrate,
+                         stream_cfg->gop,
+                         &options) != 0)
+    {
+        return -1;
+    }
+    ctx->encoder_ready[stream_idx] = 1;
+    return 0;
+}
+
+/**
+ * @description: 消费外部输出通道的 IDR 请求并通知编码器。
+ */
+static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx)
+{
+    int output_idx;
+    int need_idr = 0;
+    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return;
+
+    output_idx = ctx->gb28181_output_index[stream_idx];
+    if (output_idx >= 0 && output_idx < ctx->output_count)
+    {
+        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx]))
+            need_idr = 1;
+    }
+
+    output_idx = ctx->rtsp_output_index[stream_idx];
+    if (output_idx >= 0 && output_idx < ctx->output_count)
+    {
+        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx]))
+            need_idr = 1;
+    }
+
+    if (need_idr)
+    {
+        if (mpp_encoder_request_idr(&ctx->encoders[stream_idx]) != 0)
+            LOG_WARN("stream=%d failed to request IDR from external output event", stream_idx);
+    }
+}
+
+/**
+ * @description: 准备单帧编码输入并记录缩放 fallback 告警。
+ */
+static int ensure_stream_input(MediaGatewayCtx *ctx,
+                               MediaGatewayRunState *state,
+                               int stream_idx,
+                               const MediaFrame *frame,
+                               const uint8_t **encode_input,
+                               size_t *encode_input_len)
+{
+    ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+
+    if (prepare_stream_encode_input(ctx,
+                                    stream_idx,
+                                    frame->raw_frame,
+                                    (size_t)frame->raw_len,
+                                    encode_input,
+                                    encode_input_len,
+                                    &scale_path) != 0)
+    {
+        LOG_ERROR("media_gateway_run failed: prepare_stream_encode_input stream=%d name=%s",
+                  stream_idx,
+                  stream_cfg->name ? stream_cfg->name : "unknown");
+        return -1;
+    }
+
+    if (scale_path == SCALE_PATH_CPU_NEAREST && !state->rga_fallback_warned[stream_idx])
+    {
+        LOG_WARN("stream=%d fallback to CPU nearest scaler (RGA unavailable or failed)",
+                 stream_idx);
+        state->rga_fallback_warned[stream_idx] = 1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 编码一帧视频，并在连续失败时重建编码器。
+ */
+static int encode_stream_frame(MediaGatewayCtx *ctx,
+                               MediaGatewayRunState *state,
+                               int stream_idx,
+                               const MediaFrame *frame,
+                               const uint8_t *encode_input,
+                               size_t encode_input_len,
+                               uint8_t **h264_data,
+                               size_t *h264_len,
+                               int *is_key_frame,
+                               uint64_t *encode_put_ts_us,
+                               uint64_t *encode_get_ts_us,
+                               MppEncoderTiming *mpp_timing)
+{
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+
+    trigger_external_idr_if_needed(ctx, stream_idx);
+    if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
+                                 encode_input,
+                                 encode_input_len,
+                                 frame->frame_id,
+                                 h264_data,
+                                 h264_len,
+                                 is_key_frame,
+                                 encode_put_ts_us,
+                                 encode_get_ts_us,
+                                 mpp_timing) == 0)
+    {
+        state->consecutive_encode_fail[stream_idx] = 0;
+        return 0;
+    }
+
+    state->consecutive_encode_fail[stream_idx]++;
+    if (state->consecutive_encode_fail[stream_idx] >= 3)
+    {
+        if (media_gateway_reset_encoder(ctx, stream_idx) != 0)
+        {
+            LOG_ERROR("media_gateway_run failed: reset_encoder stream=%d name=%s",
+                      stream_idx,
+                      stream_cfg->name ? stream_cfg->name : "unknown");
+            return -1;
+        }
+        state->consecutive_encode_fail[stream_idx] = 0;
+    }
+    return 1;
+}
+
+/**
+ * @description: 将 H264 视频包分发到当前 stream 绑定的所有输出。
+ */
+static int enqueue_stream_packet(MediaGatewayCtx *ctx,
+                                 int stream_idx,
+                                 const MediaFrame *frame,
+                                 uint8_t *h264_data,
+                                 size_t h264_len,
+                                 int is_key_frame)
+{
+    MediaBuffer *buffer = NULL;
+    MediaPacket packet;
+    int i;
+    int output_hit = 0;
+
+    if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0)
+    {
+        LOG_ERROR("media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu",
+                  stream_idx,
+                  h264_len);
+        return -1;
+    }
+
+    media_packet_init(&packet);
+    packet.frame_type = MEDIA_FRAME_TYPE_VIDEO;
+    packet.codec = MEDIA_CODEC_H264;
+    packet.buffer = buffer;
+    packet.frame_id = frame->frame_id;
+    packet.pts_us = frame->dqbuf_ts_us;
+    packet.dts_us = frame->dqbuf_ts_us;
+    packet.is_key_frame = is_key_frame;
+
+    for (i = 0; i < ctx->output_count; ++i)
+    {
+        if (ctx->output_stream_index[i] != stream_idx)
+            continue;
+        output_hit = 1;
+        media_output_enqueue(&ctx->outputs[i], &packet);
+    }
+
+    if (output_hit)
+    {
+        ctx->stats.frames++;
+        ctx->stats.bytes += h264_len;
+        ctx->stats.stream_frames[stream_idx]++;
+        ctx->stats.stream_bytes[stream_idx] += h264_len;
+    }
+    media_packet_reset(&packet);
+    return 0;
+}
+
+/**
+ * @description: 将编码后的音频包分发到支持音频的输出。
+ */
+static int enqueue_audio_packet(MediaGatewayCtx *ctx,
+                                int stream_idx,
+                                const AudioFrame *frame,
+                                const uint8_t *audio_data,
+                                size_t audio_len,
+                                MediaCodecType codec)
+{
+    MediaBuffer *buffer = NULL;
+    MediaPacket packet;
+    int i;
+    int output_hit = 0;
+
+    if (!ctx || !frame || !audio_data || audio_len == 0)
+        return -1;
+    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count)
+        return -1;
+
+    if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0)
+    {
+        LOG_ERROR("enqueue_audio_packet failed: media_buffer_create_copy stream=%d size=%zu",
+                  stream_idx,
+                  audio_len);
+        return -1;
+    }
+
+    media_packet_init(&packet);
+    packet.frame_type = MEDIA_FRAME_TYPE_AUDIO;
+    packet.codec = codec;
+    packet.buffer = buffer;
+    packet.frame_id = frame->frame_id;
+    packet.pts_us = frame->pts_us;
+    packet.dts_us = frame->pts_us;
+    packet.is_key_frame = 0;
+
+    for (i = 0; i < ctx->output_count; ++i)
+    {
+        if (ctx->output_stream_index[i] != stream_idx)
+            continue;
+        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
+            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181)
+        {
+            continue;
+        }
+        output_hit = 1;
+        media_output_enqueue(&ctx->outputs[i], &packet);
+    }
+
+    if (output_hit)
+    {
+        ctx->stats.audio_frames++;
+        ctx->stats.audio_bytes += audio_len;
+    }
+    media_packet_reset(&packet);
+    return 0;
+}
+
+/**
+ * @description: 处理一帧 PCM 音频，完成 G711 编码和输出分发。
+ */
+int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
+{
+    const uint8_t *g711_data = NULL;
+    size_t g711_len = 0;
+    MediaCodecType codec = MEDIA_CODEC_NONE;
+    int stream_idx;
+    int ret;
+
+    if (!ctx || !frame || !frame->data || frame->size == 0)
+        return -1;
+    if (!ctx->audio_encoder_ready)
+        return 0;
+    if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE || frame->channels != 1)
+    {
+        LOG_ERROR("process_gateway_audio failed: unsupported format=%d channels=%d",
+                  frame->format,
+                  frame->channels);
+        return -1;
+    }
+
+    stream_idx = ctx->config.audio.bind_stream_index;
+    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx])
+        return 0;
+
+    if (g711_encoder_encode_s16le(&ctx->audio_encoder,
+                                  (const int16_t *)frame->data,
+                                  frame->samples_per_channel,
+                                  &g711_data,
+                                  &g711_len,
+                                  &codec) != 0)
+    {
+        LOG_ERROR("process_gateway_audio failed: g711 encode frame=%" PRIu64, frame->frame_id);
+        return -1;
+    }
+    pthread_mutex_lock(&ctx->stats_lock);
+    ret = enqueue_audio_packet(ctx, stream_idx, frame, g711_data, g711_len, codec);
+    pthread_mutex_unlock(&ctx->stats_lock);
+    return ret;
+}
+
+/**
+ * @description: 按配置记录指定视频帧的 benchmark 样本。
+ */
+static void record_stream_benchmark(MediaGatewayCtx *ctx,
+                                    int stream_idx,
+                                    const MediaFrame *frame,
+                                    uint64_t encode_put_ts_us,
+                                    uint64_t encode_get_ts_us,
+                                    const MppEncoderTiming *mpp_timing)
+{
+    uint64_t now;
+    uint64_t dqbuf_to_put_us;
+    uint64_t put_to_get_us;
+    uint64_t dqbuf_to_get_us;
+    uint64_t dqbuf_to_fanout_us;
+
+    if (!ctx->bench.enable || stream_idx != 0)
+        return;
+    if ((frame->frame_id % (uint64_t)ctx->bench.sample_every) != 0)
+        return;
+
+    now = media_gateway_get_now_us();
+    dqbuf_to_put_us = (encode_put_ts_us >= frame->dqbuf_ts_us) ? (encode_put_ts_us - frame->dqbuf_ts_us) : 0;
+    put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
+    dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
+    dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
+
+    media_gateway_bench_record_sample(ctx,
+                                      frame->driver_to_dqbuf_us,
+                                      frame->dqbuf_ioctl_us,
+                                      frame->capture_call_us,
+                                      frame->frame_copy_us,
+                                      dqbuf_to_put_us,
+                                      put_to_get_us,
+                                      mpp_timing,
+                                      dqbuf_to_get_us,
+                                      dqbuf_to_fanout_us);
+}
+
+/**
+ * @description: 可选地将 stream 0 的 H264 数据写入本地文件。
+ */
+static void maybe_record_stream_file(MediaGatewayCtx *ctx,
+                                     int stream_idx,
+                                     uint64_t frame_id,
+                                     const uint8_t *h264_data,
+                                     size_t h264_len)
+{
+    size_t written;
+    if (!ctx->record_fp || stream_idx != 0)
+        return;
+
+    written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
+    if (written != h264_len)
+        LOG_WARN("local record write short: %zu/%zu", written, h264_len);
+    if ((frame_id % (uint64_t)ctx->config.record_flush_interval_frames) == 0)
+        fflush(ctx->record_fp);
+}
+
+/**
+ * @description: 处理一帧视频，完成输入准备、编码、分发和统计。
+ */
+int media_gateway_process_stream(MediaGatewayCtx *ctx,
+                                 MediaGatewayRunState *state,
+                                 const MediaFrame *frame,
+                                 int stream_idx)
+{
+    const uint8_t *encode_input = NULL;
+    size_t encode_input_len = 0;
+    uint8_t *h264_data = NULL;
+    size_t h264_len = 0;
+    int is_key_frame = 0;
+    uint64_t encode_put_ts_us = 0;
+    uint64_t encode_get_ts_us = 0;
+    MppEncoderTiming mpp_timing;
+    int encode_ret;
+
+    if (!ctx->stream_enabled[stream_idx])
+        return 0;
+
+    if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0)
+        return -1;
+
+    encode_ret = encode_stream_frame(ctx,
+                                     state,
+                                     stream_idx,
+                                     frame,
+                                     encode_input,
+                                     encode_input_len,
+                                     &h264_data,
+                                     &h264_len,
+                                     &is_key_frame,
+                                     &encode_put_ts_us,
+                                     &encode_get_ts_us,
+                                     &mpp_timing);
+    if (encode_ret != 0)
+        return (encode_ret < 0) ? -1 : 0;
+    if (!h264_data || h264_len == 0)
+        return 0;
+
+    pthread_mutex_lock(&ctx->stats_lock);
+    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0)
+    {
+        pthread_mutex_unlock(&ctx->stats_lock);
+        return -1;
+    }
+
+    record_stream_benchmark(ctx, stream_idx, frame, encode_put_ts_us, encode_get_ts_us, &mpp_timing);
+    maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
+    pthread_mutex_unlock(&ctx->stats_lock);
+    return 0;
+}

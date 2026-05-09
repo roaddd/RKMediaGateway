@@ -137,20 +137,22 @@ static void *media_output_thread(void *arg) {
 }
 
 int media_output_setup(MediaOutput *output, const MediaOutputConfig *config) {
-    if (!output || !config) {
+    if (!output || !config) 
+    {
         fprintf(stderr, "[ERROR] media_output_setup failed: invalid arguments\n");
         return -1;
     }
 
-    switch (config->type) {
-    case MEDIA_OUTPUT_TYPE_RTSP:
-        return media_output_setup_rtsp(output, &config->protocol.rtsp);
-    case MEDIA_OUTPUT_TYPE_RTMP:
-        return media_output_setup_rtmp(output, &config->protocol.rtmp);
-    case MEDIA_OUTPUT_TYPE_GB28181:
-        return media_output_setup_gb28181(output, &config->protocol.gb28181);
-    default:
-        fprintf(stderr, "[ERROR] media_output_setup failed: unknown type=%d\n", config->type);
+    switch (config->type) 
+    {
+        case MEDIA_OUTPUT_TYPE_RTSP:
+            return media_output_setup_rtsp(output, &config->protocol.rtsp);
+        case MEDIA_OUTPUT_TYPE_RTMP:
+            return media_output_setup_rtmp(output, &config->protocol.rtmp);
+        case MEDIA_OUTPUT_TYPE_GB28181:
+            return media_output_setup_gb28181(output, &config->protocol.gb28181);
+        default:
+            fprintf(stderr, "[ERROR] media_output_setup failed: unknown type=%d\n", config->type);
         return -1;
     }
 }

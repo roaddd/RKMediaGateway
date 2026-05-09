@@ -16,6 +16,7 @@
 #define LOG_COLOR_RESET "\033[0m"
 
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
+static LogLevel g_log_level = LOG_LEVEL_INFO;
 
 /*
  * 从完整路径里取文件名。
@@ -55,6 +56,24 @@ static const char *log_level_color(LogLevel level) {
     }
 }
 
+void log_set_level(LogLevel level) {
+    if (level < LOG_LEVEL_DEBUG) level = LOG_LEVEL_DEBUG;
+    if (level > LOG_LEVEL_ERROR) level = LOG_LEVEL_ERROR;
+
+    pthread_mutex_lock(&g_log_lock);
+    g_log_level = level;
+    pthread_mutex_unlock(&g_log_lock);
+}
+
+LogLevel log_get_level(void) {
+    LogLevel level;
+
+    pthread_mutex_lock(&g_log_lock);
+    level = g_log_level;
+    pthread_mutex_unlock(&g_log_lock);
+    return level;
+}
+
 /*
  * 格式化本地时间，精确到毫秒。
  * 输出示例：2026-04-26 20:30:12.123
@@ -92,6 +111,7 @@ void log_write(LogLevel level, const char *file, int line, const char *fmt, ...)
     va_list args;
 
     if (!fmt) return;
+    if (level < log_get_level()) return;
     log_format_time(time_buf, sizeof(time_buf));
 
     pthread_mutex_lock(&g_log_lock);

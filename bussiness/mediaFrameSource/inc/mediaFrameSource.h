@@ -39,6 +39,7 @@ typedef struct {
     pthread_cond_t cond;            /* 新帧到达或线程退出时唤醒消费者。 */
 
     /* 双槽最新帧缓存：编码线程永远获取最新帧，编码慢时允许丢弃旧帧。 */
+    /* latest-frame source，不是 FIFO 队列 */
     MediaFrameSourceSlot slots[MEDIA_FRAME_SOURCE_SLOTS];
     int latest_slot;                /* 当前最新可消费槽位下标，-1 表示暂无新帧。 */
     uint64_t next_seq;              /* 下一帧发布序号。 */

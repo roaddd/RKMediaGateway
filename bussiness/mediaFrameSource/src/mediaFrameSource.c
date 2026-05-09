@@ -52,22 +52,31 @@ static int frame_source_slot_ensure_capacity(MediaFrameSourceSlot *slot, size_t 
 static int frame_source_find_write_slot(MediaFrameSource *source) {
     int i;
 
-    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i) {
-        if (!source->slots[i].in_use && !source->slots[i].valid) {
+    /* (1)刚启动，还没有采集到帧; (2)某个槽位之前被消费完，并且已经 release */
+    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i) 
+    {
+        if (!source->slots[i].in_use && !source->slots[i].valid) 
+        {
             return i;
         }
     }
 
+    /* 当前有一帧最新帧还没被编码线程拿走，但这个槽位没有正在被使用 */
     if (source->latest_slot >= 0 &&
         source->latest_slot < MEDIA_FRAME_SOURCE_SLOTS &&
-        !source->slots[source->latest_slot].in_use) {
+        !source->slots[source->latest_slot].in_use) 
+    {
         source->dropped_frames++;
         return source->latest_slot;
     }
 
-    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i) {
-        if (!source->slots[i].in_use) {
-            if (source->slots[i].valid) {
+    /* 如果编码线程正在使用最新可消费的槽位，则会 */
+    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i) 
+    {
+        if (!source->slots[i].in_use) 
+        {
+            if (source->slots[i].valid)
+            {
                 source->dropped_frames++;
             }
             return i;
@@ -135,9 +144,10 @@ static void *frame_source_thread(void *arg) {
     MediaFrameSource *source = (MediaFrameSource *)arg;
     uint64_t capture_start_us;
     uint64_t capture_end_us;
-    MediaFrame frame;
+    MediaFrame frame; /* 存放采集的一帧数据 */
 
-    while (frame_source_should_run(source)) {
+    while (frame_source_should_run(source)) 
+    {
         memset(&frame, 0, sizeof(frame));
         capture_start_us = frame_source_now_us();
         if (v4l2_capture_frame(source->capture,
@@ -147,7 +157,8 @@ static void *frame_source_thread(void *arg) {
                                &frame.dqbuf_ts_us,
                                &frame.driver_to_dqbuf_us,
                                &frame.dqbuf_ioctl_us,
-                               &frame.frame_copy_us) != 0) {
+                               &frame.frame_copy_us) != 0) 
+        {
             source->consecutive_failures++;
             if (source->consecutive_failures >= source->max_consecutive_failures) {
                 pthread_mutex_lock(&source->lock);
@@ -163,14 +174,18 @@ static void *frame_source_thread(void *arg) {
             usleep((useconds_t)source->retry_ms * 1000U);
             continue;
         }
-
+        /* 统计v4l2_capture_frame接口耗时 */
         capture_end_us = frame_source_now_us();
         frame.capture_call_us = capture_end_us - capture_start_us;
         source->consecutive_failures = 0;
-        if (!frame_source_should_run(source)) {
+
+        if (!frame_source_should_run(source)) 
+        {
             break;
         }
-        if (frame_source_publish_frame(source, &frame) != 0) {
+
+        if (frame_source_publish_frame(source, &frame) != 0) 
+        {
             break;
         }
     }
@@ -186,7 +201,8 @@ int media_frame_source_init(MediaFrameSource *source,
                             V4L2CaptureCtx *capture,
                             int retry_ms,
                             int max_consecutive_failures) {
-    if (!source || !capture) {
+    if (!source || !capture) 
+    {
         LOG_ERROR("frame source init failed: invalid arguments");
         return -1;
     }

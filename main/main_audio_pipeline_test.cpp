@@ -79,6 +79,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    /* 计算目标帧数 */
     target_frames = seconds * capture.config.sample_rate / capture.config.period_frames;
     /*
      * 从 audioFrameSource 按顺序取帧并编码。

@@ -1,6 +1,7 @@
 ﻿#ifndef __MEDIA_GATEWAY_H__
 #define __MEDIA_GATEWAY_H__
 
+#include <pthread.h>
 #include <stdio.h>
 
 #include "mppEncoder.h"
@@ -97,6 +98,7 @@ typedef struct {
     int bench_enable;                /* 是否开启性能测试埋点日志。 */
     int bench_sample_every;          /* 性能埋点每隔多少帧采样一次。 */
     int bench_print_interval_sec;    /* 性能埋点日志打印周期，单位秒。 */
+    int log_level;                   /* 全局日志等级：0 debug, 1 info, 2 warn, 3 error。 */
     int capture_source_count;        /* 采集源数量。 */
     CaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
     AudioSourceConfig audio;         /* 音频采集与编码配置。 */
@@ -113,6 +115,50 @@ typedef struct {
     uint64_t frames;       /* 当前统计窗口内累计处理帧数。 */
     uint64_t bytes;        /* 当前统计窗口内累计处理字节数。 */
 } MediaGatewayThroughput;
+
+typedef struct {
+    uint64_t last_ts_us;                                   /* 上次吞吐统计输出时间戳。 */
+    uint64_t frames;                                       /* 当前统计窗口内累计视频帧数。 */
+    uint64_t bytes;                                        /* 当前统计窗口内累计视频字节数。 */
+    uint64_t stream_frames[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流窗口内累计视频帧数。 */
+    uint64_t stream_bytes[MEDIA_GATEWAY_MAX_STREAMS];      /* 各码流窗口内累计视频字节数。 */
+    uint64_t audio_frames;                                 /* 当前统计窗口内累计音频帧数。 */
+    uint64_t audio_bytes;                                  /* 当前统计窗口内累计音频字节数。 */
+} MediaGatewayStats;
+
+typedef struct {
+    int enable;                                            /* 是否开启 benchmark 埋点。 */
+    int sample_every;                                      /* 采样间隔帧数。 */
+    int print_interval_sec;                                /* benchmark 输出周期，单位秒。 */
+    uint64_t last_ts_us;                                   /* 上次 benchmark 输出时间戳。 */
+    uint64_t sample_count;                                 /* 当前窗口内采样帧数。 */
+    uint64_t driver_to_dqbuf_sum_us;                       /* driver_ts -> dqbuf 时间累计。 */
+    uint64_t driver_to_dqbuf_max_us;                       /* driver_ts -> dqbuf 最大值。 */
+    uint64_t dqbuf_ioctl_sum_us;                           /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
+    uint64_t dqbuf_ioctl_max_us;                           /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
+    uint64_t capture_call_sum_us;                          /* v4l2_capture_frame 调用耗时累计。 */
+    uint64_t capture_call_max_us;                          /* v4l2_capture_frame 调用最大耗时。 */
+    uint64_t capture_copy_sum_us;                          /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
+    uint64_t capture_copy_max_us;                          /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
+    uint64_t dqbuf_to_put_sum_us;                          /* dqbuf -> encode_put 时间累计。 */
+    uint64_t dqbuf_to_put_max_us;                          /* dqbuf -> encode_put 最大值。 */
+    uint64_t put_to_get_sum_us;                            /* encode_put -> encode_get 时间累计。 */
+    uint64_t put_to_get_max_us;                            /* encode_put -> encode_get 最大值。 */
+    uint64_t mpp_input_copy_sum_us;                        /* NV12 拷贝到 MPP 输入缓冲累计。 */
+    uint64_t mpp_input_copy_max_us;                        /* NV12 拷贝到 MPP 输入缓冲最大值。 */
+    uint64_t mpp_put_frame_sum_us;                         /* encode_put_frame 调用耗时累计。 */
+    uint64_t mpp_put_frame_max_us;                         /* encode_put_frame 调用最大耗时。 */
+    uint64_t mpp_get_packet_sum_us;                        /* encode_get_packet 调用耗时累计。 */
+    uint64_t mpp_get_packet_max_us;                        /* encode_get_packet 调用最大耗时。 */
+    uint64_t mpp_packet_copy_sum_us;                       /* H264 packet 拷贝耗时累计。 */
+    uint64_t mpp_packet_copy_max_us;                       /* H264 packet 拷贝最大耗时。 */
+    uint64_t mpp_total_sum_us;                             /* mpp_encoder_encode_frame 总耗时累计。 */
+    uint64_t mpp_total_max_us;                             /* mpp_encoder_encode_frame 总耗时最大值。 */
+    uint64_t dqbuf_to_get_sum_us;                          /* dqbuf -> encode_get 时间累计。 */
+    uint64_t dqbuf_to_get_max_us;                          /* dqbuf -> encode_get 最大值。 */
+    uint64_t dqbuf_to_fanout_sum_us;                       /* dqbuf -> fanout 完成累计。 */
+    uint64_t dqbuf_to_fanout_max_us;                       /* dqbuf -> fanout 完成最大值。 */
+} MediaGatewayBenchmarkStats;
 
 typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
@@ -132,49 +178,12 @@ typedef struct {
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
     int running;                               /* 主循环是否正在运行。 */
     FILE *record_fp;                           /* 本地录像文件句柄。 */
-    uint64_t stat_last_ts_us;                  /* 上次统计输出时间戳。 */
-    uint64_t stat_frames;                      /* 当前统计窗口内累计帧数。 */
-    uint64_t stat_bytes;                       /* 当前统计窗口内累计字节数。 */
-    uint64_t stream_stat_frames[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流窗口内累计帧数。 */
-    uint64_t stream_stat_bytes[MEDIA_GATEWAY_MAX_STREAMS];  /* 各码流窗口内累计字节数。 */
-    uint64_t audio_stat_frames;              /* 当前统计窗口内累计音频帧数。 */
-    uint64_t audio_stat_bytes;               /* 当前统计窗口内累计音频字节数。 */
+    pthread_mutex_t stats_lock;                /* 保护吞吐、benchmark 和本地录像写入。 */
+    int stats_lock_ready;                      /* stats_lock 是否已初始化。 */
+    MediaGatewayStats stats;                   /* 吞吐统计窗口。 */
+    MediaGatewayBenchmarkStats bench;          /* benchmark 埋点配置与统计窗口。 */
     uint8_t *scaled_frame_cache[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放后的 NV12 帧缓存。 */
     size_t scaled_frame_cache_size[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放缓存容量。 */
-
-    /* Benchmark 埋点开关与统计窗口（默认值来自头文件宏）。 */
-    int bench_enable;                          /* 是否开启 benchmark 埋点。 */
-    int bench_sample_every;                    /* 采样间隔帧数。 */
-    int bench_print_interval_sec;              /* benchmark 输出周期，单位秒。 */
-    uint64_t bench_last_ts_us;                 /* 上次 benchmark 输出时间戳。 */
-    uint64_t bench_sample_count;               /* 当前窗口内采样帧数。 */
-
-    uint64_t bench_driver_to_dqbuf_sum_us;     /* driver_ts -> dqbuf 时间累计。 */
-    uint64_t bench_driver_to_dqbuf_max_us;     /* driver_ts -> dqbuf 最大值。 */
-    uint64_t bench_dqbuf_ioctl_sum_us;         /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
-    uint64_t bench_dqbuf_ioctl_max_us;         /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
-    uint64_t bench_capture_call_sum_us;        /* v4l2_capture_frame 调用耗时累计。 */
-    uint64_t bench_capture_call_max_us;        /* v4l2_capture_frame 调用最大耗时。 */
-    uint64_t bench_capture_copy_sum_us;        /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
-    uint64_t bench_capture_copy_max_us;        /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
-    uint64_t bench_dqbuf_to_put_sum_us;        /* dqbuf -> encode_put 时间累计。 */
-    uint64_t bench_dqbuf_to_put_max_us;        /* dqbuf -> encode_put 最大值。 */
-    uint64_t bench_put_to_get_sum_us;          /* encode_put -> encode_get 时间累计。 */
-    uint64_t bench_put_to_get_max_us;          /* encode_put -> encode_get 最大值。 */
-    uint64_t bench_mpp_input_copy_sum_us;      /* NV12 拷贝到 MPP 输入缓冲累计。 */
-    uint64_t bench_mpp_input_copy_max_us;      /* NV12 拷贝到 MPP 输入缓冲最大值。 */
-    uint64_t bench_mpp_put_frame_sum_us;       /* encode_put_frame 调用耗时累计。 */
-    uint64_t bench_mpp_put_frame_max_us;       /* encode_put_frame 调用最大耗时。 */
-    uint64_t bench_mpp_get_packet_sum_us;      /* encode_get_packet 调用耗时累计。 */
-    uint64_t bench_mpp_get_packet_max_us;      /* encode_get_packet 调用最大耗时。 */
-    uint64_t bench_mpp_packet_copy_sum_us;     /* H264 packet 拷贝耗时累计。 */
-    uint64_t bench_mpp_packet_copy_max_us;     /* H264 packet 拷贝最大耗时。 */
-    uint64_t bench_mpp_total_sum_us;           /* mpp_encoder_encode_frame 总耗时累计。 */
-    uint64_t bench_mpp_total_max_us;           /* mpp_encoder_encode_frame 总耗时最大值。 */
-    uint64_t bench_dqbuf_to_get_sum_us;        /* dqbuf -> encode_get 时间累计。 */
-    uint64_t bench_dqbuf_to_get_max_us;        /* dqbuf -> encode_get 最大值。 */
-    uint64_t bench_dqbuf_to_fanout_sum_us;     /* dqbuf -> fanout 完成累计。 */
-    uint64_t bench_dqbuf_to_fanout_max_us;     /* dqbuf -> fanout 完成最大值。 */
 } MediaGatewayCtx;
 
 typedef struct {
@@ -182,10 +191,29 @@ typedef struct {
     int rga_fallback_warned[MEDIA_GATEWAY_MAX_STREAMS];     /* 每路 CPU 缩放 fallback 告警是否已打印。 */
 } MediaGatewayRunState;
 
+/**
+ * @description: 初始化 media gateway 长生命周期资源和归一化配置。
+ */
 int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config);
+
+/**
+ * @description: 运行 gateway 主循环，启动采集源和音视频编码流水线。
+ */
 int media_gateway_run(MediaGatewayCtx *ctx);
+
+/**
+ * @description: 请求 gateway 主循环退出。
+ */
 void media_gateway_stop(MediaGatewayCtx *ctx);
+
+/**
+ * @description: 释放 media gateway 持有的全部资源。
+ */
 void media_gateway_deinit(MediaGatewayCtx *ctx);
+
+/**
+ * @description: 读取当前吞吐统计窗口的估算值。
+ */
 void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *throughput);
 
 #ifdef __cplusplus
