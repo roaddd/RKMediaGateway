@@ -1,5 +1,7 @@
 #include "g711Encoder.h"
 
+#include "logger.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -86,6 +88,7 @@ int g711_encoder_init(G711EncoderCtx *ctx, const G711EncoderConfig *config) {
     G711EncoderConfig normalized;
 
     if (!ctx) {
+        LOG_ERROR("g711_encoder_init failed: ctx is NULL");
         return -1;
     }
     memset(ctx, 0, sizeof(*ctx));
@@ -97,14 +100,14 @@ int g711_encoder_init(G711EncoderCtx *ctx, const G711EncoderConfig *config) {
     if (normalized.channels <= 0) normalized.channels = G711_DEFAULT_CHANNELS;
     if (normalized.max_samples_per_frame <= 0) normalized.max_samples_per_frame = G711_DEFAULT_MAX_SAMPLES;
     if (normalized.channels != 1) {
-        fprintf(stderr, "[G711][ERROR] only mono input is supported, channels=%d\n", normalized.channels);
+        LOG_ERROR("g711_encoder_init failed: only mono input is supported channels=%d", normalized.channels);
         return -1;
     }
 
     ctx->out_capacity = (size_t)normalized.max_samples_per_frame;
     ctx->out_buffer = (uint8_t *)malloc(ctx->out_capacity);
     if (!ctx->out_buffer) {
-        fprintf(stderr, "[G711][ERROR] output buffer alloc failed size=%zu\n", ctx->out_capacity);
+        LOG_ERROR("g711_encoder_init failed: output buffer alloc size=%zu", ctx->out_capacity);
         return -1;
     }
     ctx->config = normalized;
@@ -122,12 +125,20 @@ int g711_encoder_encode_s16le(G711EncoderCtx *ctx,
     int i;
 
     if (!ctx || !ctx->initialized || !pcm || samples <= 0 || !out_data || !out_size || !out_codec) {
+        LOG_ERROR("g711_encoder_encode_s16le failed: invalid args ctx=%p initialized=%d pcm=%p samples=%d out_data=%p out_size=%p out_codec=%p",
+                  (void *)ctx,
+                  ctx ? ctx->initialized : 0,
+                  (const void *)pcm,
+                  samples,
+                  (void *)out_data,
+                  (void *)out_size,
+                  (void *)out_codec);
         return -1;
     }
     if ((size_t)samples > ctx->out_capacity) {
-        fprintf(stderr, "[G711][ERROR] input samples exceed capacity samples=%d capacity=%zu\n",
-                samples,
-                ctx->out_capacity);
+        LOG_ERROR("g711_encoder_encode_s16le failed: samples exceed capacity samples=%d capacity=%zu",
+                  samples,
+                  ctx->out_capacity);
         return -1;
     }
 

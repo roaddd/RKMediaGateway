@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <time.h>
 
+#include "logger.h"
 #include "rtsp_server_api.h"
 
 #define DEFAULT_RTSP_OUTPUT_NAME "rtsp"
@@ -245,6 +246,7 @@ static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
         find_start_code(data, len, payload_start, &next_start, &next_code_len);
         if (next_start > payload_start) {
             if (sessionSendVideoData(session, (unsigned char *)(data + payload_start), (int)(next_start - payload_start)) < 0) {
+                LOG_ERROR("rtsp_send_annexb failed: sessionSendVideoData size=%zu", next_start - payload_start);
                 return -1;
             }
         }
@@ -314,6 +316,9 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
         copy_string_field(g_rtsp_shared_server.password, sizeof(g_rtsp_shared_server.password), cfg->password);
         /* 初始化rtspServer */
         if (rtspModuleInit() < 0) {
+            LOG_ERROR("shared_rtsp_server_acquire failed: rtspModuleInit ip=%s port=%d",
+                      cfg->server_ip ? cfg->server_ip : "unknown",
+                      cfg->server_port);
             pthread_mutex_unlock(&g_rtsp_shared_lock);
             return -1;
         }
@@ -322,6 +327,10 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
         /* 启动rtsp服务线程 */
         ret = pthread_create(&g_rtsp_shared_server.server_thread, NULL, shared_rtsp_server_thread, &g_rtsp_shared_server);
         if (ret != 0) {
+            LOG_ERROR("shared_rtsp_server_acquire failed: pthread_create ret=%d ip=%s port=%d",
+                      ret,
+                      cfg->server_ip ? cfg->server_ip : "unknown",
+                      cfg->server_port);
             rtspModuleDel();
             memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
             pthread_mutex_unlock(&g_rtsp_shared_lock);
@@ -329,11 +338,11 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
         }
         g_rtsp_shared_server.server_started = 1;
     } else if (!shared_rtsp_config_compatible(cfg)) {
-        fprintf(stderr, "[ERROR] RTSP shared server config conflict: expect %s:%d auth=%d user=%s\n",
-                g_rtsp_shared_server.server_ip,
-                g_rtsp_shared_server.server_port,
-                g_rtsp_shared_server.auth_enable,
-                g_rtsp_shared_server.user);
+        LOG_ERROR("RTSP shared server config conflict: expect %s:%d auth=%d user=%s",
+                  g_rtsp_shared_server.server_ip,
+                  g_rtsp_shared_server.server_port,
+                  g_rtsp_shared_server.auth_enable,
+                  g_rtsp_shared_server.user);
         pthread_mutex_unlock(&g_rtsp_shared_lock);
         return -1;
     }
@@ -371,15 +380,15 @@ static void shared_rtsp_server_release(void) {
 static int rtsp_output_start(MediaOutput *output) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl) {
-        fprintf(stderr, "[ERROR] rtsp_output_start failed: impl is NULL\n");
+        LOG_ERROR("rtsp_output_start failed: impl is NULL");
         return -1;
     }
 
     if (shared_rtsp_server_acquire(&impl->config) != 0) {
-        fprintf(stderr, "[ERROR] rtsp_output_start failed: acquire shared server ip=%s port=%d session=%s\n",
-                impl->config.server_ip ? impl->config.server_ip : "unknown",
-                impl->config.server_port,
-                impl->config.session_name ? impl->config.session_name : "unknown");
+        LOG_ERROR("rtsp_output_start failed: acquire shared server ip=%s port=%d session=%s",
+                  impl->config.server_ip ? impl->config.server_ip : "unknown",
+                  impl->config.server_port,
+                  impl->config.session_name ? impl->config.session_name : "unknown");
         return -1;
     }
     impl->shared_server_acquired = 1;
@@ -387,16 +396,16 @@ static int rtsp_output_start(MediaOutput *output) {
     /* 创建 RTSP 会话 */
     impl->session = rtspAddSession(impl->config.session_name);
     if (!impl->session) {
-        fprintf(stderr, "[ERROR] rtsp_output_start failed: rtspAddSession session=%s\n",
-                impl->config.session_name ? impl->config.session_name : "unknown");
+        LOG_ERROR("rtsp_output_start failed: rtspAddSession session=%s",
+                  impl->config.session_name ? impl->config.session_name : "unknown");
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
         return -1;
     }
     /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
-        fprintf(stderr, "[ERROR] rtsp_output_start failed: sessionAddVideo session=%s codec=H264\n",
-                impl->config.session_name ? impl->config.session_name : "unknown");
+        LOG_ERROR("rtsp_output_start failed: sessionAddVideo session=%s codec=H264",
+                  impl->config.session_name ? impl->config.session_name : "unknown");
         rtspDelSession(impl->session);
         impl->session = NULL;
         shared_rtsp_server_release();
@@ -423,17 +432,21 @@ static int rtsp_output_start(MediaOutput *output) {
 /* output 连接检查：session 已就绪即可视为可用。 */
 static int rtsp_output_connect(MediaOutput *output) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
-    return impl->session ? 0 : -1;
+    if (!impl || !impl->session) {
+        LOG_ERROR("rtsp_output_connect failed: session is NULL");
+        return -1;
+    }
+    return 0;
 }
 
 /* output 发送：将 H264 包转为 RTSP 可发送单元。 */
 static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session || !packet || !packet->buffer) {
-        fprintf(stderr, "[ERROR] rtsp_output_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p\n",
-                (impl && impl->session) ? 1 : 0,
-                (void *)packet,
-                (void *)(packet ? packet->buffer : NULL));
+        LOG_ERROR("rtsp_output_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p",
+                  (impl && impl->session) ? 1 : 0,
+                  (void *)packet,
+                  (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
     /* 在发送路径轻量轮询新客户端接入事件，避免额外线程/锁开销。 */
@@ -504,13 +517,13 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     RtspOutputImpl *impl;
 
     if (!output) {
-        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: output is NULL\n");
+        LOG_ERROR("media_output_setup_rtsp failed: output is NULL");
         return -1;
     }
 
     impl = (RtspOutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: impl alloc\n");
+        LOG_ERROR("media_output_setup_rtsp failed: impl alloc");
         return -1;
     }
 
@@ -545,9 +558,9 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     output_config.drop_until_keyframe_after_reconnect = 0;
 
     if (media_output_init(output, &output_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[ERROR] media_output_setup_rtsp failed: media_output_init name=%s session=%s\n",
-                impl->config.name ? impl->config.name : "unknown",
-                impl->config.session_name ? impl->config.session_name : "unknown");
+        LOG_ERROR("media_output_setup_rtsp failed: media_output_init name=%s session=%s",
+                  impl->config.name ? impl->config.name : "unknown",
+                  impl->config.session_name ? impl->config.session_name : "unknown");
         free(impl);
         return -1;
     }

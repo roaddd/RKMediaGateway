@@ -33,7 +33,13 @@ static int ensure_scaled_frame_cache(MediaGatewayCtx *ctx, int stream_idx, size_
 {
     uint8_t *new_buf;
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("ensure_scaled_frame_cache failed: invalid args ctx=%p stream=%d need=%zu",
+                  (void *)ctx,
+                  stream_idx,
+                  need_size);
         return -1;
+    }
     if (ctx->scaled_frame_cache_size[stream_idx] >= need_size)
         return 0;
 
@@ -66,9 +72,25 @@ static int scale_nv12_nearest(const uint8_t *src,
     int y;
 
     if (!src || !dst || src_w <= 0 || src_h <= 0 || dst_w <= 0 || dst_h <= 0)
+    {
+        LOG_ERROR("scale_nv12_nearest failed: invalid args src=%p dst=%p src=%dx%d dst=%dx%d",
+                  (const void *)src,
+                  (void *)dst,
+                  src_w,
+                  src_h,
+                  dst_w,
+                  dst_h);
         return -1;
+    }
     if ((src_w & 1) || (src_h & 1) || (dst_w & 1) || (dst_h & 1))
+    {
+        LOG_ERROR("scale_nv12_nearest failed: odd dimensions src=%dx%d dst=%dx%d",
+                  src_w,
+                  src_h,
+                  dst_w,
+                  dst_h);
         return -1;
+    }
 
     src_y = src;
     src_uv = src + (size_t)src_w * src_h;
@@ -140,9 +162,20 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
     size_t scaled_len;
 
     if (!ctx || !raw_frame || !encode_input || !encode_input_len || !path_used)
+    {
+        LOG_ERROR("prepare_stream_encode_input failed: invalid args ctx=%p raw=%p encode_input=%p len=%p path=%p",
+                  (void *)ctx,
+                  (const void *)raw_frame,
+                  (void *)encode_input,
+                  (void *)encode_input_len,
+                  (void *)path_used);
         return -1;
+    }
     if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("prepare_stream_encode_input failed: invalid stream=%d", stream_idx);
         return -1;
+    }
 
     stream_cfg = &ctx->config.streams[stream_idx];
 
@@ -152,7 +185,13 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
         int capture_height;
 
         if (source_idx < 0 || source_idx >= ctx->config.capture_source_count)
+        {
+            LOG_ERROR("prepare_stream_encode_input failed: invalid source=%d stream=%d source_count=%d",
+                      source_idx,
+                      stream_idx,
+                      ctx->config.capture_source_count);
             return -1;
+        }
         capture_width = ctx->config.capture_sources[source_idx].width;
         capture_height = ctx->config.capture_sources[source_idx].height;
 
@@ -166,7 +205,12 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
 
         scaled_len = (size_t)stream_cfg->width * stream_cfg->height * 3 / 2;
         if (ensure_scaled_frame_cache(ctx, stream_idx, scaled_len) != 0)
+        {
+            LOG_ERROR("prepare_stream_encode_input failed: ensure scale cache stream=%d size=%zu",
+                      stream_idx,
+                      scaled_len);
             return -1;
+        }
 
         if (scale_nv12_rga_if_available(raw_frame,
                                         capture_width,
@@ -188,6 +232,12 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
                                stream_cfg->width,
                                stream_cfg->height) != 0)
         {
+            LOG_ERROR("prepare_stream_encode_input failed: CPU scale stream=%d src=%dx%d dst=%dx%d",
+                      stream_idx,
+                      capture_width,
+                      capture_height,
+                      stream_cfg->width,
+                      stream_cfg->height);
             return -1;
         }
 
@@ -224,7 +274,12 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
     MppEncoderOptions options;
     const MediaGatewayStreamConfig *stream_cfg;
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("media_gateway_reset_encoder failed: invalid args ctx=%p stream=%d",
+                  (void *)ctx,
+                  stream_idx);
         return -1;
+    }
 
     stream_cfg = &ctx->config.streams[stream_idx];
     build_encoder_options(stream_cfg, &options);
@@ -241,6 +296,13 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
                          stream_cfg->gop,
                          &options) != 0)
     {
+        LOG_ERROR("media_gateway_reset_encoder failed: mpp init stream=%d size=%dx%d fps=%d bitrate=%d gop=%d",
+                  stream_idx,
+                  stream_cfg->width,
+                  stream_cfg->height,
+                  stream_cfg->fps,
+                  stream_cfg->bitrate,
+                  stream_cfg->gop);
         return -1;
     }
     ctx->encoder_ready[stream_idx] = 1;
@@ -378,6 +440,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     int i;
     int output_hit = 0;
 
+    /* 从media_buffer_pool中获取buffer */
     if (media_buffer_create_copy(h264_data, h264_len, &buffer) != 0)
     {
         LOG_ERROR("media_gateway_run failed: media_buffer_create_copy stream=%d size=%zu",
@@ -397,6 +460,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
 
     for (i = 0; i < ctx->output_count; ++i)
     {
+        /* 检查输出通道是否绑定到当前流 */
         if (ctx->output_stream_index[i] != stream_idx)
             continue;
         output_hit = 1;
@@ -430,9 +494,21 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     int output_hit = 0;
 
     if (!ctx || !frame || !audio_data || audio_len == 0)
+    {
+        LOG_ERROR("enqueue_audio_packet failed: invalid args ctx=%p frame=%p audio=%p len=%zu",
+                  (void *)ctx,
+                  (const void *)frame,
+                  (const void *)audio_data,
+                  audio_len);
         return -1;
+    }
     if (stream_idx < 0 || stream_idx >= ctx->config.stream_count)
+    {
+        LOG_ERROR("enqueue_audio_packet failed: invalid stream=%d stream_count=%d",
+                  stream_idx,
+                  ctx->config.stream_count);
         return -1;
+    }
 
     if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0)
     {
@@ -443,7 +519,7 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     }
 
     media_packet_init(&packet);
-    packet.frame_type = MEDIA_FRAME_TYPE_AUDIO;
+    packet.frame_type = MEDIA_FRAME_TYPE_AUDIO; /* 区分该帧是音频帧 */
     packet.codec = codec;
     packet.buffer = buffer;
     packet.frame_id = frame->frame_id;
@@ -485,7 +561,14 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     int ret;
 
     if (!ctx || !frame || !frame->data || frame->size == 0)
+    {
+        LOG_ERROR("media_gateway_process_audio failed: invalid args ctx=%p frame=%p data=%p size=%zu",
+                  (void *)ctx,
+                  (const void *)frame,
+                  frame ? (const void *)frame->data : NULL,
+                  frame ? frame->size : 0);
         return -1;
+    }
     if (!ctx->audio_encoder_ready)
         return 0;
     if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE || frame->channels != 1)
@@ -597,7 +680,12 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
         return 0;
 
     if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0)
+    {
+        LOG_ERROR("media_gateway_process_stream failed: ensure input stream=%d frame=%" PRIu64,
+                  stream_idx,
+                  frame ? frame->frame_id : 0);
         return -1;
+    }
 
     encode_ret = encode_stream_frame(ctx,
                                      state,
@@ -619,6 +707,11 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
     pthread_mutex_lock(&ctx->stats_lock);
     if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0)
     {
+        LOG_ERROR("media_gateway_process_stream failed: enqueue stream=%d frame=%" PRIu64 " size=%zu key=%d",
+                  stream_idx,
+                  frame->frame_id,
+                  h264_len,
+                  is_key_frame);
         pthread_mutex_unlock(&ctx->stats_lock);
         return -1;
     }

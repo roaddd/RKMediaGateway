@@ -3,7 +3,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <pthread.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,11 +22,12 @@ typedef enum {
     MEDIA_CODEC_G711U = 5      /* G.711 mu-law 音频 */
 } MediaCodecType;
 
-typedef struct {
+typedef struct MediaBuffer {
     uint8_t *data;        /* 实际媒体数据起始地址 */
     size_t size;          /* 缓冲区字节数 */
-    int ref_count;        /* 引用计数，用于共享底层数据 */
-    pthread_mutex_t lock; /* 保护引用计数的互斥锁 */
+    size_t capacity;      /* 当前 data 已分配容量，用于池化复用 */
+    int ref_count;        /* 引用计数，通过原子操作更新 */
+    struct MediaBuffer *pool_next; /* buffer 池空闲链表指针 */
 } MediaBuffer;
 
 typedef struct {

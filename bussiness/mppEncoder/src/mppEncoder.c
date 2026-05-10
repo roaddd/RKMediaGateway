@@ -1,4 +1,5 @@
 ﻿#include "mppEncoder.h"
+#include "logger.h"
 #include "mpp_meta.h"
 #include "rk_mpi_cmd.h"
 
@@ -17,7 +18,7 @@
  * @return {static void}
  */
 static void mpp_log_error(const char *msg, MPP_RET ret) {
-    fprintf(stderr, "[ERROR] %s: ret=%d\n", msg, ret);
+    LOG_ERROR("%s: ret=%d", msg, ret);
 }
 
 /**
@@ -34,7 +35,7 @@ static int ensure_packet_cache(MppEncoderCtx *enc, size_t need_size) {
 
     uint8_t *new_buf = (uint8_t *)realloc(enc->packet_cache, need_size);
     if (!new_buf) {
-        fprintf(stderr, "[ERROR] realloc packet cache failed\n");
+        LOG_ERROR("ensure_packet_cache failed: realloc need=%zu", need_size);
         return -1;
     }
 
@@ -96,7 +97,13 @@ static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint
  */
 int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop, const MppEncoderOptions *options) {
     if (!enc || width <= 0 || height <= 0 || fps <= 0 || bitrate <= 0 || gop <= 0) {
-        fprintf(stderr, "[ERROR] invalid encoder init parameters\n");
+        LOG_ERROR("mpp_encoder_init failed: invalid params enc=%p size=%dx%d fps=%d bitrate=%d gop=%d",
+                  (void *)enc,
+                  width,
+                  height,
+                  fps,
+                  bitrate,
+                  gop);
         return -1;
     }
 
@@ -269,19 +276,27 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     if (!enc || !enc->ctx || !nv12_data || !h264_data || !h264_len) {
+        LOG_ERROR("mpp_encoder_encode_frame failed: invalid args enc=%p ctx=%p nv12=%p h264_data=%p h264_len=%p",
+                  (void *)enc,
+                  enc ? (void *)enc->ctx : NULL,
+                  (const void *)nv12_data,
+                  (void *)h264_data,
+                  (void *)h264_len);
         return -1;
     }
 
     // 采集侧通常给紧凑 NV12（width*height*1.5），这里按有效图像大小做校验。
     size_t valid_nv12_size = (size_t)enc->width * enc->height * 3 / 2;
     if (nv12_len < valid_nv12_size) {
-        fprintf(stderr, "[ERROR] input NV12 len too small: got=%zu need=%zu\n", nv12_len, valid_nv12_size);
+        LOG_ERROR("mpp_encoder_encode_frame failed: input NV12 len too small got=%zu need=%zu",
+                  nv12_len,
+                  valid_nv12_size);
         return -1;
     }
 
     void *frame_ptr = mpp_buffer_get_ptr(enc->frame_buffer);
     if (!frame_ptr) {
-        fprintf(stderr, "[ERROR] mpp_buffer_get_ptr failed\n");
+        LOG_ERROR("mpp_encoder_encode_frame failed: mpp_buffer_get_ptr");
         return -1;
     }
 
@@ -299,7 +314,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     // 尤其是客户端中途接入或网络抖动后的恢复速度会明显更快。
     if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
         if (mpp_encoder_request_idr(enc) != 0) {
-            fprintf(stderr, "[WARN] periodic IDR request failed\n");
+            LOG_WARN("mpp_encoder_encode_frame: periodic IDR request failed");
         }
     }
 
@@ -372,6 +387,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     if (ensure_packet_cache(enc, packet_len) != 0) {
+        LOG_ERROR("mpp_encoder_encode_frame failed: ensure packet cache len=%zu", packet_len);
         mpp_packet_deinit(&packet);
         return -1;
     }
@@ -406,6 +422,10 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 int mpp_encoder_request_idr(MppEncoderCtx *enc) {
     MPP_RET ret;
     if (!enc || !enc->ctx || !enc->mpi) {
+        LOG_ERROR("mpp_encoder_request_idr failed: invalid args enc=%p ctx=%p mpi=%p",
+                  (void *)enc,
+                  enc ? (void *)enc->ctx : NULL,
+                  enc ? (void *)enc->mpi : NULL);
         return -1;
     }
     ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);

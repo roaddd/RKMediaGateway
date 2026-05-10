@@ -45,7 +45,10 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline)
 {
     int ret;
     if (!pipeline)
+    {
+        LOG_ERROR("media_gateway_pipeline_get_ret failed: pipeline is NULL");
         return -1;
+    }
     if (!pipeline->ret_lock_ready)
         return pipeline->ret;
     pthread_mutex_lock(&pipeline->ret_lock);
@@ -60,12 +63,19 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline)
 static int video_input_init(VideoEncodeInput *input)
 {
     if (!input)
+    {
+        LOG_ERROR("video_input_init failed: input is NULL");
         return -1;
+    }
     memset(input, 0, sizeof(*input));
     if (pthread_mutex_init(&input->lock, NULL) != 0)
+    {
+        LOG_ERROR("video_input_init failed: pthread_mutex_init");
         return -1;
+    }
     if (pthread_cond_init(&input->cond, NULL) != 0)
     {
+        LOG_ERROR("video_input_init failed: pthread_cond_init");
         pthread_mutex_destroy(&input->lock);
         return -1;
     }
@@ -115,7 +125,14 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
     uint8_t *new_data;
 
     if (!input || !frame || !frame->raw_frame || frame->raw_len <= 0)
+    {
+        LOG_ERROR("media_gateway_video_input_publish failed: invalid args input=%p frame=%p raw=%p len=%d",
+                  (void *)input,
+                  (const void *)frame,
+                  frame ? (const void *)frame->raw_frame : NULL,
+                  frame ? frame->raw_len : 0);
         return -1;
+    }
 
     need_size = (size_t)frame->raw_len;
     pthread_mutex_lock(&input->lock);
@@ -129,6 +146,7 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
         new_data = (uint8_t *)realloc(input->data, need_size);
         if (!new_data)
         {
+            LOG_ERROR("media_gateway_video_input_publish failed: realloc need=%zu", need_size);
             pthread_mutex_unlock(&input->lock);
             return -1;
         }
@@ -161,7 +179,14 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
     uint8_t *new_data;
 
     if (!input || !frame || !local_data || !local_capacity)
+    {
+        LOG_ERROR("video_input_acquire_copy failed: invalid args input=%p frame=%p local_data=%p capacity=%p",
+                  (void *)input,
+                  (void *)frame,
+                  (void *)local_data,
+                  (void *)local_capacity);
         return -1;
+    }
     make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&input->lock);
@@ -186,13 +211,14 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
         new_data = (uint8_t *)realloc(*local_data, need_size);
         if (!new_data)
         {
+            LOG_ERROR("video_input_acquire_copy failed: realloc need=%zu", need_size);
             pthread_mutex_unlock(&input->lock);
             return -1;
         }
         *local_data = new_data;
         *local_capacity = need_size;
     }
-    memcpy(*local_data, input->data, need_size);
+    memcpy(*local_data, input->data, need_size); /* 这里有一次内存复制， */
     *frame = input->frame;
     frame->raw_frame = *local_data;
     input->valid = 0;
@@ -206,7 +232,10 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
 static int audio_queue_init(AudioEncodeQueue *queue, int capacity)
 {
     if (!queue)
+    {
+        LOG_ERROR("audio_queue_init failed: queue is NULL");
         return -1;
+    }
     if (capacity <= 0)
         capacity = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
     if (capacity > AUDIO_FRAME_SOURCE_MAX_SLOTS)
@@ -214,16 +243,21 @@ static int audio_queue_init(AudioEncodeQueue *queue, int capacity)
     memset(queue, 0, sizeof(*queue));
     queue->slots = (AudioEncodeSlot *)calloc((size_t)capacity, sizeof(AudioEncodeSlot));
     if (!queue->slots)
+    {
+        LOG_ERROR("audio_queue_init failed: calloc slots capacity=%d", capacity);
         return -1;
+    }
     queue->capacity = capacity;
     if (pthread_mutex_init(&queue->lock, NULL) != 0)
     {
+        LOG_ERROR("audio_queue_init failed: pthread_mutex_init");
         free(queue->slots);
         memset(queue, 0, sizeof(*queue));
         return -1;
     }
     if (pthread_cond_init(&queue->cond, NULL) != 0)
     {
+        LOG_ERROR("audio_queue_init failed: pthread_cond_init");
         pthread_mutex_destroy(&queue->lock);
         free(queue->slots);
         memset(queue, 0, sizeof(*queue));
@@ -282,7 +316,14 @@ int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame 
     AudioEncodeSlot *slot;
 
     if (!queue || !frame || !frame->data || frame->size == 0)
+    {
+        LOG_ERROR("media_gateway_audio_queue_publish failed: invalid args queue=%p frame=%p data=%p size=%zu",
+                  (void *)queue,
+                  (const void *)frame,
+                  frame ? (const void *)frame->data : NULL,
+                  frame ? frame->size : 0);
         return -1;
+    }
 
     need_size = frame->size;
     pthread_mutex_lock(&queue->lock);
@@ -304,6 +345,7 @@ int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame 
         new_data = (uint8_t *)realloc(slot->data, need_size);
         if (!new_data)
         {
+            LOG_ERROR("media_gateway_audio_queue_publish failed: realloc need=%zu", need_size);
             pthread_mutex_unlock(&queue->lock);
             return -1;
         }
@@ -335,7 +377,14 @@ static int audio_queue_acquire_copy(AudioEncodeQueue *queue,
     uint8_t *new_data;
 
     if (!queue || !frame || !local_data || !local_capacity)
+    {
+        LOG_ERROR("audio_queue_acquire_copy failed: invalid args queue=%p frame=%p local_data=%p capacity=%p",
+                  (void *)queue,
+                  (void *)frame,
+                  (void *)local_data,
+                  (void *)local_capacity);
         return -1;
+    }
     make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&queue->lock);
@@ -361,6 +410,7 @@ static int audio_queue_acquire_copy(AudioEncodeQueue *queue,
         new_data = (uint8_t *)realloc(*local_data, need_size);
         if (!new_data)
         {
+            LOG_ERROR("audio_queue_acquire_copy failed: realloc need=%zu", need_size);
             pthread_mutex_unlock(&queue->lock);
             return -1;
         }
@@ -392,6 +442,7 @@ static void *video_encode_thread_main(void *arg)
     free(thread_arg);
     while (pipeline->ctx->running)
     {
+        /* TODO:这里的编码线程输入队列只有一个元素吗，会不会造成有延迟，因为视频采集线程和编码线程都竞争这一个元素 */
         ret = video_input_acquire_copy(&pipeline->video_inputs[stream_idx],
                                        &frame,
                                        &local_data,
@@ -462,11 +513,19 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline, MediaGatewayCtx 
 {
     int i;
     if (!pipeline || !ctx)
+    {
+        LOG_ERROR("media_gateway_pipeline_init failed: invalid args pipeline=%p ctx=%p",
+                  (void *)pipeline,
+                  (void *)ctx);
         return -1;
+    }
     memset(pipeline, 0, sizeof(*pipeline));
     pipeline->ctx = ctx;
     if (pthread_mutex_init(&pipeline->ret_lock, NULL) != 0)
+    {
+        LOG_ERROR("media_gateway_pipeline_init failed: pthread_mutex_init ret_lock");
         return -1;
+    }
     pipeline->ret_lock_ready = 1;
     for (i = 0; i < ctx->config.stream_count; ++i)
     {
@@ -526,7 +585,12 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
 {
     int i;
     if (!pipeline || !pipeline->ctx)
+    {
+        LOG_ERROR("media_gateway_pipeline_start_workers failed: invalid pipeline=%p ctx=%p",
+                  (void *)pipeline,
+                  pipeline ? (void *)pipeline->ctx : NULL);
         return -1;
+    }
     for (i = 0; i < pipeline->ctx->config.stream_count; ++i)
     {
         VideoEncodeThreadArg *arg;
@@ -534,7 +598,10 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
             continue;
         arg = (VideoEncodeThreadArg *)calloc(1, sizeof(*arg));
         if (!arg)
+        {
+            LOG_ERROR("media_gateway_pipeline_start_workers failed: alloc video arg stream=%d", i);
             return -1;
+        }
         arg->pipeline = pipeline;
         arg->stream_idx = i;
         if (pthread_create(&pipeline->video_threads[i], NULL, video_encode_thread_main, arg) != 0)

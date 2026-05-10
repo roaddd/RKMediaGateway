@@ -1,10 +1,12 @@
-﻿#include "../inc/rtmpOutput.h"
+#include "../inc/rtmpOutput.h"
 
 #include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "logger.h"
 
 #if defined(ENABLE_RTMP_LIBRTMP)
 #include "librtmp/rtmp.h"
@@ -196,7 +198,7 @@ static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *s
     uint8_t *copy;
 
     if (!dst || !dst_len || !src || src_len == 0) {
-        fprintf(stderr, "[RTMP][ERROR] update_parameter_set invalid args\n");
+        LOG_ERROR("[RTMP][ERROR] update_parameter_set invalid args\n");
         return -1;
     }
 
@@ -209,7 +211,7 @@ static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *s
 
     copy = (uint8_t *)malloc(src_len);
     if (!copy) {
-        fprintf(stderr, "[RTMP][ERROR] update_parameter_set alloc failed size=%zu\n", src_len);
+        LOG_ERROR("[RTMP][ERROR] update_parameter_set alloc failed size=%zu\n", src_len);
         return -1;
     }
     memcpy(copy, src, src_len);
@@ -234,7 +236,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
     size_t capacity = 0;
 
     if (!data || len == 0 || !out_nalus || !out_count) {
-        fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus invalid args len=%zu\n", len);
+        LOG_ERROR("[RTMP][ERROR] annexb_split_nalus invalid args len=%zu\n", len);
         return -1;
     }
 
@@ -242,7 +244,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
     if (find_start_code(data, len, 0, &first, &code_len) != 0) {
         nalus = (NaluView *)calloc(1, sizeof(*nalus));
         if (!nalus) {
-            fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus alloc fallback nalu failed\n");
+            LOG_ERROR("[RTMP][ERROR] annexb_split_nalus alloc fallback nalu failed\n");
             return -1;
         }
         nalus[0].data = (uint8_t *)data;
@@ -269,7 +271,7 @@ static int annexb_split_nalus(const uint8_t *data, size_t len, NaluView **out_na
                 capacity = (capacity == 0) ? 4 : capacity * 2;
                 tmp = (NaluView *)realloc(nalus, capacity * sizeof(*nalus));
                 if (!tmp) {
-                    fprintf(stderr, "[RTMP][ERROR] annexb_split_nalus realloc failed capacity=%zu\n", capacity);
+                    LOG_ERROR("[RTMP][ERROR] annexb_split_nalus realloc failed capacity=%zu\n", capacity);
                     free(nalus);
                     return -1;
                 }
@@ -307,7 +309,7 @@ static int rtmp_cache_parameter_sets(RtmpOutputImpl *impl, const NaluView *nalus
         
         if (nalu_type == 7) {
             if (update_parameter_set(&impl->sps, &impl->sps_len, nalus[i].data, nalus[i].size, &changed) != 0) {
-                fprintf(stderr, "[RTMP][ERROR] cache SPS failed size=%zu\n", nalus[i].size);
+                LOG_ERROR("[RTMP][ERROR] cache SPS failed size=%zu\n", nalus[i].size);
                 return -1;
             }
             if (changed) {
@@ -315,7 +317,7 @@ static int rtmp_cache_parameter_sets(RtmpOutputImpl *impl, const NaluView *nalus
             }
         } else if (nalu_type == 8) {
             if (update_parameter_set(&impl->pps, &impl->pps_len, nalus[i].data, nalus[i].size, &changed) != 0) {
-                fprintf(stderr, "[RTMP][ERROR] cache PPS failed size=%zu\n", nalus[i].size);
+                LOG_ERROR("[RTMP][ERROR] cache PPS failed size=%zu\n", nalus[i].size);
                 return -1;
             }
             if (changed) {
@@ -334,13 +336,13 @@ static int rtmp_send_info_body(RtmpOutputImpl *impl, const uint8_t *body, size_t
     int ret;
 
     if (!impl || !impl->rtmp || !body || body_size == 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_info_body invalid args body_size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_info_body invalid args body_size=%zu\n", body_size);
         return -1;
     }
 
     RTMPPacket_Reset(&packet);
     if (!RTMPPacket_Alloc(&packet, (int)body_size)) {
-        fprintf(stderr, "[RTMP][ERROR] send_info_body packet alloc failed size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_info_body packet alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -356,7 +358,7 @@ static int rtmp_send_info_body(RtmpOutputImpl *impl, const uint8_t *body, size_t
     ret = RTMP_SendPacket(impl->rtmp, &packet, 1);
     RTMPPacket_Free(&packet);
     if (!ret) {
-        fprintf(stderr, "[RTMP] event=send_info_failed stream_id=%u body_size=%zu ts_ms=%u\n",
+        LOG_ERROR("[RTMP] event=send_info_failed stream_id=%u body_size=%zu ts_ms=%u\n",
                 impl->stream_id,
                 body_size,
                 timestamp_ms);
@@ -371,13 +373,13 @@ static int rtmp_send_video_body(RtmpOutputImpl *impl, const uint8_t *body, size_
     int ret;
 
     if (!impl || !impl->rtmp || !body || body_size == 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_video_body invalid args body_size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_video_body invalid args body_size=%zu\n", body_size);
         return -1;
     }
 
     RTMPPacket_Reset(&packet);
     if (!RTMPPacket_Alloc(&packet, (int)body_size)) {
-        fprintf(stderr, "[RTMP][ERROR] send_video_body packet alloc failed size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_video_body packet alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -393,7 +395,7 @@ static int rtmp_send_video_body(RtmpOutputImpl *impl, const uint8_t *body, size_
     ret = RTMP_SendPacket(impl->rtmp, &packet, 1);
     RTMPPacket_Free(&packet);
     if (!ret) {
-        fprintf(stderr, "[RTMP] event=send_video_failed stream_id=%u body_size=%zu ts_ms=%u\n",
+        LOG_ERROR("[RTMP] event=send_video_failed stream_id=%u body_size=%zu ts_ms=%u\n",
                 impl->stream_id,
                 body_size,
                 timestamp_ms);
@@ -408,7 +410,7 @@ static int rtmp_send_on_metadata(RtmpOutputImpl *impl) {
     uint8_t *p = body;
 
     if (!impl) {
-        fprintf(stderr, "[RTMP][ERROR] send_on_metadata impl is NULL\n");
+        LOG_ERROR("[RTMP][ERROR] send_on_metadata impl is NULL\n");
         return -1;
     }
 
@@ -430,7 +432,7 @@ static int rtmp_send_on_metadata(RtmpOutputImpl *impl) {
     p = amf_write_object_end(p);
 
     if (rtmp_send_info_body(impl, body, (size_t)(p - body), 0) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_on_metadata failed\n");
+        LOG_ERROR("[RTMP][ERROR] send_on_metadata failed\n");
         return -1;
     }
 
@@ -452,7 +454,7 @@ static int rtmp_send_avc_sequence_header(RtmpOutputImpl *impl, uint32_t timestam
     size_t offset = 0;
 
     if (!impl || !impl->sps || !impl->pps || impl->sps_len < 4 || impl->pps_len == 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header SPS/PPS not ready sps=%zu pps=%zu\n",
+        LOG_ERROR("[RTMP][ERROR] send_avc_sequence_header SPS/PPS not ready sps=%zu pps=%zu\n",
                 impl ? impl->sps_len : 0,
                 impl ? impl->pps_len : 0);
         return -1;
@@ -461,7 +463,7 @@ static int rtmp_send_avc_sequence_header(RtmpOutputImpl *impl, uint32_t timestam
     body_size = 5 + 6 + 2 + impl->sps_len + 1 + 2 + impl->pps_len;
     body = (uint8_t *)malloc(body_size);
     if (!body) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header alloc failed size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_avc_sequence_header alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -489,14 +491,14 @@ static int rtmp_send_avc_sequence_header(RtmpOutputImpl *impl, uint32_t timestam
     offset += impl->pps_len;
 
     if (offset != body_size) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header size mismatch offset=%zu body_size=%zu\n",
+        LOG_ERROR("[RTMP][ERROR] send_avc_sequence_header size mismatch offset=%zu body_size=%zu\n",
                 offset, body_size);
         free(body);
         return -1;
     }
 
     if (rtmp_send_video_body(impl, body, body_size, timestamp_ms) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_sequence_header send failed ts_ms=%u\n", timestamp_ms);
+        LOG_ERROR("[RTMP][ERROR] send_avc_sequence_header send failed ts_ms=%u\n", timestamp_ms);
         free(body);
         return -1;
     }
@@ -542,7 +544,7 @@ static int rtmp_send_avc_nalus(RtmpOutputImpl *impl,
 
     body = (uint8_t *)malloc(body_size);
     if (!body) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus alloc failed size=%zu\n", body_size);
+        LOG_ERROR("[RTMP][ERROR] send_avc_nalus alloc failed size=%zu\n", body_size);
         return -1;
     }
 
@@ -569,14 +571,14 @@ static int rtmp_send_avc_nalus(RtmpOutputImpl *impl,
     }
 
     if (offset != body_size) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus size mismatch offset=%zu body_size=%zu\n",
+        LOG_ERROR("[RTMP][ERROR] send_avc_nalus size mismatch offset=%zu body_size=%zu\n",
                 offset, body_size);
         free(body);
         return -1;
     }
 
     if (rtmp_send_video_body(impl, body, body_size, timestamp_ms) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_avc_nalus send failed ts_ms=%u\n", timestamp_ms);
+        LOG_ERROR("[RTMP][ERROR] send_avc_nalus send failed ts_ms=%u\n", timestamp_ms);
         free(body);
         return -1;
     }
@@ -609,7 +611,7 @@ static int rtmp_output_start(MediaOutput *output) {
 
     
     if (!impl->config.publish_url || impl->config.publish_url[0] == '\0') {
-        fprintf(stderr, "[WARN] RTMP output disabled: publish_url is empty\n");
+        LOG_WARN("RTMP output disabled: publish_url is empty");
         return -1;
     }
 
@@ -625,7 +627,7 @@ static int rtmp_output_connect(MediaOutput *output) {
 #if defined(ENABLE_RTMP_LIBRTMP)
     
     if (!impl) {
-        fprintf(stderr, "[RTMP][ERROR] connect failed: impl is NULL\n");
+        LOG_ERROR("[RTMP][ERROR] connect failed: impl is NULL\n");
         return -1;
     }
     if (impl->rtmp) {
@@ -636,7 +638,7 @@ static int rtmp_output_connect(MediaOutput *output) {
 
     impl->rtmp = RTMP_Alloc();
     if (!impl->rtmp) {
-        fprintf(stderr, "[RTMP][ERROR] connect failed: RTMP_Alloc\n");
+        LOG_ERROR("[RTMP][ERROR] connect failed: RTMP_Alloc\n");
         return -1;
     }
     RTMP_Init(impl->rtmp);
@@ -645,7 +647,7 @@ static int rtmp_output_connect(MediaOutput *output) {
         : 3;
 
     if (!RTMP_SetupURL(impl->rtmp, (char *)impl->config.publish_url)) {
-        fprintf(stderr, "[RTMP] event=setup_url_failed url=%s\n", impl->config.publish_url);
+        LOG_ERROR("[RTMP] event=setup_url_failed url=%s\n", impl->config.publish_url);
         RTMP_Free(impl->rtmp);
         impl->rtmp = NULL;
         return -1;
@@ -654,7 +656,7 @@ static int rtmp_output_connect(MediaOutput *output) {
     RTMP_SetBufferMS(impl->rtmp, 0);
 
     if (!RTMP_Connect(impl->rtmp, NULL)) {
-        fprintf(stderr, "[RTMP] event=connect_failed url=%s timeout_s=%d\n",
+        LOG_ERROR("[RTMP] event=connect_failed url=%s timeout_s=%d\n",
                 impl->config.publish_url,
                 impl->rtmp->Link.timeout);
         RTMP_Close(impl->rtmp);
@@ -663,7 +665,7 @@ static int rtmp_output_connect(MediaOutput *output) {
         return -1;
     }
     if (!RTMP_ConnectStream(impl->rtmp, 0)) {
-        fprintf(stderr, "[RTMP] event=connect_stream_failed url=%s\n", impl->config.publish_url);
+        LOG_ERROR("[RTMP] event=connect_stream_failed url=%s\n", impl->config.publish_url);
         RTMP_Close(impl->rtmp);
         RTMP_Free(impl->rtmp);
         impl->rtmp = NULL;
@@ -682,7 +684,7 @@ static int rtmp_output_connect(MediaOutput *output) {
     return 0;
 #else
     (void)output;
-    fprintf(stderr, "[WARN] RTMP output requested but librtmp support is not compiled in\n");
+    LOG_WARN("RTMP output requested but librtmp support is not compiled in");
     return -1;
 #endif
 }
@@ -696,7 +698,7 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     int ret = -1;
 
     if (!impl || !impl->connected || !packet || !packet->buffer) {
-        fprintf(stderr, "[RTMP][ERROR] send_packet invalid args connected=%d packet=%p buffer=%p\n",
+        LOG_ERROR("[RTMP][ERROR] send_packet invalid args connected=%d packet=%p buffer=%p\n",
                 (impl && impl->connected) ? 1 : 0,
                 (void *)packet,
                 (void *)(packet ? packet->buffer : NULL));
@@ -709,7 +711,7 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
 #if defined(ENABLE_RTMP_LIBRTMP)
 
     if (annexb_split_nalus(packet->buffer->data, packet->buffer->size, &nalus, &nalu_count) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] send_packet split annexb failed frame=%" PRIu64 " size=%zu\n",
+        LOG_ERROR("[RTMP][ERROR] send_packet split annexb failed frame=%" PRIu64 " size=%zu\n",
                 packet->frame_id,
                 packet->buffer->size);
         return -1;
@@ -723,19 +725,19 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     /* 建链后的首个可发送视频帧负责补齐 metadata 和 sequence header。 */
     if (!impl->metadata_sent) {
         if (rtmp_send_on_metadata(impl) != 0) {
-            fprintf(stderr, "[RTMP] event=metadata_send_failed frame=%" PRIu64 "\n", packet->frame_id);
+            LOG_ERROR("[RTMP] event=metadata_send_failed frame=%" PRIu64 "\n", packet->frame_id);
             goto done;
         }
     }
     if (!impl->sequence_header_sent) {
         if (!impl->sps || !impl->pps) {
             
-            fprintf(stderr, "[WARN] RTMP skip frame=%" PRIu64 " because SPS/PPS not ready\n", packet->frame_id);
+            LOG_WARN("RTMP skip frame=%" PRIu64 " because SPS/PPS not ready", packet->frame_id);
             ret = 0;
             goto done;
         }
         if (rtmp_send_avc_sequence_header(impl, timestamp_ms) != 0) {
-            fprintf(stderr, "[RTMP] event=sequence_header_send_failed frame=%" PRIu64 "\n", packet->frame_id);
+            LOG_ERROR("[RTMP] event=sequence_header_send_failed frame=%" PRIu64 "\n", packet->frame_id);
             goto done;
         }
     }
@@ -744,7 +746,7 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     if (ret == 0) {
         impl->last_rtmp_ts_ms = timestamp_ms;
     } else {
-        fprintf(stderr, "[RTMP] event=video_payload_send_failed frame=%" PRIu64 " frame_type=%s ts_ms=%u\n",
+        LOG_ERROR("[RTMP] event=video_payload_send_failed frame=%" PRIu64 " frame_type=%s ts_ms=%u\n",
                 packet->frame_id,
                 rtmp_frame_kind(packet->is_key_frame),
                 timestamp_ms);
@@ -755,7 +757,7 @@ done:
 #else
     (void)output;
     (void)packet;
-    fprintf(stderr, "[RTMP][ERROR] send_packet failed: librtmp support is not compiled in\n");
+    LOG_ERROR("[RTMP][ERROR] send_packet failed: librtmp support is not compiled in\n");
     return -1;
 #endif
 }
@@ -811,13 +813,13 @@ int media_output_setup_rtmp(MediaOutput *output, const MediaOutputRtmpConfig *co
     RtmpOutputImpl *impl;
 
     if (!output) {
-        fprintf(stderr, "[RTMP][ERROR] output_setup failed: output is NULL\n");
+        LOG_ERROR("[RTMP][ERROR] output_setup failed: output is NULL\n");
         return -1;
     }
 
     impl = (RtmpOutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[RTMP][ERROR] output_setup failed: impl alloc\n");
+        LOG_ERROR("[RTMP][ERROR] output_setup failed: impl alloc\n");
         return -1;
     }
 
@@ -850,7 +852,7 @@ int media_output_setup_rtmp(MediaOutput *output, const MediaOutputRtmpConfig *co
     output_config.drop_until_keyframe_after_reconnect = 1;
 
     if (media_output_init(output, &output_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[RTMP][ERROR] output_setup failed: media_output_init name=%s\n",
+        LOG_ERROR("[RTMP][ERROR] output_setup failed: media_output_init name=%s\n",
                 impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;

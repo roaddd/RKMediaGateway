@@ -277,6 +277,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     }
 
     if (source->fatal_error) {
+        LOG_ERROR("audio frame source acquire failed: fatal error");
         pthread_mutex_unlock(&source->lock);
         return -1;
     }

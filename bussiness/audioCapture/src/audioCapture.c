@@ -1,5 +1,7 @@
 #include "audioCapture.h"
 
+#include "logger.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,11 +38,11 @@ static int audio_capture_normalize_config(AudioCaptureConfig *dst, const AudioCa
     if (dst->buffer_periods <= 0) dst->buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
 
     if (dst->channels > 2) {
-        fprintf(stderr, "[AUDIO][ERROR] unsupported channel count=%d\n", dst->channels);
+        LOG_ERROR("audio_capture_normalize_config failed: unsupported channel count=%d", dst->channels);
         return -1;
     }
     if (dst->format != AUDIO_SAMPLE_FORMAT_S16LE) {
-        fprintf(stderr, "[AUDIO][ERROR] unsupported sample format=%d\n", dst->format);
+        LOG_ERROR("audio_capture_normalize_config failed: unsupported sample format=%d", dst->format);
         return -1;
     }
     if (dst->period_frames < 40) {
@@ -78,6 +80,9 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
     int ret;
 
     if (!ctx || !ctx->pcm_handle) {
+        LOG_ERROR("audio_capture_recover failed: invalid ctx=%p pcm=%p",
+                  (void *)ctx,
+                  ctx ? ctx->pcm_handle : NULL);
         return -1;
     }
     pcm = (snd_pcm_t *)ctx->pcm_handle;
@@ -86,7 +91,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
         ctx->xrun_count++;
         ret = snd_pcm_prepare(pcm);
         if (ret < 0) {
-            fprintf(stderr, "[AUDIO][ERROR] xrun prepare failed: %s\n", snd_strerror(ret));
+            LOG_ERROR("audio_capture_recover failed: xrun prepare %s", snd_strerror(ret));
             return -1;
         }
         return 0;
@@ -99,7 +104,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
         if (ret < 0) {
             ret = snd_pcm_prepare(pcm);
             if (ret < 0) {
-                fprintf(stderr, "[AUDIO][ERROR] suspend prepare failed: %s\n", snd_strerror(ret));
+                LOG_ERROR("audio_capture_recover failed: suspend prepare %s", snd_strerror(ret));
                 return -1;
             }
         }
@@ -109,7 +114,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
         return 0;
     }
 
-    fprintf(stderr, "[AUDIO][ERROR] unrecoverable read error: %s\n", snd_strerror(err));
+    LOG_ERROR("audio_capture_recover failed: unrecoverable read error %s", snd_strerror(err));
     return -1;
 }
 #endif
@@ -124,16 +129,19 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
     size_t period_buffer_size;
 
     if (!ctx) {
+        LOG_ERROR("audio_capture_init failed: ctx is NULL");
         return -1;
     }
     memset(ctx, 0, sizeof(*ctx));
 
     if (audio_capture_normalize_config(&normalized, config) != 0) {
+        LOG_ERROR("audio_capture_init failed: normalize config");
         return -1;
     }
     /* 获取每个声道的一个采样点占多少字节 */
     bytes_per_sample = audio_capture_bytes_per_sample(normalized.format);
     if (bytes_per_sample <= 0) {
+        LOG_ERROR("audio_capture_init failed: bytes_per_sample format=%d", normalized.format);
         return -1;
     }
     /**
@@ -142,7 +150,7 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
     period_buffer_size = (size_t)normalized.period_frames * normalized.channels * bytes_per_sample;
     ctx->period_buffer = (uint8_t *)malloc(period_buffer_size);
     if (!ctx->period_buffer) {
-        fprintf(stderr, "[AUDIO][ERROR] period buffer alloc failed size=%zu\n", period_buffer_size);
+        LOG_ERROR("audio_capture_init failed: period buffer alloc size=%zu", period_buffer_size);
         return -1;
     }
     ctx->period_buffer_size = period_buffer_size;
@@ -164,9 +172,9 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
 
         ret = snd_pcm_open(&pcm, normalized.device_name, SND_PCM_STREAM_CAPTURE, 0);
         if (ret < 0) {
-            fprintf(stderr, "[AUDIO][ERROR] open device=%s failed: %s\n",
-                    normalized.device_name,
-                    snd_strerror(ret));
+            LOG_ERROR("audio_capture_init failed: open device=%s err=%s",
+                      normalized.device_name,
+                      snd_strerror(ret));
             audio_capture_deinit(ctx);
             return -1;
         }
@@ -222,14 +230,14 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
         return 0;
 
 alsa_failed:
-        fprintf(stderr, "[AUDIO][ERROR] configure device=%s failed: %s\n",
-                normalized.device_name,
-                snd_strerror(ret));
+        LOG_ERROR("audio_capture_init failed: configure device=%s err=%s",
+                  normalized.device_name,
+                  snd_strerror(ret));
         audio_capture_deinit(ctx);
         return -1;
     }
 #else
-    fprintf(stderr, "[AUDIO][ERROR] ALSA support is not compiled in\n");
+    LOG_ERROR("audio_capture_init failed: ALSA support is not compiled in");
     audio_capture_deinit(ctx);
     return -1;
 #endif
@@ -248,6 +256,11 @@ int audio_capture_read_frame(AudioCaptureCtx *ctx, AudioCaptureFrame *frame) {
     uint64_t end_us;
 
     if (!ctx || !ctx->initialized || !ctx->pcm_handle || !frame) {
+        LOG_ERROR("audio_capture_read_frame failed: invalid args ctx=%p initialized=%d pcm=%p frame=%p",
+                  (void *)ctx,
+                  ctx ? ctx->initialized : 0,
+                  ctx ? ctx->pcm_handle : NULL,
+                  (void *)frame);
         return -1;
     }
     pcm = (snd_pcm_t *)ctx->pcm_handle;
@@ -261,6 +274,7 @@ int audio_capture_read_frame(AudioCaptureCtx *ctx, AudioCaptureFrame *frame) {
         got = snd_pcm_readi(pcm, dst, (snd_pcm_uframes_t)frames_left);
         if (got < 0) {
             if (audio_capture_recover(ctx, (int)got) != 0) {
+                LOG_ERROR("audio_capture_read_frame failed: recover got=%ld", (long)got);
                 return -1;
             }
             continue;
@@ -292,6 +306,7 @@ int audio_capture_read_frame(AudioCaptureCtx *ctx, AudioCaptureFrame *frame) {
 #else
     (void)ctx;
     (void)frame;
+    LOG_ERROR("audio_capture_read_frame failed: ALSA support is not compiled in");
     return -1;
 #endif
 }

@@ -42,10 +42,10 @@ typedef struct {
     MediaGatewayPipeline pipeline;                               /* 运行期音视频编码流水线。 */
     MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 视频帧源线程对象。 */
     int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];  /* 对应视频帧源是否已初始化。 */
-    int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 对应视频帧源是否已启动。 */
+    int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 对应视频帧源线程是否已启动。 */
     AudioFrameSource audio_source;                               /* 音频帧源线程对象。 */
     int audio_source_inited;                                     /* 音频帧源是否已初始化。 */
-    int audio_source_started;                                    /* 音频帧源是否已启动。 */
+    int audio_source_started;                                    /* 音频帧源线程是否已启动。 */
 } MediaGatewayRunResources;
 
 /**
@@ -359,12 +359,23 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
     if (s->enable_rtsp)
     {
         if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: RTSP output limit stream=%d count=%d max=%d",
+                      stream_idx,
+                      ctx->output_count,
+                      MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
+        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
         output_config.protocol.rtsp = s->rtsp;
         if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: setup RTSP stream=%d name=%s",
+                      stream_idx,
+                      s->name ? s->name : "unknown");
             return -1;
+        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->rtsp_output_index[stream_idx] = ctx->output_count;
         ctx->output_count++;
@@ -373,12 +384,23 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
     {
 #if defined(ENABLE_RTMP_OUTPUT)
         if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: RTMP output limit stream=%d count=%d max=%d",
+                      stream_idx,
+                      ctx->output_count,
+                      MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
+        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_RTMP;
         output_config.protocol.rtmp = s->rtmp;
         if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: setup RTMP stream=%d name=%s",
+                      stream_idx,
+                      s->name ? s->name : "unknown");
             return -1;
+        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->output_count++;
 #endif
@@ -386,12 +408,23 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
     if (s->enable_gb28181)
     {
         if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: GB28181 output limit stream=%d count=%d max=%d",
+                      stream_idx,
+                      ctx->output_count,
+                      MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
+        }
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_GB28181;
         output_config.protocol.gb28181 = s->gb28181;
         if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: setup GB28181 stream=%d name=%s",
+                      stream_idx,
+                      s->name ? s->name : "unknown");
             return -1;
+        }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->gb28181_output_index[stream_idx] = ctx->output_count;
         ctx->output_count++;
@@ -628,9 +661,15 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
 static int init_gateway_outputs(MediaGatewayCtx *ctx)
 {
     if (setup_outputs(ctx) != 0)
+    {
+        LOG_ERROR("init_gateway_outputs failed: setup outputs");
         return -1;
+    }
     if (start_outputs(ctx) != 0)
+    {
+        LOG_ERROR("init_gateway_outputs failed: start outputs");
         return -1;
+    }
     return 0;
 }
 
@@ -799,7 +838,7 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
 
     if (!res->frame_source_started[source_idx])
         return 0;
-
+    /* 从视频采集线程队列里获取最新帧 */
     acquire_ret = media_frame_source_acquire_latest(&res->frame_sources[source_idx], &frame, &slot_index, 10);
     if (acquire_ret < 0)
     {
@@ -816,6 +855,7 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
             continue;
         if (ctx->config.streams[stream_idx].source_index != source_idx)
             continue;
+        /* 将最新帧发布到对应的视频编码线程输入队列 */
         if (media_gateway_video_input_publish(&res->pipeline.video_inputs[stream_idx], &frame) != 0)
         {
             LOG_ERROR("media_gateway_run failed: publish video frame source=%d stream=%d",
@@ -882,14 +922,24 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
     *got_frame = 0;
     for (source_idx = 0; source_idx < ctx->config.capture_source_count; ++source_idx)
     {
+        /* 从视频采集线程队列里面获取最新帧并放入编码线程得到输入队列 */
         if (dispatch_video_source_once(ctx, res, source_idx, got_frame) != 0)
+        {
+            LOG_ERROR("run_gateway_once failed: dispatch video source=%d", source_idx);
             return -1;
+        }
     }
 
     if (drain_audio_source_once(ctx, res, got_frame) != 0)
+    {
+        LOG_ERROR("run_gateway_once failed: drain audio source");
         return -1;
+    }
     if (media_gateway_pipeline_get_ret(&res->pipeline) != 0)
+    {
+        LOG_ERROR("run_gateway_once failed: pipeline ret");
         return -1;
+    }
 
     pthread_mutex_lock(&ctx->stats_lock);
     media_gateway_log_throughput_if_due(ctx);
@@ -939,17 +989,20 @@ int media_gateway_run(MediaGatewayCtx *ctx)
         ret = -1;
         goto out;
     }
+    /* 启动所有的视频编码线程和音频编码线程 */
     if (media_gateway_pipeline_start_workers(&res.pipeline) != 0)
     {
         LOG_ERROR("media_gateway_run failed: start pipeline workers");
         ret = -1;
         goto out;
     }
+    /* 启动视频采集线程 */
     if (start_run_frame_sources(ctx, &res) != 0)
     {
         ret = -1;
         goto out;
     }
+    /* 启动音频采集线程 */
     if (start_run_audio_source(ctx, &res) != 0)
     {
         ret = -1;

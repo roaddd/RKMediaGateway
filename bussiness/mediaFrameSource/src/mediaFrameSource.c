@@ -36,7 +36,10 @@ static void frame_source_make_abs_timeout(struct timespec *ts, int timeout_ms) {
 
 static int frame_source_slot_ensure_capacity(MediaFrameSourceSlot *slot, size_t need_size) {
     uint8_t *new_data;
-    if (!slot) return -1;
+    if (!slot) {
+        LOG_ERROR("frame source ensure slot capacity failed: slot is NULL need=%zu", need_size);
+        return -1;
+    }
     if (slot->capacity >= need_size) return 0;
 
     new_data = (uint8_t *)realloc(slot->data, need_size);
@@ -83,6 +86,7 @@ static int frame_source_find_write_slot(MediaFrameSource *source) {
         }
     }
 
+    LOG_ERROR("frame source find writable slot failed: no writable slot");
     return -1;
 }
 
@@ -120,6 +124,7 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
 
     slot = &source->slots[slot_idx];
     if (frame_source_slot_ensure_capacity(slot, copy_len) != 0) {
+        LOG_ERROR("frame source publish frame failed: ensure slot capacity slot=%d size=%zu", slot_idx, copy_len);
         source->fatal_error = 1;
         source->running = 0;
         pthread_cond_broadcast(&source->cond);
@@ -127,7 +132,7 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
         return -1;
     }
 
-    memcpy(slot->data, src_frame->raw_frame, copy_len);
+    memcpy(slot->data, src_frame->raw_frame, copy_len); /* 从源帧复制数据到采集线程的队列 */
     slot->frame = *src_frame;
     slot->frame.raw_frame = slot->data;
     slot->seq = source->next_seq++;
@@ -262,6 +267,7 @@ int media_frame_source_acquire_latest(MediaFrameSource *source,
     frame_source_make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&source->lock);
+    /* TODO:这里视频帧没有最新帧时，会阻塞音频帧放入编码队列吗，有必要优化吗 */
     while (!source->fatal_error && source->running &&
            (source->latest_slot < 0 ||
             !source->slots[source->latest_slot].valid ||
@@ -274,6 +280,7 @@ int media_frame_source_acquire_latest(MediaFrameSource *source,
     }
 
     if (source->fatal_error) {
+        LOG_ERROR("frame source acquire_latest failed: fatal error");
         pthread_mutex_unlock(&source->lock);
         return -1;
     }

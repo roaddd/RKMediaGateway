@@ -1,5 +1,7 @@
 #include "v4l2Capture.h"
 
+#include "logger.h"
+
 #include <inttypes.h>
 #include <time.h>
 
@@ -14,7 +16,7 @@
  * @return {static void}
  */
 static void print_v4l2_error(const char *msg, int ret) {
-    fprintf(stderr, "[ERROR] %s: %s (errno=%d)\n", msg, strerror(-ret), ret);
+    LOG_ERROR("%s: %s (errno=%d)", msg, strerror(-ret), ret);
 }
 
 /**
@@ -160,7 +162,7 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     int i;
 
     if (!ctx) {
-        fprintf(stderr, "[ERROR] ctx is NULL\n");
+        LOG_ERROR("v4l2_capture_init_with_config failed: ctx is NULL");
         return -1;
     }
     device_path = (config && config->device_path && config->device_path[0] != '\0') ? config->device_path : CAM_DEV_PATH;
@@ -175,7 +177,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
 
     ctx->fd = open(device_path, O_RDWR, 0);
     if (ctx->fd < 0) {
-        perror("[ERROR] open camera dev failed");
+        LOG_ERROR("v4l2_capture_init_with_config failed: open device=%s errno=%d(%s)",
+                  device_path,
+                  errno,
+                  strerror(errno));
         return -1;
     }
     printf("[INFO] open camera %s success\n", device_path);
@@ -188,13 +193,13 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         return -1;
     }
     if (!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE)) {
-        fprintf(stderr, "[ERROR] device not support video capture\n");
+        LOG_ERROR("v4l2_capture_init_with_config failed: device not support video capture");
         close(ctx->fd);
         ctx->fd = -1;
         return -1;
     }
     if (!(cap.capabilities & V4L2_CAP_STREAMING)) {
-        fprintf(stderr, "[ERROR] device not support streaming capture\n");
+        LOG_ERROR("v4l2_capture_init_with_config failed: device not support streaming capture");
         close(ctx->fd);
         ctx->fd = -1;
         return -1;
@@ -241,10 +246,9 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     }
     ctx->buf_count = req.count;
     if (ctx->buf_count > V4L2_CAPTURE_BUFFER_COUNT) {
-        fprintf(stderr,
-                "[ERROR] driver returned too many buffers count=%d max=%d\n",
-                ctx->buf_count,
-                V4L2_CAPTURE_BUFFER_COUNT);
+        LOG_ERROR("v4l2_capture_init_with_config failed: driver returned too many buffers count=%d max=%d",
+                  ctx->buf_count,
+                  V4L2_CAPTURE_BUFFER_COUNT);
         close(ctx->fd);
         ctx->fd = -1;
         return -1;
@@ -265,7 +269,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         buf.m.planes = planes;
 
         if (ioctl(ctx->fd, VIDIOC_QUERYBUF, &buf) < 0) {
-            fprintf(stderr, "[ERROR] query buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
+            LOG_ERROR("v4l2_capture_init_with_config failed: query buffer=%d errno=%d(%s)",
+                      i,
+                      errno,
+                      strerror(errno));
             v4l2_capture_deinit(ctx);
             return -1;
         }
@@ -277,7 +284,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
                            ctx->fd,
                            planes[0].m.mem_offset);
         if (ctx->buf[i] == MAP_FAILED) {
-            fprintf(stderr, "[ERROR] mmap buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
+            LOG_ERROR("v4l2_capture_init_with_config failed: mmap buffer=%d errno=%d(%s)",
+                      i,
+                      errno,
+                      strerror(errno));
             ctx->buf[i] = NULL;
             v4l2_capture_deinit(ctx);
             return -1;
@@ -286,7 +296,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         printf("[INFO] buffer %d mapped: addr=%p, len=%d\n", i, ctx->buf[i], ctx->buf_len[i]);
 
         if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
-            fprintf(stderr, "[ERROR] qbuf buffer %d failed: %s (errno=%d)\n", i, strerror(errno), errno);
+            LOG_ERROR("v4l2_capture_init_with_config failed: qbuf buffer=%d errno=%d(%s)",
+                      i,
+                      errno,
+                      strerror(errno));
             v4l2_capture_deinit(ctx);
             return -1;
         }
@@ -307,7 +320,7 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     ctx->frame_cache_len = ctx->width * ctx->height * 3 / 2;
     ctx->frame_cache = (uint8_t *)malloc((size_t)ctx->frame_cache_len);
     if (!ctx->frame_cache) {
-        fprintf(stderr, "[ERROR] malloc frame cache failed\n");
+        LOG_ERROR("v4l2_capture_init_with_config failed: malloc frame cache size=%d", ctx->frame_cache_len);
         v4l2_capture_deinit(ctx);
         return -1;
     }
@@ -336,6 +349,12 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        uint64_t *dqbuf_ioctl_us,
                        uint64_t *frame_copy_us) {
     if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us || !dqbuf_ioctl_us || !frame_copy_us) {
+        LOG_ERROR("v4l2_capture_frame failed: invalid args ctx=%p fd=%d frame_data=%p frame_len=%p frame_id=%p",
+                  (void *)ctx,
+                  ctx ? ctx->fd : -1,
+                  (void *)frame_data,
+                  (void *)frame_len,
+                  (void *)frame_id);
         return -1;
     }
 
@@ -352,7 +371,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
 
     uint64_t dqbuf_ioctl_start_us = get_now_us();
     if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
-        fprintf(stderr, "[ERROR] dqbuf failed: %s (errno=%d)\n", strerror(errno), errno);
+        LOG_ERROR("v4l2_capture_frame failed: dqbuf errno=%d(%s)", errno, strerror(errno));
         return -1;
     }
     *dqbuf_ts_us = get_now_us();
@@ -381,9 +400,9 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     if ((int)planes[0].bytesused > ctx->frame_cache_len) {
         uint8_t *new_cache = (uint8_t *)realloc(ctx->frame_cache, planes[0].bytesused);
         if (!new_cache) {
-            fprintf(stderr, "[ERROR] realloc frame cache failed\n");
+            LOG_ERROR("v4l2_capture_frame failed: realloc frame cache size=%u", planes[0].bytesused);
             if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
-                fprintf(stderr, "[ERROR] re-qbuf after realloc failed: %s (errno=%d)\n", strerror(errno), errno);
+                LOG_ERROR("v4l2_capture_frame failed: re-qbuf after realloc errno=%d(%s)", errno, strerror(errno));
             }
             return -1;
         }
@@ -408,7 +427,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
 
     // 原始驱动缓冲在数据复制完成后即可立即回队，继续参与下一轮采集。
     if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
-        fprintf(stderr, "[ERROR] re-qbuf failed: %s (errno=%d)\n", strerror(errno), errno);
+        LOG_ERROR("v4l2_capture_frame failed: re-qbuf errno=%d(%s)", errno, strerror(errno));
         return -1;
     }
 

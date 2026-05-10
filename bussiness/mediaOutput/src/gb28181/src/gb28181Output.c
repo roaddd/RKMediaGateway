@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "logger.h"
 #include "../inc/gb28181Device.h"
 
 /*
@@ -112,7 +113,7 @@ static int gb28181_output_start(MediaOutput *output) {
     Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     Gb28181DeviceConfig device_config;
     if (!impl) {
-        fprintf(stderr, "[ERROR] gb28181_output_start failed: impl is NULL\n");
+        LOG_ERROR("gb28181_output_start failed: impl is NULL");
         return -1;
     }
     if (impl->started) {
@@ -121,18 +122,17 @@ static int gb28181_output_start(MediaOutput *output) {
 
     build_device_config(&impl->config, &device_config);
     if (gb28181_device_init(&impl->device_ctx, &device_config) != 0) {
-        fprintf(stderr,
-                "[ERROR] gb28181_output_start failed: gb28181_device_init server=%s:%d device=%s local_sip=%d\n",
-                impl->config.server_ip ? impl->config.server_ip : "unknown",
-                impl->config.server_port,
-                impl->config.device_id ? impl->config.device_id : "unknown",
-                impl->config.local_sip_port);
+        LOG_ERROR("gb28181_output_start failed: gb28181_device_init server=%s:%d device=%s local_sip=%d",
+                  impl->config.server_ip ? impl->config.server_ip : "unknown",
+                  impl->config.server_port,
+                  impl->config.device_id ? impl->config.device_id : "unknown",
+                  impl->config.local_sip_port);
         return -1;
     }
     {
         int ret = pthread_create(&impl->sip_thread, NULL, gb28181_output_sip_loop, impl);
         if (ret != 0) {
-            fprintf(stderr, "[ERROR] gb28181_output_start failed: pthread_create ret=%d\n", ret);
+            LOG_ERROR("gb28181_output_start failed: pthread_create ret=%d", ret);
             gb28181_device_deinit(&impl->device_ctx);
             return -1;
         }
@@ -146,7 +146,11 @@ static int gb28181_output_start(MediaOutput *output) {
 /* MediaOutput connect 钩子：此处仅确认 output 已启动。 */
 static int gb28181_output_connect(MediaOutput *output) {
     Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
-    return (impl && impl->started) ? 0 : -1;
+    if (!impl || !impl->started) {
+        LOG_ERROR("gb28181_output_connect failed: started=%d", (impl && impl->started) ? 1 : 0);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -158,10 +162,10 @@ static int gb28181_output_connect(MediaOutput *output) {
 static int gb28181_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
     Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     if (!impl || !impl->started || !packet || !packet->buffer) {
-        fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: invalid args started=%d packet=%p buffer=%p\n",
-                (impl && impl->started) ? 1 : 0,
-                (void *)packet,
-                (void *)(packet ? packet->buffer : NULL));
+        LOG_ERROR("gb28181_output_send_packet failed: invalid args started=%d packet=%p buffer=%p",
+                  (impl && impl->started) ? 1 : 0,
+                  (void *)packet,
+                  (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
 
@@ -178,10 +182,10 @@ static int gb28181_output_send_packet(MediaOutput *output, const MediaPacket *pa
                                      packet->buffer->size,
                                      packet->codec,
                                      packet->pts_us) != 0) {
-            fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: send_g711 size=%zu codec=%d pts=%" PRIu64 "\n",
-                    packet->buffer->size,
-                    packet->codec,
-                    packet->pts_us);
+            LOG_ERROR("gb28181_output_send_packet failed: send_g711 size=%zu codec=%d pts=%" PRIu64,
+                      packet->buffer->size,
+                      packet->codec,
+                      packet->pts_us);
             return -1;
         }
         return 0;
@@ -192,10 +196,10 @@ static int gb28181_output_send_packet(MediaOutput *output, const MediaPacket *pa
                                  packet->buffer->size,
                                  packet->is_key_frame,
                                  packet->pts_us) != 0) {
-        fprintf(stderr, "[ERROR] gb28181_output_send_packet failed: send_h264 size=%zu key=%d pts=%" PRIu64 "\n",
-                packet->buffer->size,
-                packet->is_key_frame,
-                packet->pts_us);
+        LOG_ERROR("gb28181_output_send_packet failed: send_h264 size=%zu key=%d pts=%" PRIu64,
+                  packet->buffer->size,
+                  packet->is_key_frame,
+                  packet->pts_us);
         return -1;
     }
     return 0;
@@ -243,13 +247,13 @@ int media_output_setup_gb28181(MediaOutput *output, const MediaOutputGb28181Conf
     Gb28181OutputImpl *impl = NULL;
 
     if (!output) {
-        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: output is NULL\n");
+        LOG_ERROR("media_output_setup_gb28181 failed: output is NULL");
         return -1;
     }
 
     impl = (Gb28181OutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
-        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: impl alloc\n");
+        LOG_ERROR("media_output_setup_gb28181 failed: impl alloc");
         return -1;
     }
     fill_default_config(&impl->config, config);
@@ -262,8 +266,8 @@ int media_output_setup_gb28181(MediaOutput *output, const MediaOutputGb28181Conf
     output_config.drop_until_keyframe_after_reconnect = 1;
 
     if (media_output_init(output, &output_config, &vtable, impl) != 0) {
-        fprintf(stderr, "[ERROR] media_output_setup_gb28181 failed: media_output_init name=%s\n",
-                impl->config.name ? impl->config.name : "unknown");
+        LOG_ERROR("media_output_setup_gb28181 failed: media_output_init name=%s",
+                  impl->config.name ? impl->config.name : "unknown");
         free(impl);
         return -1;
     }
