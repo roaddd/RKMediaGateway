@@ -855,7 +855,7 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
             continue;
         if (ctx->config.streams[stream_idx].source_index != source_idx)
             continue;
-        /* 将最新帧发布到对应的视频编码线程输入队列 */
+        /* 将最新帧发布到对应的视频编码线程输入队列，这里会有一次帧拷贝 */
         if (media_gateway_video_input_publish(&res->pipeline.video_inputs[stream_idx], &frame) != 0)
         {
             LOG_ERROR("media_gateway_run failed: publish video frame source=%d stream=%d",
@@ -889,6 +889,7 @@ static int drain_audio_source_once(MediaGatewayCtx *ctx,
     while (audio_drain_count < ctx->config.audio.source_slots)
     {
         audio_slot_index = -1;
+        /* 从音频采集线程队列里面获取最旧帧 */
         acquire_ret = audio_frame_source_acquire(&res->audio_source, &audio_frame, &audio_slot_index, 0);
         if (acquire_ret < 0)
         {
@@ -899,6 +900,7 @@ static int drain_audio_source_once(MediaGatewayCtx *ctx,
             break;
 
         *got_frame = 1;
+        /* 将音频帧发布到音频编码队列 */
         if (media_gateway_audio_queue_publish(&res->pipeline.audio_queue, &audio_frame) != 0)
         {
             LOG_ERROR("media_gateway_run failed: publish audio frame=%" PRIu64, audio_frame.frame_id);
@@ -914,6 +916,8 @@ static int drain_audio_source_once(MediaGatewayCtx *ctx,
 
 /**
  * @description: 执行一次 run 主循环调度。
+ * 这个函数是 run 循环的核心，负责从视频采集线程队列里获取最新帧并发布到对应的视频编码线程输入队列，
+ * 没有让编码线程直接从采集线程队列获取帧的原因是多个编码线程可能对应一个采集源
  */
 static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res, int *got_frame)
 {
@@ -930,6 +934,7 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
         }
     }
 
+    /* 从音频采集线程队列里面获取最新帧并放入音频编码线程输入队列 */
     if (drain_audio_source_once(ctx, res, got_frame) != 0)
     {
         LOG_ERROR("run_gateway_once failed: drain audio source");

@@ -509,7 +509,7 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
                   ctx->config.stream_count);
         return -1;
     }
-
+    /* 从media_buffer_pool中获取buffer */
     if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0)
     {
         LOG_ERROR("enqueue_audio_packet failed: media_buffer_create_copy stream=%d size=%zu",
@@ -531,7 +531,8 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     {
         if (ctx->output_stream_index[i] != stream_idx)
             continue;
-        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
+        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTSP &&
+            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
             ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181)
         {
             continue;
@@ -578,7 +579,7 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
                   frame->channels);
         return -1;
     }
-
+    /* 确定音频数据绑定的流索引,因为音频需要跟某一路视频时间线绑定 */
     stream_idx = ctx->config.audio.bind_stream_index;
     if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;

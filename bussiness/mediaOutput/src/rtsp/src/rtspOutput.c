@@ -44,6 +44,7 @@ typedef struct {
     size_t cached_sps_len;
     uint8_t *cached_pps;                                    /* 最近缓存的 PPS NALU（不含起始码）。 */
     size_t cached_pps_len;
+    int unsupported_audio_warned;                           /* 避免不支持的音频格式反复刷日志。 */
 } RtspOutputImpl;
 
 static RtspSharedServer g_rtsp_shared_server;
@@ -402,6 +403,15 @@ static int rtsp_output_start(MediaOutput *output) {
         impl->shared_server_acquired = 0;
         return -1;
     }
+    if (sessionAddAudio(impl->session, AUDIO_PCMA, 0, 8000, 1) < 0) {
+        LOG_ERROR("rtsp_output_start failed: sessionAddAudio session=%s codec=PCMA sample_rate=8000 channels=1",
+                  impl->config.session_name ? impl->config.session_name : "unknown");
+        rtspDelSession(impl->session);
+        impl->session = NULL;
+        shared_rtsp_server_release();
+        impl->shared_server_acquired = 0;
+        return -1;
+    }
     /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
         LOG_ERROR("rtsp_output_start failed: sessionAddVideo session=%s codec=H264",
@@ -439,7 +449,7 @@ static int rtsp_output_connect(MediaOutput *output) {
     return 0;
 }
 
-/* output 发送：将 H264 包转为 RTSP 可发送单元。 */
+/* output 发送：视频发送 H264，音频发送 G711A/PCMA。 */
 static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session || !packet || !packet->buffer) {
@@ -449,9 +459,32 @@ static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packe
                   (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
-    /* 在发送路径轻量轮询新客户端接入事件，避免额外线程/锁开销。 */
+
+    if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
+        if (packet->codec != MEDIA_CODEC_G711A) {
+            if (!impl->unsupported_audio_warned) {
+                LOG_WARN("rtsp_output_send_packet skip unsupported audio codec=%d, only G711A/PCMA is supported",
+                         packet->codec);
+                impl->unsupported_audio_warned = 1;
+            }
+            return 0;
+        }
+        if (sessionSendAudioData(impl->session,
+                                 (unsigned char *)packet->buffer->data,
+                                 (int)packet->buffer->size) < 0) {
+            LOG_ERROR("rtsp_output_send_packet failed: sessionSendAudioData size=%zu frame=%" PRIu64,
+                      packet->buffer->size,
+                      packet->frame_id);
+            return -1;
+        }
+        return 0;
+    }
+
+    if (packet->frame_type != MEDIA_FRAME_TYPE_VIDEO || packet->codec != MEDIA_CODEC_H264) {
+        return 0;
+    }
+
     rtsp_output_probe_new_client(impl);
-    /* 更新参数集缓存，并在开启开关时对新客户端补发 SPS/PPS。 */
     update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
     send_cached_sps_pps_if_needed(impl);
     if (packet->is_key_frame && atomic_exchange(&impl->awaiting_first_keyframe_after_external_idr, 0)) {

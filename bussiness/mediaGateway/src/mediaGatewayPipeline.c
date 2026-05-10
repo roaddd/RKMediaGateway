@@ -352,7 +352,7 @@ int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame 
         slot->data = new_data;
         slot->capacity = need_size;
     }
-    memcpy(slot->data, frame->data, need_size);
+    memcpy(slot->data, frame->data, need_size); 
     slot->frame = *frame;
     slot->frame.data = slot->data;
     queue->size++;
@@ -417,11 +417,13 @@ static int audio_queue_acquire_copy(AudioEncodeQueue *queue,
         *local_data = new_data;
         *local_capacity = need_size;
     }
+    /* 从 FIFO 中拷贝音频帧数据 */
     memcpy(*local_data, slot->data, need_size);
     *frame = slot->frame;
     frame->data = *local_data;
     queue->head = (queue->head + 1) % queue->capacity;
     queue->size--;
+
     pthread_mutex_unlock(&queue->lock);
     return 1;
 }
@@ -442,7 +444,10 @@ static void *video_encode_thread_main(void *arg)
     free(thread_arg);
     while (pipeline->ctx->running)
     {
-        /* TODO:这里的编码线程输入队列只有一个元素吗，会不会造成有延迟，因为视频采集线程和编码线程都竞争这一个元素 */
+        /*
+         * VideoEncodeInput 是单槽 latest-frame 输入，不做 FIFO 排队。
+         * 编码线程慢时新帧会覆盖未消费旧帧，优先降低端到端延迟；主要成本是 publish/acquire 都在锁内整帧拷贝。
+         */
         ret = video_input_acquire_copy(&pipeline->video_inputs[stream_idx],
                                        &frame,
                                        &local_data,
@@ -475,7 +480,7 @@ static void *video_encode_thread_main(void *arg)
 static void *audio_encode_thread_main(void *arg)
 {
     MediaGatewayPipeline *pipeline = (MediaGatewayPipeline *)arg;
-    uint8_t *local_data = NULL;
+    uint8_t *local_data = NULL; /* 线程私有的 PCM 帧缓存 */
     size_t local_capacity = 0;
     AudioFrame frame;
     int ret;

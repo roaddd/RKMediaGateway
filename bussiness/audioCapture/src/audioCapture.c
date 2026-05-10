@@ -145,7 +145,8 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
         return -1;
     }
     /**
-     * period_frames 是时间维度上的采样帧数
+     * period_frames 是时间维度上的采样帧数，每次read返回的音频数据量是 period_frames * channels * bytes_per_sample 字节。
+     * period_frames 过小会增加 CPU 负载和系统调用次数，过大则增加端到端延迟和 xrun 风险。160 帧在 8 kHz 下是 20ms，通常是语音链路的一个合理选择。
      */
     period_buffer_size = (size_t)normalized.period_frames * normalized.channels * bytes_per_sample;
     ctx->period_buffer = (uint8_t *)malloc(period_buffer_size);

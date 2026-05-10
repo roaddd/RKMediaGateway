@@ -15,7 +15,11 @@
 #define DEFAULT_RECONNECT_INTERVAL_MS 1000
 
 /**
- * @description: 鍒濆鍖栦竴涓崟绫诲獟浣撶幆褰㈤槦鍒椼€? * @param queue 寰呭垵濮嬪寲闃熷垪銆? * @param capacity 闃熷垪瀹归噺锛?=0 鏃朵娇鐢ㄩ粯璁ゅ閲忋€? * @return 0 鎴愬姛锛?1 澶辫触銆? */
+ * @description: 初始化输出包队列。
+ * @param queue 待初始化的队列。
+ * @param capacity 队列容量；小于等于 0 时使用默认容量。
+ * @return 0 成功，-1 失败。
+ */
 static int output_queue_init(MediaOutputPacketQueue *queue, int capacity)
 {
     if (!queue)
@@ -35,7 +39,9 @@ static int output_queue_init(MediaOutputPacketQueue *queue, int capacity)
 }
 
 /**
- * @description: 閲婃斁鍗曠被濯掍綋鐜舰闃熷垪鍙婂叾涓皻鏈彂閫佺殑鍖呭紩鐢ㄣ€? * @param queue 寰呴噴鏀鹃槦鍒椼€? */
+ * @description: 释放输出包队列，并释放队列中仍持有的 MediaPacket 引用。
+ * @param queue 待释放的队列。
+ */
 static void output_queue_deinit(MediaOutputPacketQueue *queue)
 {
     int i;
@@ -48,21 +54,29 @@ static void output_queue_deinit(MediaOutputPacketQueue *queue)
 }
 
 /**
- * @description: 杩斿洖褰撳墠闊抽闃熷垪鍜岃棰戦槦鍒楁繁搴︽€诲拰銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @return 闃熷垪鎬绘繁搴︺€? */
+ * @description: 统计音频队列和视频队列的总深度。
+ * @param output 输出通道。
+ * @return 当前待发送包总数。
+ */
 static int output_queue_total_depth(const MediaOutput *output)
 {
     return output->video_queue.size + output->audio_queue.size;
 }
 
 /**
- * @description: 鏇存柊 stats.queue_depth锛涜皟鐢ㄦ柟蹇呴』鎸佹湁 output->lock銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? */
+ * @description: 更新统计中的队列深度，调用方必须已经持有 output->lock。
+ * @param output 输出通道。
+ */
 static void output_update_queue_depth_locked(MediaOutput *output)
 {
     output->stats.queue_depth = output_queue_total_depth(output);
 }
 
 /**
- * @description: 鏌ョ湅闃熷ご鍖呬絾涓嶅嚭闃熴€? * @param queue 鍗曠被濯掍綋闃熷垪銆? * @return 闃熷ご鍖呮寚閽堬紱闃熷垪涓虹┖鏃惰繑鍥?NULL銆? */
+ * @description: 查看队首包但不出队。
+ * @param queue 待查看的队列。
+ * @return 队首包指针；队列为空时返回 NULL。
+ */
 static MediaPacket *output_queue_peek(MediaOutputPacketQueue *queue)
 {
     if (!queue || queue->size <= 0)
@@ -71,7 +85,12 @@ static MediaPacket *output_queue_peek(MediaOutputPacketQueue *queue)
 }
 
 /**
- * @description: 浠庢寚瀹氶槦鍒楀脊鍑洪槦澶村寘寮曠敤锛涜皟鐢ㄦ柟蹇呴』鎸佹湁 output->lock銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param queue 鍗曠被濯掍綋闃熷垪銆? * @param packet 杈撳嚭寮瑰嚭鐨勫獟浣撳寘寮曠敤銆? * @return 0 鎴愬姛锛?1 闃熷垪涓虹┖銆? */
+ * @description: 从指定队列弹出队首包，调用方必须已经持有 output->lock。
+ * @param output 输出通道，用于更新统计。
+ * @param queue 待出队的队列。
+ * @param packet 输出弹出的包，调用方负责 reset。
+ * @return 0 成功，-1 队列为空或参数无效。
+ */
 static int output_queue_pop_locked(MediaOutput *output, MediaOutputPacketQueue *queue, MediaPacket *packet)
 {
     if (!queue || queue->size <= 0)
@@ -86,7 +105,10 @@ static int output_queue_pop_locked(MediaOutput *output, MediaOutputPacketQueue *
 }
 
 /**
- * @description: 涓㈠純鎸囧畾闃熷垪鏈€鏃х殑濯掍綋鍖咃紱璋冪敤鏂瑰繀椤绘寔鏈?output->lock銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param queue 鍗曠被濯掍綋闃熷垪銆? */
+ * @description: 丢弃指定队列中最旧的包，调用方必须已经持有 output->lock。
+ * @param output 输出通道，用于更新丢帧统计。
+ * @param queue 待丢弃旧包的队列。
+ */
 static void output_queue_drop_oldest_locked(MediaOutput *output, MediaOutputPacketQueue *queue)
 {
     MediaPacket packet;
@@ -100,7 +122,11 @@ static void output_queue_drop_oldest_locked(MediaOutput *output, MediaOutputPack
 }
 
 /**
- * @description: 鏍规嵁 MediaPacket 绫诲瀷閫夋嫨闊抽闃熷垪鎴栬棰戦槦鍒椼€? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param packet 寰呭叆闃熷獟浣撳寘銆? * @return 瀵瑰簲鍗曠被濯掍綋闃熷垪銆? */
+ * @description: 根据包类型选择对应的输出队列。
+ * @param output 输出通道。
+ * @param packet 待入队的媒体包。
+ * @return 音频包返回音频队列，其他包返回视频队列。
+ */
 static MediaOutputPacketQueue *output_queue_for_packet(MediaOutput *output, const MediaPacket *packet)
 {
     if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO)
@@ -109,7 +135,12 @@ static MediaOutputPacketQueue *output_queue_for_packet(MediaOutput *output, cons
 }
 
 /**
- * @description: 灏嗗獟浣撳寘寮曠敤鍘嬪叆鎸囧畾闃熷垪锛涜皟鐢ㄦ柟蹇呴』鎸佹湁 output->lock銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param queue 鍗曠被濯掍綋闃熷垪銆? * @param packet 寰呭叆闃熷獟浣撳寘銆? * @return 0 鎴愬姛锛?1 闃熷垪涓嶅彲鐢ㄦ垨宸叉弧銆? */
+ * @description: 将包引用压入指定队列，调用方必须已经持有 output->lock。
+ * @param output 输出通道，用于更新统计。
+ * @param queue 目标队列。
+ * @param packet 待入队媒体包。
+ * @return 0 成功，-1 队列不可用或已满。
+ */
 static int output_queue_push_locked(MediaOutput *output, MediaOutputPacketQueue *queue, const MediaPacket *packet)
 {
     int tail;
@@ -131,9 +162,17 @@ static int output_queue_push_locked(MediaOutput *output, MediaOutputPacketQueue 
 }
 
 /**
- * @description: 浠庨煶棰?瑙嗛鍙岄槦鍒椾腑閫夋嫨涓嬩竴鍖呭彂閫侊紱璋冪敤鏂瑰繀椤绘寔鏈?output->lock銆? *
- * 绛栫暐锛? * 1. 閲嶈繛鍚庣瓑寰呭叧閿抚鏃讹紝浼樺厛鍙栬棰戦槦鍒楋紝閬垮厤闊抽鍖呭湪鍏抽敭甯у墠琚彂閫併€? * 2. 姝ｅ父鐘舵€佷笅鎸夐槦澶?PTS 杈冩棭鑰呭彂閫侊紝淇濇寔闊宠棰戝熀鏈椂搴忋€? * 3. 鍗曚晶涓虹┖鏃剁洿鎺ュ彂閫佸彟涓€渚с€? *
- * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param packet 杈撳嚭寮瑰嚭鐨勫獟浣撳寘寮曠敤銆? * @return 0 鎴愬姛锛?1 涓や釜闃熷垪鍧囦负绌恒€? */
+ * @description: 从音频/视频队列中选择下一包发送，调用方必须已经持有 output->lock。
+ *
+ * 策略：
+ * 1. 重连后等待关键帧时优先取视频包，让关键帧保护逻辑尽快生效。
+ * 2. 音频和视频都存在时按 PTS 较小者优先发送，尽量保持音画顺序。
+ * 3. 只有一个队列有数据时直接取该队列。
+ *
+ * @param output 输出通道。
+ * @param packet 输出弹出的媒体包，调用方负责 reset。
+ * @return 0 成功，-1 当前无包可取。
+ */
 static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 {
     MediaPacket *video = output_queue_peek(&output->video_queue);
@@ -154,9 +193,14 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 }
 
 /**
- * @description: 杈撳嚭閫氶亾鍚庡彴鍙戦€佺嚎绋嬨€? *
- * 绾跨▼璐熻矗绛夊緟闃熷垪鏁版嵁銆佹噿杩炴帴涓嬫父銆佹墽琛岄噸杩炲悗鐨勫叧閿抚淇濇姢銆? * 璋冪敤鍗忚 send_packet 鍥炶皟锛屽苟缁存姢鍙戦€?涓㈠寘/澶辫触缁熻銆? *
- * @param arg MediaOutput 鎸囬拡銆? * @return NULL銆? */
+ * @description: 输出通道后台发送线程。
+ *
+ * 线程负责等待队列数据、维护连接状态、执行重连后的关键帧保护，
+ * 调用协议层 send_packet 回调，并更新发送、丢包和失败统计。
+ *
+ * @param arg MediaOutput 指针。
+ * @return NULL。
+ */
 static void *media_output_thread(void *arg)
 {
     MediaOutput *output = (MediaOutput *)arg;
@@ -259,7 +303,11 @@ static void *media_output_thread(void *arg)
 }
 
 /**
- * @description: 鎸夊崗璁被鍨嬪垱寤哄苟鍒濆鍖栬緭鍑洪€氶亾銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param config 杈撳嚭鍗忚閰嶇疆銆? * @return 0 鎴愬姛锛?1 澶辫触銆? */
+ * @description: 根据输出类型创建并初始化具体协议输出通道。
+ * @param output 待初始化的输出通道。
+ * @param config 输出配置。
+ * @return 0 成功，-1 失败。
+ */
 int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
 {
     if (!output || !config)
@@ -285,7 +333,13 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
 }
 
 /**
- * @description: 鍒濆鍖栭€氱敤杈撳嚭閫氶亾鐘舵€併€佸弻闃熷垪鍜屽悓姝ュ璞°€? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param config 閫氱敤杈撳嚭閫氶亾閰嶇疆銆? * @param vtable 鍗忚鍥炶皟琛ㄣ€? * @param impl 鍗忚绉佹湁涓婁笅鏂囥€? * @return 0 鎴愬姛锛?1 澶辫触銆? */
+ * @description: 初始化通用输出通道对象。
+ * @param output 待初始化的输出通道。
+ * @param config 通道基础配置。
+ * @param vtable 协议实现回调表。
+ * @param impl 协议实现私有上下文。
+ * @return 0 成功，-1 失败。
+ */
 int media_output_init(MediaOutput *output,
                       const MediaOutputChannelConfig *config,
                       const MediaOutputVTable *vtable,
@@ -332,7 +386,10 @@ int media_output_init(MediaOutput *output,
 }
 
 /**
- * @description: 鍚姩鍗忚绉佹湁璧勬簮鍜岄€氱敤鍙戦€佺嚎绋嬨€? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @return 0 鎴愬姛锛?1 澶辫触銆? */
+ * @description: 启动输出通道，并创建后台发送线程。
+ * @param output 输出通道。
+ * @return 0 成功，-1 失败。
+ */
 int media_output_start(MediaOutput *output)
 {
     if (!output)
@@ -362,10 +419,17 @@ int media_output_start(MediaOutput *output)
 }
 
 /**
- * @description: 灏嗗獟浣撳寘鍘嬪叆闊抽鎴栬棰戦槦鍒椼€? *
- * 婊￠槦鍒楃瓥鐣ワ細
- * - 闊抽婊★細涓㈠純鏃ч煶棰戯紝淇濈暀鏈€鏂伴煶棰戜互闄嶄綆瀹炴椂寤惰繜銆? * - 瑙嗛闈炲叧閿抚婊★細涓㈠純鏂板寘锛岄伩鍏嶅欢杩熺户缁爢绉€? * - 瑙嗛鍏抽敭甯ф弧锛氫涪寮冩棫瑙嗛锛屼负鍏抽敭甯ц吘鍑烘仮澶嶇偣銆? *
- * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param packet 寰呭彂閫佸獟浣撳寘銆? * @return 0 鎴愬姛鎴栨寜绛栫暐涓㈠純锛?1 鍙傛暟闈炴硶鎴栧叆闃熷け璐ャ€? */
+ * @description: 将媒体包放入输出通道队列。
+ *
+ * 队列满时的策略：
+ * - 音频：丢弃最旧包，保留最新音频，降低实时延迟。
+ * - 视频非关键帧：直接丢弃新包，避免阻塞输出线程。
+ * - 视频关键帧：丢弃旧视频包，为关键帧腾出空间。
+ *
+ * @param output 输出通道。
+ * @param packet 待入队媒体包。
+ * @return 0 成功或按策略丢包，-1 参数或队列错误。
+ */
 int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
 {
     MediaOutputPacketQueue *queue;
@@ -380,9 +444,10 @@ int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
     }
 
     pthread_mutex_lock(&output->lock);
+    /* 根据媒体包类型选择对应的队列 */
     queue = output_queue_for_packet(output, packet);
 
-    /* 澶勭悊杈撳嚭閫氶亾闃熷垪婊＄殑鎯呭喌 */
+    /* 队列满时按媒体类型执行低延迟丢包策略。 */
     if (queue->size >= queue->capacity)
     {
         if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO)
@@ -417,7 +482,10 @@ int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
 }
 
 /**
- * @description: 娑堣垂鍗忚渚цЕ鍙戠殑澶栭儴 IDR 璇锋眰銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @return 1 闇€瑕佽姹傜紪鐮佸櫒绔嬪嵆浜х敓 IDR锛? 鏃犺姹傘€? */
+ * @description: 消费外部输出通道触发的 IDR 请求。
+ * @param output 输出通道。
+ * @return 1 表示需要向编码器请求 IDR，0 表示没有请求。
+ */
 int media_output_consume_external_idr_request(MediaOutput *output)
 {
     if (!output)
@@ -430,7 +498,9 @@ int media_output_consume_external_idr_request(MediaOutput *output)
 }
 
 /**
- * @description: 璇锋眰杈撳嚭绾跨▼閫€鍑哄苟鍋滄鍗忚绉佹湁璧勬簮銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? */
+ * @description: 请求输出线程退出，并等待线程结束。
+ * @param output 输出通道。
+ */
 void media_output_stop(MediaOutput *output)
 {
     if (!output || !output->running)
@@ -447,7 +517,9 @@ void media_output_stop(MediaOutput *output)
 }
 
 /**
- * @description: 閲婃斁杈撳嚭閫氶亾鎸佹湁鐨勫叏閮ㄩ€氱敤璧勬簮銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? */
+ * @description: 释放输出通道及其队列、同步对象和协议私有资源。
+ * @param output 输出通道。
+ */
 void media_output_deinit(MediaOutput *output)
 {
     if (!output)
@@ -464,7 +536,10 @@ void media_output_deinit(MediaOutput *output)
 }
 
 /**
- * @description: 璇诲彇杈撳嚭閫氶亾缁熻蹇収銆? * @param output 杈撳嚭閫氶亾瀵硅薄銆? * @param stats 杈撳嚭缁熻蹇収銆? */
+ * @description: 获取输出通道统计信息快照。
+ * @param output 输出通道。
+ * @param stats 输出统计信息。
+ */
 void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats)
 {
     if (!output || !stats)

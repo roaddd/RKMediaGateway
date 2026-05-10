@@ -155,6 +155,7 @@ static void *frame_source_thread(void *arg) {
     {
         memset(&frame, 0, sizeof(frame));
         capture_start_us = frame_source_now_us();
+        /* 采集一帧视频数据,会有一次帧拷贝 */
         if (v4l2_capture_frame(source->capture,
                                &frame.raw_frame,
                                &frame.raw_len,
@@ -188,7 +189,7 @@ static void *frame_source_thread(void *arg) {
         {
             break;
         }
-
+        /* 将采集到的帧放到视频采集线程的队列，会有一次拷贝 */
         if (frame_source_publish_frame(source, &frame) != 0) 
         {
             break;

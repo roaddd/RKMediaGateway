@@ -125,7 +125,11 @@ static int audio_frame_source_publish(AudioFrameSource *source, const AudioCaptu
     slot->frame.xrun_count = capture_frame->xrun_count;
     slot->seq = source->next_seq++;
     slot->valid = 1;
+
+    /* 更新可读槽位为最旧的帧，原因是人耳对音频连续性比较敏感？ */
     audio_frame_source_update_read_slot(source);
+
+    /* 唤醒等待的消费者 */
     pthread_cond_signal(&source->cond);
     pthread_mutex_unlock(&source->lock);
     return 0;
@@ -202,6 +206,7 @@ int audio_frame_source_init(AudioFrameSource *source,
         return -1;
     }
     for (i = 0; i < source->slot_count; ++i) {
+        /* 为每个 slot 分配数据缓冲区 */
         source->slots[i].data = (uint8_t *)malloc(slot_capacity);
         if (!source->slots[i].data) {
             audio_frame_source_deinit(source);
@@ -263,6 +268,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     }
     *slot_index = -1;
     memset(frame, 0, sizeof(*frame));
+    /* 计算绝对超时时间 */
     audio_frame_source_make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&source->lock);
@@ -288,7 +294,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     }
     source->slots[idx].in_use = 1;
     source->slots[idx].valid = 0;
-    *frame = source->slots[idx].frame;
+    *frame = source->slots[idx].frame; /* 只是拷贝frame结构体，音频数据没有拷贝 */
     *slot_index = idx;
     audio_frame_source_update_read_slot(source);
     pthread_mutex_unlock(&source->lock);

@@ -14,12 +14,15 @@
 #endif
 
 #define RTMP_VIDEO_CHANNEL 0x04
+#define RTMP_AUDIO_CHANNEL 0x05
 #define RTMP_INFO_CHANNEL 0x03
 #define FLV_VIDEO_CODEC_AVC 7
 #define FLV_FRAME_KEY 1
 #define FLV_FRAME_INTER 2
 #define FLV_AVC_SEQ_HEADER 0
 #define FLV_AVC_NALU 1
+#define FLV_AUDIO_CODEC_G711A 7
+#define FLV_AUDIO_CODEC_G711U 8
 #define DEFAULT_RTMP_NAME "rtmp"
 #define DEFAULT_RTMP_QUEUE_CAPACITY 64
 #define DEFAULT_RTMP_RECONNECT_INTERVAL_MS 1000
@@ -328,6 +331,8 @@ static int rtmp_cache_parameter_sets(RtmpOutputImpl *impl, const NaluView *nalus
     return 0;
 }
 
+static uint32_t packet_timestamp_ms(const MediaPacket *packet);
+
 #if defined(ENABLE_RTMP_LIBRTMP)
 
 /* 发送 RTMP 信息类消息，例如 onMetaData。 */
@@ -396,6 +401,42 @@ static int rtmp_send_video_body(RtmpOutputImpl *impl, const uint8_t *body, size_
     RTMPPacket_Free(&packet);
     if (!ret) {
         LOG_ERROR("[RTMP] event=send_video_failed stream_id=%u body_size=%zu ts_ms=%u\n",
+                impl->stream_id,
+                body_size,
+                timestamp_ms);
+    }
+    return ret ? 0 : -1;
+}
+
+/* 发送 RTMP 音频消息，payload 是 FLV audio tag body。 */
+static int rtmp_send_audio_body(RtmpOutputImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
+    RTMPPacket packet;
+    int ret;
+
+    if (!impl || !impl->rtmp || !body || body_size == 0) {
+        LOG_ERROR("[RTMP][ERROR] send_audio_body invalid args body_size=%zu\n", body_size);
+        return -1;
+    }
+
+    RTMPPacket_Reset(&packet);
+    if (!RTMPPacket_Alloc(&packet, (int)body_size)) {
+        LOG_ERROR("[RTMP][ERROR] send_audio_body packet alloc failed size=%zu\n", body_size);
+        return -1;
+    }
+
+    packet.m_packetType = RTMP_PACKET_TYPE_AUDIO;
+    packet.m_nChannel = RTMP_AUDIO_CHANNEL;
+    packet.m_headerType = RTMP_PACKET_SIZE_MEDIUM;
+    packet.m_hasAbsTimestamp = 0;
+    packet.m_nTimeStamp = timestamp_ms;
+    packet.m_nInfoField2 = impl->stream_id;
+    packet.m_nBodySize = (uint32_t)body_size;
+    memcpy(packet.m_body, body, body_size);
+
+    ret = RTMP_SendPacket(impl->rtmp, &packet, 1);
+    RTMPPacket_Free(&packet);
+    if (!ret) {
+        LOG_ERROR("[RTMP] event=send_audio_failed stream_id=%u body_size=%zu ts_ms=%u\n",
                 impl->stream_id,
                 body_size,
                 timestamp_ms);
@@ -592,6 +633,50 @@ static int rtmp_send_avc_nalus(RtmpOutputImpl *impl,
     free(body);
     return 0;
 }
+
+static int rtmp_send_g711_packet(RtmpOutputImpl *impl, const MediaPacket *packet) {
+    uint8_t *body;
+    size_t body_size;
+    uint8_t sound_format;
+    uint32_t timestamp_ms;
+    int ret;
+
+    if (!impl || !packet || !packet->buffer || !packet->buffer->data || packet->buffer->size == 0) {
+        LOG_ERROR("[RTMP][ERROR] send_g711 invalid args packet=%p\n", (const void *)packet);
+        return -1;
+    }
+    if (packet->codec == MEDIA_CODEC_G711A) {
+        sound_format = FLV_AUDIO_CODEC_G711A;
+    } else if (packet->codec == MEDIA_CODEC_G711U) {
+        sound_format = FLV_AUDIO_CODEC_G711U;
+    } else {
+        return 0;
+    }
+
+    body_size = packet->buffer->size + 1;
+    body = (uint8_t *)malloc(body_size);
+    if (!body) {
+        LOG_ERROR("[RTMP][ERROR] send_g711 alloc failed size=%zu\n", body_size);
+        return -1;
+    }
+
+    /*
+     * FLV audio header:
+     * SoundFormat=7/8(G711A/G711U), SoundRate/SoundSize 对 G711 无实际意义，SoundType=0 mono。
+     */
+    body[0] = (uint8_t)(sound_format << 4);
+    memcpy(body + 1, packet->buffer->data, packet->buffer->size);
+    timestamp_ms = packet_timestamp_ms(packet);
+    ret = rtmp_send_audio_body(impl, body, body_size, timestamp_ms);
+    free(body);
+    if (ret != 0) {
+        LOG_ERROR("[RTMP] event=audio_payload_send_failed frame=%" PRIu64 " codec=%d ts_ms=%u\n",
+                  packet->frame_id,
+                  packet->codec,
+                  timestamp_ms);
+    }
+    return ret;
+}
 #endif
 
 
@@ -704,11 +789,13 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
                 (void *)(packet ? packet->buffer : NULL));
         return -1;
     }
+#if defined(ENABLE_RTMP_LIBRTMP)
+    if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
+        return rtmp_send_g711_packet(impl, packet);
+    }
     if (packet->frame_type != MEDIA_FRAME_TYPE_VIDEO || packet->codec != MEDIA_CODEC_H264) {
         return 0;
     }
-
-#if defined(ENABLE_RTMP_LIBRTMP)
 
     if (annexb_split_nalus(packet->buffer->data, packet->buffer->size, &nalus, &nalu_count) != 0) {
         LOG_ERROR("[RTMP][ERROR] send_packet split annexb failed frame=%" PRIu64 " size=%zu\n",
