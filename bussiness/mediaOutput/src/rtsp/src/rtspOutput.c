@@ -1,4 +1,4 @@
-#include "../inc/rtspOutput.h"
+﻿#include "../inc/rtspOutput.h"
 
 #include <stdatomic.h>
 #include <pthread.h>
@@ -155,10 +155,13 @@ static void cache_h264_parameter_set(RtspOutputImpl *impl, int nalu_type, const 
     if (nalu_type != 7 && nalu_type != 8) {
         return;
     }
+
+    /* TODO:每次都要malloc */
     new_buf = (uint8_t *)malloc(nalu_len);
     if (!new_buf) {
         return;
     }
+
     memcpy(new_buf, nalu, nalu_len);
     if (nalu_type == 7) {
         free(impl->cached_sps);
@@ -231,7 +234,7 @@ static void send_cached_sps_pps_if_needed(RtspOutputImpl *impl) {
 static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
     size_t nalu_start = 0;
     int code_len = 0;
-
+    /* TODO:现在rtsp server内部实现的逻辑是要外部一个NALU一个NALU的传递吗？ */
     if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
         return sessionSendVideoData(session, (unsigned char *)data, (int)len);
     }
@@ -258,6 +261,68 @@ static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
         code_len = next_code_len;
     }
     return 0;
+}
+
+/* Send one audio packet to the RTSP session. */
+static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
+    /* TODO:目前rtsp只支持G711A */
+    if (packet->codec != MEDIA_CODEC_G711A) {
+        if (!impl->unsupported_audio_warned) {
+            LOG_WARN("rtsp_output_send_audio_packet skip unsupported audio codec=%d, only G711A/PCMA is supported",
+                     packet->codec);
+            impl->unsupported_audio_warned = 1;
+        }
+        return 0;
+    }
+
+    if (sessionSendAudioData(impl->session,
+                             (unsigned char *)packet->buffer->data,
+                             (int)packet->buffer->size) < 0) {
+        LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioData size=%zu frame=%" PRIu64,
+                  packet->buffer->size,
+                  packet->frame_id);
+        return -1;
+    }
+    return 0;
+}
+
+static void rtsp_output_report_first_keyframe_after_idr(RtspOutputImpl *impl, const MediaPacket *packet) {
+    uint64_t now;
+    uint64_t detect_ts;
+    uint64_t idr_req_ts;
+    uint64_t detect_to_idr_req;
+    uint64_t idr_req_to_send;
+    uint64_t detect_to_send;
+
+    if (!packet->is_key_frame || !atomic_exchange(&impl->awaiting_first_keyframe_after_external_idr, 0)) {
+        return;
+    }
+
+    now = now_us();
+    detect_ts = atomic_load(&impl->new_client_detect_ts_us);
+    idr_req_ts = atomic_load(&impl->external_idr_request_ts_us);
+    detect_to_idr_req = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
+    idr_req_to_send = (idr_req_ts > 0 && now >= idr_req_ts) ? (now - idr_req_ts) : 0;
+    detect_to_send = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
+    printf("[E2E] event=first_keyframe_sent_after_new_client session=%s frame_id=%" PRIu64
+           " detect_to_idr_req_us=%" PRIu64 " idr_req_to_send_us=%" PRIu64 " detect_to_send_us=%" PRIu64 "\n",
+           impl->config.session_name ? impl->config.session_name : "unknown",
+           packet->frame_id,
+           detect_to_idr_req,
+           idr_req_to_send,
+           detect_to_send);
+}
+
+static int rtsp_output_send_video_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
+    if (packet->codec != MEDIA_CODEC_H264) {
+        return 0;
+    }
+
+    rtsp_output_probe_new_client(impl);
+    update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
+    send_cached_sps_pps_if_needed(impl);
+    rtsp_output_report_first_keyframe_after_idr(impl, packet);
+    return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
 }
 
 /* 共享 RTSP 服务线程入口：阻塞运行 rtspStartServer。 */
@@ -452,6 +517,7 @@ static int rtsp_output_connect(MediaOutput *output) {
 /* output 发送：视频发送 H264，音频发送 G711A/PCMA。 */
 static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
+
     if (!impl || !impl->session || !packet || !packet->buffer) {
         LOG_ERROR("rtsp_output_send_packet failed: invalid args session_ready=%d packet=%p buffer=%p",
                   (impl && impl->session) ? 1 : 0,
@@ -461,48 +527,12 @@ static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     }
 
     if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
-        if (packet->codec != MEDIA_CODEC_G711A) {
-            if (!impl->unsupported_audio_warned) {
-                LOG_WARN("rtsp_output_send_packet skip unsupported audio codec=%d, only G711A/PCMA is supported",
-                         packet->codec);
-                impl->unsupported_audio_warned = 1;
-            }
-            return 0;
-        }
-        if (sessionSendAudioData(impl->session,
-                                 (unsigned char *)packet->buffer->data,
-                                 (int)packet->buffer->size) < 0) {
-            LOG_ERROR("rtsp_output_send_packet failed: sessionSendAudioData size=%zu frame=%" PRIu64,
-                      packet->buffer->size,
-                      packet->frame_id);
-            return -1;
-        }
-        return 0;
+        return rtsp_output_send_audio_packet(impl, packet);
     }
-
-    if (packet->frame_type != MEDIA_FRAME_TYPE_VIDEO || packet->codec != MEDIA_CODEC_H264) {
-        return 0;
+    if (packet->frame_type == MEDIA_FRAME_TYPE_VIDEO) {
+        return rtsp_output_send_video_packet(impl, packet);
     }
-
-    rtsp_output_probe_new_client(impl);
-    update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
-    send_cached_sps_pps_if_needed(impl);
-    if (packet->is_key_frame && atomic_exchange(&impl->awaiting_first_keyframe_after_external_idr, 0)) {
-        uint64_t now = now_us();
-        uint64_t detect_ts = atomic_load(&impl->new_client_detect_ts_us);
-        uint64_t idr_req_ts = atomic_load(&impl->external_idr_request_ts_us);
-        uint64_t detect_to_idr_req = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
-        uint64_t idr_req_to_send = (idr_req_ts > 0 && now >= idr_req_ts) ? (now - idr_req_ts) : 0;
-        uint64_t detect_to_send = (detect_ts > 0 && now >= detect_ts) ? (now - detect_ts) : 0;
-        printf("[E2E] event=first_keyframe_sent_after_new_client session=%s frame_id=%" PRIu64
-               " detect_to_idr_req_us=%" PRIu64 " idr_req_to_send_us=%" PRIu64 " detect_to_send_us=%" PRIu64 "\n",
-               impl->config.session_name ? impl->config.session_name : "unknown",
-               packet->frame_id,
-               detect_to_idr_req,
-               idr_req_to_send,
-               detect_to_send);
-    }
-    return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
+    return 0;
 }
 
 /* 当前实现无需主动断链，保留该钩子用于接口一致性。 */

@@ -204,19 +204,22 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 static void *media_output_thread(void *arg)
 {
     MediaOutput *output = (MediaOutput *)arg;
-    MediaPacket packet;
+    MediaPacket packet; /* 每个packet是一帧图像或者音频，一帧编码图像内部可能包含多个H264 NALU */
 
     media_packet_init(&packet);
     while (1)
     {
         pthread_mutex_lock(&output->lock);
+        /* 等待队列中有数据 */
         while (!output->stop_requested && output_queue_total_depth(output) == 0)
             pthread_cond_wait(&output->cond, &output->lock);
+        
         if (output->stop_requested && output_queue_total_depth(output) == 0)
         {
             pthread_mutex_unlock(&output->lock);
             break;
         }
+        /* 从队列中取出下一帧，可能是音频帧也可能是视频帧 */
         if (output_pop_next_locked(output, &packet) != 0)
         {
             pthread_mutex_unlock(&output->lock);
@@ -269,7 +272,7 @@ static void *media_output_thread(void *arg)
             output->stats.waiting_for_keyframe = 0;
             pthread_mutex_unlock(&output->lock);
         }
-
+        /* 发送数据包 */
         if (output->vtable->send_packet(output, &packet) != 0)
         {
             pthread_mutex_lock(&output->lock);
@@ -397,7 +400,7 @@ int media_output_start(MediaOutput *output)
         LOG_ERROR("media_output_start failed: output is NULL");
         return -1;
     }
-
+    /* 调用各个输出通道的启动函数 */
     if (output->vtable->start && output->vtable->start(output) != 0)
     {
         LOG_ERROR("media_output_start failed: vtable start name=%s",

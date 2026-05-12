@@ -442,6 +442,7 @@ static int setup_outputs(MediaGatewayCtx *ctx)
     {
         if (!ctx->stream_enabled[i])
             continue;
+        /* 为stream创建每个协议对应的输出通道 */
         if (setup_outputs_for_stream(ctx, i) != 0)
         {
             LOG_ERROR("setup_outputs failed: stream=%d name=%s",
