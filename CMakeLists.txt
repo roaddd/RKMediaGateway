@@ -168,6 +168,7 @@ endif()
 if(BUILD_TARGET STREQUAL "audio_capture_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(audio_capture_test
         ${PROJECT_SOURCE_DIR}/main/main_audio_capture_test.cpp
+        ${LOGGER_SRC}
         ${AUDIO_CAPTURE_SRC}
     )
     target_link_libraries(audio_capture_test PRIVATE pthread m)
