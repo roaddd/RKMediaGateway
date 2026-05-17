@@ -142,7 +142,7 @@ static void bench_log_and_reset_if_due(MediaGatewayCtx *ctx)
     if (ctx->bench.sample_count > 0)
     {
         sample_count = (double)ctx->bench.sample_count;
-        LOG_INFO("[BENCH_SUMMARY] samples=%" PRIu64
+        LOG_WARN("[BENCH_SUMMARY] samples=%" PRIu64
                  " avg_driver_to_dqbuf=%.2fus max_driver_to_dqbuf=%" PRIu64 "us"
                  " avg_dqbuf_ioctl=%.2fus max_dqbuf_ioctl=%" PRIu64 "us"
                  " avg_capture_call=%.2fus max_capture_call=%" PRIu64 "us"
@@ -236,7 +236,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
             continue;
         sfps = (span_sec > 0.0) ? ((double)ctx->stats.stream_frames[i] / span_sec) : 0.0;
         skbps = (span_sec > 0.0) ? ((double)ctx->stats.stream_bytes[i] * 8.0 / 1000.0 / span_sec) : 0.0;
-        LOG_INFO("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
+        LOG_WARN("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  i,
                  ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
                  sfps,
@@ -248,7 +248,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     {
         double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio_frames / span_sec) : 0.0;
         double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
-        LOG_INFO("[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
+        LOG_WARN("[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  afps,
                  akbps,
                  ctx->stats.audio_frames,
