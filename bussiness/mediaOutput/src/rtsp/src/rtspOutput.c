@@ -39,11 +39,6 @@ typedef struct {
     atomic_int awaiting_first_keyframe_after_external_idr;  /* 已请求外部IDR，等待首个关键帧发出。 */
     atomic_ullong new_client_detect_ts_us;                 /* 检测到新客户端接入时刻。 */
     atomic_ullong external_idr_request_ts_us;              /* 外部IDR请求被消费并准备向编码器请求时刻。 */
-    int pending_send_cached_sps_pps;                        /* 新客户端接入后，是否待发送缓存的 SPS/PPS。 */
-    uint8_t *cached_sps;                                    /* 最近缓存的 SPS NALU（不含起始码）。 */
-    size_t cached_sps_len;
-    uint8_t *cached_pps;                                    /* 最近缓存的 PPS NALU（不含起始码）。 */
-    size_t cached_pps_len;
     int unsupported_audio_warned;                           /* 避免不支持的音频格式反复刷日志。 */
 } RtspOutputImpl;
 
@@ -86,9 +81,6 @@ static void rtsp_output_probe_new_client(RtspOutputImpl *impl) {
         detect_ts_us = now_us();
         atomic_store(&impl->new_client_detect_ts_us, detect_ts_us);
         atomic_store(&impl->pending_external_idr, 1);
-        if (impl->config.immediate_sps_pps_on_new_client) {
-            impl->pending_send_cached_sps_pps = 1;
-        }
         printf("[E2E] event=new_client_detected session=%s clients=%d ts_us=%" PRIu64 "\n",
                impl->config.session_name ? impl->config.session_name : "unknown",
                cur_count,
@@ -121,150 +113,9 @@ static int string_equals(const char *a, const char *b) {
     return strcmp(a, b) == 0;
 }
 
-/* 判断当前位置是否为 H264 起始码，并返回起始码长度。 */
-static int start_code_len(const uint8_t *data, size_t len) {
-    if (len >= 4 && data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 1) {
-        return 4;
-    }
-    if (len >= 3 && data[0] == 0 && data[1] == 0 && data[2] == 1) {
-        return 3;
-    }
-    return 0;
-}
-
-/* 在缓冲区中从 offset 开始查找下一个 H264 起始码位置。 */
-static int find_start_code(const uint8_t *data, size_t len, size_t offset, size_t *pos, int *code_len) {
-    size_t i;
-    for (i = offset; i + 3 <= len; ++i) {
-        int cur_len = start_code_len(data + i, len - i);
-        if (cur_len > 0) {
-            *pos = i;
-            *code_len = cur_len;
-            return 0;
-        }
-    }
-    return -1;
-}
-
-/* 缓存最新 SPS/PPS，供“新客户端立刻补参数集”模式使用。 */
-static void cache_h264_parameter_set(RtspOutputImpl *impl, int nalu_type, const uint8_t *nalu, size_t nalu_len) {
-    uint8_t *new_buf;
-    if (!impl || !nalu || nalu_len == 0) {
-        return;
-    }
-    if (nalu_type != 7 && nalu_type != 8) {
-        return;
-    }
-
-    /* TODO:每次都要malloc */
-    new_buf = (uint8_t *)malloc(nalu_len);
-    if (!new_buf) {
-        return;
-    }
-
-    memcpy(new_buf, nalu, nalu_len);
-    if (nalu_type == 7) {
-        free(impl->cached_sps);
-        impl->cached_sps = new_buf;
-        impl->cached_sps_len = nalu_len;
-    } else {
-        free(impl->cached_pps);
-        impl->cached_pps = new_buf;
-        impl->cached_pps_len = nalu_len;
-    }
-}
-
-/* 解析 Annex-B 并更新 SPS/PPS 缓存。 */
-static void update_sps_pps_cache(RtspOutputImpl *impl, const uint8_t *data, size_t len) {
-    size_t nalu_start = 0;
-    int code_len = 0;
-    if (!impl || !data || len == 0) {
-        return;
-    }
-    if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
-        return;
-    }
-    while (nalu_start < len) {
-        size_t payload_start = nalu_start + (size_t)code_len;
-        size_t next_start = len;
-        int next_code_len = 0;
-        int nalu_type;
-        if (payload_start >= len) {
-            break;
-        }
-        find_start_code(data, len, payload_start, &next_start, &next_code_len);
-        if (next_start <= payload_start) {
-            break;
-        }
-        nalu_type = data[payload_start] & 0x1F;
-        cache_h264_parameter_set(impl, nalu_type, data + payload_start, next_start - payload_start);
-        if (next_start >= len) {
-            break;
-        }
-        nalu_start = next_start;
-        code_len = next_code_len;
-    }
-}
-
-/* 在普通码流发送前补发缓存的 SPS/PPS，帮助新客户端尽快完成解码初始化。 */
-static void send_cached_sps_pps_if_needed(RtspOutputImpl *impl) {
-    if (!impl || !impl->session) {
-        return;
-    }
-    if (!impl->config.immediate_sps_pps_on_new_client || !impl->pending_send_cached_sps_pps) {
-        return;
-    }
-    if (!impl->cached_sps || !impl->cached_pps || impl->cached_sps_len == 0 || impl->cached_pps_len == 0) {
-        return;
-    }
-    if (sessionSendVideoData(impl->session, (unsigned char *)impl->cached_sps, (int)impl->cached_sps_len) < 0) {
-        return;
-    }
-    if (sessionSendVideoData(impl->session, (unsigned char *)impl->cached_pps, (int)impl->cached_pps_len) < 0) {
-        return;
-    }
-    impl->pending_send_cached_sps_pps = 0;
-    printf("[E2E] event=cached_sps_pps_sent session=%s sps=%zu pps=%zu\n",
-           impl->config.session_name ? impl->config.session_name : "unknown",
-           impl->cached_sps_len,
-           impl->cached_pps_len);
-}
-
-/* 将 Annex-B 数据按 NALU 切分后发送到 RTSP session。 */
-static int rtsp_send_annexb(void *session, const uint8_t *data, size_t len) {
-    size_t nalu_start = 0;
-    int code_len = 0;
-    /* TODO:现在rtsp server内部实现的逻辑是要外部一个NALU一个NALU的传递吗？ */
-    if (find_start_code(data, len, 0, &nalu_start, &code_len) != 0) {
-        return sessionSendVideoData(session, (unsigned char *)data, (int)len);
-    }
-
-    while (nalu_start < len) {
-        size_t payload_start = nalu_start + (size_t)code_len;
-        size_t next_start = len;
-        int next_code_len = 0;
-
-        if (payload_start >= len) {
-            break;
-        }
-        find_start_code(data, len, payload_start, &next_start, &next_code_len);
-        if (next_start > payload_start) {
-            if (sessionSendVideoData(session, (unsigned char *)(data + payload_start), (int)(next_start - payload_start)) < 0) {
-                LOG_ERROR("rtsp_send_annexb failed: sessionSendVideoData size=%zu", next_start - payload_start);
-                return -1;
-            }
-        }
-        if (next_start >= len) {
-            break;
-        }
-        nalu_start = next_start;
-        code_len = next_code_len;
-    }
-    return 0;
-}
-
-/* Send one audio packet to the RTSP session. */
+/* 发送一帧编码音频到 RTSP server，并保留媒体 PTS。 */
 static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
+    RtspMediaFrame frame;
     /* TODO:目前rtsp只支持G711A */
     if (packet->codec != MEDIA_CODEC_G711A) {
         if (!impl->unsupported_audio_warned) {
@@ -275,10 +126,11 @@ static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket
         return 0;
     }
 
-    if (sessionSendAudioData(impl->session,
-                             (unsigned char *)packet->buffer->data,
-                             (int)packet->buffer->size) < 0) {
-        LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioData size=%zu frame=%" PRIu64,
+    frame.data = (uint8_t *)packet->buffer->data;
+    frame.data_len = (int)packet->buffer->size;
+    frame.pts_us = packet->pts_us;
+    if (sessionSendAudioFrame(impl->session, &frame) < 0) {
+        LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioFrame size=%zu frame=%" PRIu64,
                   packet->buffer->size,
                   packet->frame_id);
         return -1;
@@ -314,15 +166,21 @@ static void rtsp_output_report_first_keyframe_after_idr(RtspOutputImpl *impl, co
 }
 
 static int rtsp_output_send_video_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
+    RtspMediaFrame frame;
     if (packet->codec != MEDIA_CODEC_H264) {
         return 0;
     }
 
     rtsp_output_probe_new_client(impl);
-    update_sps_pps_cache(impl, packet->buffer->data, packet->buffer->size);
-    send_cached_sps_pps_if_needed(impl);
     rtsp_output_report_first_keyframe_after_idr(impl, packet);
-    return rtsp_send_annexb(impl->session, packet->buffer->data, packet->buffer->size);
+    /*
+     * 这里不要拆 Annex-B。rtsp-server 需要完整 access unit，
+     * 这样同一帧里的 SPS/PPS/slice 才能共用一个 RTP timestamp 和一个 marker。
+     */
+    frame.data = (uint8_t *)packet->buffer->data;
+    frame.data_len = (int)packet->buffer->size;
+    frame.pts_us = packet->pts_us;
+    return sessionSendVideoFrame(impl->session, &frame);
 }
 
 /* 共享 RTSP 服务线程入口：阻塞运行 rtspStartServer。 */
@@ -495,7 +353,6 @@ static int rtsp_output_start(MediaOutput *output) {
     atomic_store(&impl->awaiting_first_keyframe_after_external_idr, 0);
     atomic_store(&impl->new_client_detect_ts_us, 0);
     atomic_store(&impl->external_idr_request_ts_us, 0);
-    impl->pending_send_cached_sps_pps = 0;
 
     printf("[INFO] RTSP output ready: rtsp://%s:%d/%s\n",
            impl->config.server_ip,
@@ -554,17 +411,6 @@ static void rtsp_output_stop(MediaOutput *output) {
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
     }
-    if (impl->cached_sps) {
-        free(impl->cached_sps);
-        impl->cached_sps = NULL;
-        impl->cached_sps_len = 0;
-    }
-    if (impl->cached_pps) {
-        free(impl->cached_pps);
-        impl->cached_pps = NULL;
-        impl->cached_pps_len = 0;
-    }
-    impl->pending_send_cached_sps_pps = 0;
 }
 
 /* 构建并初始化一个 RTSP output。 */
@@ -611,9 +457,14 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     if (!impl->config.password) {
         impl->config.password = DEFAULT_RTSP_PASSWORD;
     }
-    impl->config.immediate_sps_pps_on_new_client =
-        impl->config.immediate_sps_pps_on_new_client ? 1 : 0;
-
+    if (impl->config.immediate_sps_pps_on_new_client) {
+        /*
+         * 旧模式会把缓存的 SPS/PPS 当作独立 NALU 发送。
+         * 切到整帧 RTP 输入后，解码初始化应通过新客户端触发的 IDR 完成。
+         */
+        LOG_WARN("RTSP immediate SPS/PPS is ignored after switching to frame-based RTSP input; request IDR on new client instead");
+        impl->config.immediate_sps_pps_on_new_client = 0;
+    }
     memset(&output_config, 0, sizeof(output_config));
     output_config.name = impl->config.name;
     output_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 32;
