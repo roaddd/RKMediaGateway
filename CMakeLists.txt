@@ -31,7 +31,7 @@ set(THIRDPARTY_RTMP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/rtmp)
 set(THIRDPARTY_RTMP_INC_DIR ${THIRDPARTY_RTMP_ROOT}/inc)
 set(THIRDPARTY_RTMP_LIB_DIR ${THIRDPARTY_RTMP_ROOT}/lib)
 set(THIRDPARTY_RTSP_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/lib)
-set(THIRDPARTY_LOGGER_LIB ${PROJECT_SOURCE_DIR}/thirdparty/logger/lib/liblogger.so)
+set(THIRDPARTY_LOGGER_LIB_DIR ${PROJECT_SOURCE_DIR}/thirdparty/logger/lib)
 set(THIRDPARTY_EXOSIP_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/exosip)
 set(THIRDPARTY_EXOSIP_INC_DIR ${THIRDPARTY_EXOSIP_ROOT}/inc)
 set(THIRDPARTY_EXOSIP_LIB_DIR ${THIRDPARTY_EXOSIP_ROOT}/lib)
@@ -53,6 +53,7 @@ include_directories(${OPENSSL_COMPAT_INCLUDE_DIR})
 link_directories(${THIRDPARTY_MPP_LIB_DIR})
 link_directories(${THIRDPARTY_RTMP_LIB_DIR})
 link_directories(${THIRDPARTY_RTSP_LIB_DIR})
+link_directories(${THIRDPARTY_LOGGER_LIB_DIR})
 link_directories(${THIRDPARTY_EXOSIP_LIB_DIR})
 link_directories(${THIRDPARTY_OSIP_LIB_DIR})
 link_directories(${THIRDPARTY_OPENSSL_LIB_DIR})
@@ -90,7 +91,7 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
     )
-    target_link_libraries(audio_pipeline_test PRIVATE ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
     if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
         target_include_directories(audio_pipeline_test PRIVATE ${ALSA_INCLUDE_DIR})
         target_link_libraries(audio_pipeline_test PRIVATE ${ALSA_LIBRARY})
@@ -157,7 +158,7 @@ if(BUILD_TARGET STREQUAL "v4l2_test" OR BUILD_TARGET STREQUAL "all")
         ${PROJECT_SOURCE_DIR}/main/main_v4l2Capture_test.cpp
         ${V4L2_CAPTURE_SRC}
     )
-    target_link_libraries(v4l2_test PRIVATE ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(v4l2_test PRIVATE logger pthread m)
     set_target_properties(v4l2_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -168,7 +169,7 @@ if(BUILD_TARGET STREQUAL "audio_capture_test" OR BUILD_TARGET STREQUAL "all")
         ${PROJECT_SOURCE_DIR}/main/main_audio_capture_test.cpp
         ${AUDIO_CAPTURE_SRC}
     )
-    target_link_libraries(audio_capture_test PRIVATE ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(audio_capture_test PRIVATE logger pthread m)
     if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
         target_include_directories(audio_capture_test PRIVATE ${ALSA_INCLUDE_DIR})
         target_link_libraries(audio_capture_test PRIVATE ${ALSA_LIBRARY})
@@ -183,7 +184,7 @@ if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(video0_fps_test
         ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
     )
-    target_link_libraries(video0_fps_test PRIVATE ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(video0_fps_test PRIVATE logger pthread m)
     set_target_properties(video0_fps_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -195,7 +196,7 @@ if(BUILD_TARGET STREQUAL "mpp_test" OR BUILD_TARGET STREQUAL "all")
         ${V4L2_CAPTURE_SRC}
         ${MPP_ENCODER_SRC}
     )
-    target_link_libraries(mpp_test PRIVATE rockchip_mpp ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(mpp_test PRIVATE rockchip_mpp logger pthread m)
     set_target_properties(mpp_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -219,7 +220,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${DEF_VALUE_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
-    target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     if(ENABLE_RTMP)
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RTMP_OUTPUT=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
@@ -257,7 +258,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${MEDIA_FRAME_SOURCE_SRC}
         ${DUAL_OUTPUT_SRC}
     )
-    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     if(ENABLE_RTMP)
         target_compile_definitions(dual_output_test PRIVATE ENABLE_RTMP_OUTPUT=1)
         if(LIBRTMP_INCLUDE_DIR AND LIBRTMP_LIBRARY)
@@ -292,7 +293,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}
     )
-    target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto ${THIRDPARTY_LOGGER_LIB} pthread m)
+    target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_include_directories(all_services PRIVATE
         ${THIRDPARTY_OSIP_ROOT}/inc
         ${EXOSIP_COMPAT_INCLUDE_DIR}
