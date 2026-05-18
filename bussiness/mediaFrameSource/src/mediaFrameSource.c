@@ -161,9 +161,9 @@ static void *frame_source_thread(void *arg) {
                                &frame.raw_len,
                                &frame.frame_id,
                                &frame.dqbuf_ts_us,
-                               &frame.driver_to_dqbuf_us,
-                               &frame.dqbuf_ioctl_us,
-                               &frame.frame_copy_us) != 0) 
+                               &frame.camera_buffer_wait_us,
+                               &frame.dqbuf_ioctl_duration_us,
+                               &frame.mmap_to_frame_cache_copy_us) != 0)
         {
             source->consecutive_failures++;
             if (source->consecutive_failures >= source->max_consecutive_failures) {
@@ -182,7 +182,7 @@ static void *frame_source_thread(void *arg) {
         }
         /* 统计v4l2_capture_frame接口耗时 */
         capture_end_us = frame_source_now_us();
-        frame.capture_call_us = capture_end_us - capture_start_us;
+        frame.capture_call_duration_us = capture_end_us - capture_start_us;
         source->consecutive_failures = 0;
 
         if (!frame_source_should_run(source)) 

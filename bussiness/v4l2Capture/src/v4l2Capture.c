@@ -335,9 +335,9 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
  * @param {int *} frame_len 输出帧数据长度。
  * @param {uint64_t *} frame_id 输出递增帧号。
  * @param {uint64_t *} dqbuf_ts_us VIDIOC_DQBUF 返回后的单调时钟时间。
- * @param {uint64_t *} driver_to_dqbuf_us 驱动帧时间戳到 DQBUF 返回后的时间差。
- * @param {uint64_t *} dqbuf_ioctl_us VIDIOC_DQBUF ioctl 调用耗时。
- * @param {uint64_t *} frame_copy_us mmap buffer 拷贝到 frame_cache 的耗时。
+ * @param {uint64_t *} camera_buffer_wait_us 驱动帧时间戳到 DQBUF 返回后的时间差。
+ * @param {uint64_t *} dqbuf_ioctl_duration_us VIDIOC_DQBUF ioctl 调用耗时。
+ * @param {uint64_t *} mmap_to_frame_cache_copy_us mmap buffer 拷贝到 frame_cache 的耗时。
  * @return {int}
  */
 int v4l2_capture_frame(V4L2CaptureCtx *ctx,
@@ -345,10 +345,10 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        int *frame_len,
                        uint64_t *frame_id,
                        uint64_t *dqbuf_ts_us,
-                       uint64_t *driver_to_dqbuf_us,
-                       uint64_t *dqbuf_ioctl_us,
-                       uint64_t *frame_copy_us) {
-    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !driver_to_dqbuf_us || !dqbuf_ioctl_us || !frame_copy_us) {
+                       uint64_t *camera_buffer_wait_us,
+                       uint64_t *dqbuf_ioctl_duration_us,
+                       uint64_t *mmap_to_frame_cache_copy_us) {
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id || !dqbuf_ts_us || !camera_buffer_wait_us || !dqbuf_ioctl_duration_us || !mmap_to_frame_cache_copy_us) {
         LOG_ERROR("v4l2_capture_frame failed: invalid args ctx=%p fd=%d frame_data=%p frame_len=%p frame_id=%p",
                   (void *)ctx,
                   ctx ? ctx->fd : -1,
@@ -375,19 +375,19 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
         return -1;
     }
     *dqbuf_ts_us = get_now_us();
-    *dqbuf_ioctl_us = *dqbuf_ts_us - dqbuf_ioctl_start_us;
+    *dqbuf_ioctl_duration_us = *dqbuf_ts_us - dqbuf_ioctl_start_us;
 #if 1
     {
         // 驱动时间戳表示该帧在内核侧的时间点；与 dqbuf_ts_us 的差值可反映帧在驱动队列中的滞留时间。
         uint64_t driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
         // 计算从驱动开始采集到v4l2_capture_frame返回的时间差，反映了驱动处理这一帧的总耗时
         // 包括这一帧积压在驱动缓冲区内的时间？
-        *driver_to_dqbuf_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
+        *camera_buffer_wait_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
         // printf("[TRACE] step=driver_timestamp driver_ts_us=%" PRIu64
-        //        " driver_to_dqbuf_us=%" PRIu64
+        //        " camera_buffer_wait_us=%" PRIu64
         //        " ts_flags=0x%x\n",
         //        driver_ts_us,
-        //        *driver_to_dqbuf_us,
+        //        *camera_buffer_wait_us,
         //        (unsigned)(buf.flags & V4L2_BUF_FLAG_TIMESTAMP_MASK));
     }
 #endif
@@ -418,7 +418,7 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     {
         uint64_t copy_start_us = get_now_us();
         memcpy(ctx->frame_cache, ctx->buf[buf.index], planes[0].bytesused);
-        *frame_copy_us = get_now_us() - copy_start_us;
+        *mmap_to_frame_cache_copy_us = get_now_us() - copy_start_us;
     }
     *frame_data = ctx->frame_cache;
     *frame_len = (int)planes[0].bytesused;

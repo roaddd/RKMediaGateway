@@ -2,6 +2,7 @@
 
 #include "gb28181/inc/gb28181Output.h"
 #include "logger.h"
+#include "mediaOutputPathMetrics.h"
 #include "rtmp/inc/rtmpOutput.h"
 #include "rtsp/inc/rtspOutput.h"
 
@@ -204,6 +205,9 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 static void *media_output_thread(void *arg)
 {
     MediaOutput *output = (MediaOutput *)arg;
+    uint64_t send_start_us;
+    uint64_t send_done_us;
+    int send_ret;
     MediaPacket packet; /* 每个packet是一帧图像或者音频，一帧编码图像内部可能包含多个H264 NALU */
 
     media_packet_init(&packet);
@@ -273,7 +277,12 @@ static void *media_output_thread(void *arg)
             pthread_mutex_unlock(&output->lock);
         }
         /* 发送数据包 */
-        if (output->vtable->send_packet(output, &packet) != 0)
+        send_start_us = media_output_metrics_now_us();
+        send_ret = output->vtable->send_packet(output, &packet);
+        send_done_us = media_output_metrics_now_us();
+        /* 打印一帧音频/视频从采集时间戳到协议层发送完成的路径耗时。 */
+        media_output_log_path_latency(&packet, send_start_us, send_done_us);
+        if (send_ret != 0)
         {
             pthread_mutex_lock(&output->lock);
             output->connected = 0;

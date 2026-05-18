@@ -1,7 +1,7 @@
 #include "mediaGatewayProcess.h"
 
 #include "mediaGatewayClock.h"
-#include "mediaGatewayStats.h"
+#include "mediaGatewayMetrics.h"
 
 #include "logger.h"
 
@@ -388,9 +388,9 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                uint8_t **h264_data,
                                size_t *h264_len,
                                int *is_key_frame,
-                               uint64_t *encode_put_ts_us,
-                               uint64_t *encode_get_ts_us,
-                               MppEncoderTiming *mpp_timing)
+                               uint64_t *encode_start_ts_us,
+                               uint64_t *encode_done_ts_us,
+                               MppEncoderTiming *encoder_timing)
 {
     const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
 
@@ -402,9 +402,9 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                  h264_data,
                                  h264_len,
                                  is_key_frame,
-                                 encode_put_ts_us,
-                                 encode_get_ts_us,
-                                 mpp_timing) == 0)
+                                 encode_start_ts_us,
+                                 encode_done_ts_us,
+                                 encoder_timing) == 0)
     {
         state->consecutive_encode_fail[stream_idx] = 0;
         return 0;
@@ -433,7 +433,8 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
                                  const MediaFrame *frame,
                                  uint8_t *h264_data,
                                  size_t h264_len,
-                                 int is_key_frame)
+                                 int is_key_frame,
+                                 const MppEncoderTiming *encoder_timing)
 {
     MediaBuffer *buffer = NULL;
     MediaPacket packet;
@@ -456,6 +457,12 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.frame_id = frame->frame_id;
     packet.pts_us = frame->dqbuf_ts_us;
     packet.dts_us = frame->dqbuf_ts_us;
+    packet.path_metrics.enqueue_ts_us = media_gateway_get_now_us();
+    packet.path_metrics.encode_us = encoder_timing ? encoder_timing->encode_frame_total_us : 0;
+    packet.path_metrics.stream_name = ctx->config.streams[stream_idx].name;
+    packet.path_metrics.sample = ctx->bench.enable &&
+                                 ctx->bench.sample_every > 0 &&
+                                 ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
     packet.is_key_frame = is_key_frame;
 
     for (i = 0; i < ctx->output_count; ++i)
@@ -606,37 +613,37 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
 static void record_stream_benchmark(MediaGatewayCtx *ctx,
                                     int stream_idx,
                                     const MediaFrame *frame,
-                                    uint64_t encode_put_ts_us,
-                                    uint64_t encode_get_ts_us,
-                                    const MppEncoderTiming *mpp_timing)
+                                    uint64_t encode_start_ts_us,
+                                    uint64_t encode_done_ts_us,
+                                    const MppEncoderTiming *encoder_timing)
 {
-    uint64_t now;
-    uint64_t dqbuf_to_put_us;
-    uint64_t put_to_get_us;
-    uint64_t dqbuf_to_get_us;
-    uint64_t dqbuf_to_fanout_us;
+    uint64_t output_queued_ts_us = 0;
+    uint64_t dqbuf_to_encode_start_us = 0;
+    uint64_t encode_start_to_done_us = 0;
+    uint64_t dqbuf_to_encode_done_us = 0;
+    uint64_t dqbuf_to_output_queued_us = 0;
 
     if (!ctx->bench.enable || stream_idx != 0)
         return;
     if ((frame->frame_id % (uint64_t)ctx->bench.sample_every) != 0)
         return;
 
-    now = media_gateway_get_now_us();
-    dqbuf_to_put_us = (encode_put_ts_us >= frame->dqbuf_ts_us) ? (encode_put_ts_us - frame->dqbuf_ts_us) : 0;
-    put_to_get_us = (encode_get_ts_us >= encode_put_ts_us) ? (encode_get_ts_us - encode_put_ts_us) : 0;
-    dqbuf_to_get_us = (encode_get_ts_us >= frame->dqbuf_ts_us) ? (encode_get_ts_us - frame->dqbuf_ts_us) : 0;
-    dqbuf_to_fanout_us = (now >= frame->dqbuf_ts_us) ? (now - frame->dqbuf_ts_us) : 0;
+    output_queued_ts_us = media_gateway_get_now_us();
+    dqbuf_to_encode_start_us = (encode_start_ts_us >= frame->dqbuf_ts_us) ? (encode_start_ts_us - frame->dqbuf_ts_us) : 0;
+    encode_start_to_done_us = (encode_done_ts_us >= encode_start_ts_us) ? (encode_done_ts_us - encode_start_ts_us) : 0;
+    dqbuf_to_encode_done_us = (encode_done_ts_us >= frame->dqbuf_ts_us) ? (encode_done_ts_us - frame->dqbuf_ts_us) : 0;
+    dqbuf_to_output_queued_us = (output_queued_ts_us >= frame->dqbuf_ts_us) ? (output_queued_ts_us - frame->dqbuf_ts_us) : 0;
 
     media_gateway_bench_record_sample(ctx,
-                                      frame->driver_to_dqbuf_us,
-                                      frame->dqbuf_ioctl_us,
-                                      frame->capture_call_us,
-                                      frame->frame_copy_us,
-                                      dqbuf_to_put_us,
-                                      put_to_get_us,
-                                      mpp_timing,
-                                      dqbuf_to_get_us,
-                                      dqbuf_to_fanout_us);
+                                      frame->camera_buffer_wait_us,
+                                      frame->dqbuf_ioctl_duration_us,
+                                      frame->capture_call_duration_us,
+                                      frame->mmap_to_frame_cache_copy_us,
+                                      dqbuf_to_encode_start_us,
+                                      encode_start_to_done_us,
+                                      encoder_timing,
+                                      dqbuf_to_encode_done_us,
+                                      dqbuf_to_output_queued_us);
 }
 
 /**
@@ -672,9 +679,9 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
     uint8_t *h264_data = NULL;
     size_t h264_len = 0;
     int is_key_frame = 0;
-    uint64_t encode_put_ts_us = 0;
-    uint64_t encode_get_ts_us = 0;
-    MppEncoderTiming mpp_timing;
+    uint64_t encode_start_ts_us = 0;
+    uint64_t encode_done_ts_us = 0;
+    MppEncoderTiming encoder_timing = {0};
     int encode_ret;
 
     if (!ctx->stream_enabled[stream_idx])
@@ -697,16 +704,28 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
                                      &h264_data,
                                      &h264_len,
                                      &is_key_frame,
-                                     &encode_put_ts_us,
-                                     &encode_get_ts_us,
-                                     &mpp_timing);
+                                     &encode_start_ts_us,
+                                     &encode_done_ts_us,
+                                     &encoder_timing);
     if (encode_ret != 0)
+    {
+        LOG_ERROR("media_gateway_process_stream failed: encode stream=%d frame=%" PRIu64 " ret=%d",
+                  stream_idx,
+                  frame ? frame->frame_id : 0,
+                  encode_ret);
         return (encode_ret < 0) ? -1 : 0;
+    }
+
     if (!h264_data || h264_len == 0)
+    {
+        LOG_WARN("media_gateway_process_stream failed: empty encode output stream=%d frame=%" PRIu64,
+                  stream_idx,
+                  frame ? frame->frame_id : 0);
         return 0;
+    }
 
     pthread_mutex_lock(&ctx->stats_lock);
-    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame) != 0)
+    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame, &encoder_timing) != 0)
     {
         LOG_ERROR("media_gateway_process_stream failed: enqueue stream=%d frame=%" PRIu64 " size=%zu key=%d",
                   stream_idx,
@@ -717,8 +736,9 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
         return -1;
     }
 
-    record_stream_benchmark(ctx, stream_idx, frame, encode_put_ts_us, encode_get_ts_us, &mpp_timing);
-    maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
+    /*  */
+    record_stream_benchmark(ctx, stream_idx, frame, encode_start_ts_us, encode_done_ts_us, &encoder_timing);
+    // maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
     pthread_mutex_unlock(&ctx->stats_lock);
     return 0;
 }

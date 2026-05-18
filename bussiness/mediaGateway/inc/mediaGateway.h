@@ -132,32 +132,32 @@ typedef struct {
     int print_interval_sec;                                /* benchmark 输出周期，单位秒。 */
     uint64_t last_ts_us;                                   /* 上次 benchmark 输出时间戳。 */
     uint64_t sample_count;                                 /* 当前窗口内采样帧数。 */
-    uint64_t driver_to_dqbuf_sum_us;                       /* driver_ts -> dqbuf 时间累计。 */
-    uint64_t driver_to_dqbuf_max_us;                       /* driver_ts -> dqbuf 最大值。 */
-    uint64_t dqbuf_ioctl_sum_us;                           /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
-    uint64_t dqbuf_ioctl_max_us;                           /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
-    uint64_t capture_call_sum_us;                          /* v4l2_capture_frame 调用耗时累计。 */
-    uint64_t capture_call_max_us;                          /* v4l2_capture_frame 调用最大耗时。 */
-    uint64_t capture_copy_sum_us;                          /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
-    uint64_t capture_copy_max_us;                          /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
-    uint64_t dqbuf_to_put_sum_us;                          /* dqbuf -> encode_put 时间累计。 */
-    uint64_t dqbuf_to_put_max_us;                          /* dqbuf -> encode_put 最大值。 */
-    uint64_t put_to_get_sum_us;                            /* encode_put -> encode_get 时间累计。 */
-    uint64_t put_to_get_max_us;                            /* encode_put -> encode_get 最大值。 */
-    uint64_t mpp_input_copy_sum_us;                        /* NV12 拷贝到 MPP 输入缓冲累计。 */
-    uint64_t mpp_input_copy_max_us;                        /* NV12 拷贝到 MPP 输入缓冲最大值。 */
-    uint64_t mpp_put_frame_sum_us;                         /* encode_put_frame 调用耗时累计。 */
-    uint64_t mpp_put_frame_max_us;                         /* encode_put_frame 调用最大耗时。 */
-    uint64_t mpp_get_packet_sum_us;                        /* encode_get_packet 调用耗时累计。 */
-    uint64_t mpp_get_packet_max_us;                        /* encode_get_packet 调用最大耗时。 */
-    uint64_t mpp_packet_copy_sum_us;                       /* H264 packet 拷贝耗时累计。 */
-    uint64_t mpp_packet_copy_max_us;                       /* H264 packet 拷贝最大耗时。 */
-    uint64_t mpp_total_sum_us;                             /* mpp_encoder_encode_frame 总耗时累计。 */
-    uint64_t mpp_total_max_us;                             /* mpp_encoder_encode_frame 总耗时最大值。 */
-    uint64_t dqbuf_to_get_sum_us;                          /* dqbuf -> encode_get 时间累计。 */
-    uint64_t dqbuf_to_get_max_us;                          /* dqbuf -> encode_get 最大值。 */
-    uint64_t dqbuf_to_fanout_sum_us;                       /* dqbuf -> fanout 完成累计。 */
-    uint64_t dqbuf_to_fanout_max_us;                       /* dqbuf -> fanout 完成最大值。 */
+    uint64_t camera_buffer_wait_sum_us;                    /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间累计。 */
+    uint64_t camera_buffer_wait_max_us;                    /* 摄像头/驱动缓冲等待到 DQBUF 返回的最大时间。 */
+    uint64_t dqbuf_ioctl_duration_sum_us;                  /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
+    uint64_t dqbuf_ioctl_duration_max_us;                  /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
+    uint64_t capture_call_duration_sum_us;                 /* v4l2_capture_frame 整体调用耗时累计。 */
+    uint64_t capture_call_duration_max_us;                 /* v4l2_capture_frame 整体调用最大耗时。 */
+    uint64_t mmap_to_frame_cache_copy_sum_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
+    uint64_t mmap_to_frame_cache_copy_max_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
+    uint64_t dqbuf_to_encode_start_sum_us;                 /* DQBUF 返回到开始送入编码器的时间累计。 */
+    uint64_t dqbuf_to_encode_start_max_us;                 /* DQBUF 返回到开始送入编码器的最大时间。 */
+    uint64_t encode_start_to_done_sum_us;                  /* 开始送入编码器到拿到编码包的时间累计。 */
+    uint64_t encode_start_to_done_max_us;                  /* 开始送入编码器到拿到编码包的最大时间。 */
+    uint64_t encoder_input_buffer_copy_sum_us;             /* NV12 拷贝到 MPP 输入缓冲累计。 */
+    uint64_t encoder_input_buffer_copy_max_us;             /* NV12 拷贝到 MPP 输入缓冲最大值。 */
+    uint64_t encoder_submit_frame_call_sum_us;             /* encode_put_frame 调用耗时累计。 */
+    uint64_t encoder_submit_frame_call_max_us;             /* encode_put_frame 调用最大耗时。 */
+    uint64_t encoder_poll_packet_call_sum_us;              /* encode_get_packet 调用耗时累计。 */
+    uint64_t encoder_poll_packet_call_max_us;              /* encode_get_packet 调用最大耗时。 */
+    uint64_t encoder_packet_copy_sum_us;                   /* H264 packet 拷贝耗时累计。 */
+    uint64_t encoder_packet_copy_max_us;                   /* H264 packet 拷贝最大耗时。 */
+    uint64_t encode_frame_total_sum_us;                    /* mpp_encoder_encode_frame 总耗时累计。 */
+    uint64_t encode_frame_total_max_us;                    /* mpp_encoder_encode_frame 总耗时最大值。 */
+    uint64_t dqbuf_to_encode_done_sum_us;                  /* DQBUF 返回到拿到编码包的时间累计。 */
+    uint64_t dqbuf_to_encode_done_max_us;                  /* DQBUF 返回到拿到编码包的最大时间。 */
+    uint64_t dqbuf_to_output_queued_sum_us;                /* DQBUF 返回到输出队列入队完成的时间累计。 */
+    uint64_t dqbuf_to_output_queued_max_us;                /* DQBUF 返回到输出队列入队完成的最大时间。 */
 } MediaGatewayBenchmarkStats;
 
 typedef struct {

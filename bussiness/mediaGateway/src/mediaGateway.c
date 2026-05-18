@@ -1,5 +1,6 @@
 ﻿#include "mediaGateway.h"
 #include "mediaGatewayClock.h"
+#include "mediaGatewayMetrics.h"
 #include "mediaGatewayPipeline.h"
 #include "mediaGatewayProcess.h"
 #include "mediaGatewayStats.h"

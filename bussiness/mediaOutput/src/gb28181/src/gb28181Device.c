@@ -1127,7 +1127,6 @@ static void *media_thread_main(void *arg)
             int raw_len = 0;
             uint64_t frame_id = 0;
             uint64_t dqbuf_ts_us = 0;
-            uint64_t driver_to_dqbuf_us = 0;
             uint8_t *h264_data = NULL;
             size_t h264_len = 0;
             int is_key_frame = 0;
@@ -1167,9 +1166,10 @@ static void *media_thread_main(void *arg)
              * 3. 将该帧封装成 PS；
              * 4. 再切成 RTP 包发往平台。
              */
-            uint64_t dqbuf_ioctl_us = 0;
-            uint64_t frame_copy_us = 0;
-            if (v4l2_capture_frame(ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &driver_to_dqbuf_us, &dqbuf_ioctl_us, &frame_copy_us) != 0)
+            uint64_t camera_buffer_wait_us = 0;
+            uint64_t dqbuf_ioctl_duration_us = 0;
+            uint64_t mmap_to_frame_cache_copy_us = 0;
+            if (v4l2_capture_frame(ctx->capture, &raw_frame, &raw_len, &frame_id, &dqbuf_ts_us, &camera_buffer_wait_us, &dqbuf_ioctl_duration_us, &mmap_to_frame_cache_copy_us) != 0)
             {
                 usleep(10000);
                 continue;

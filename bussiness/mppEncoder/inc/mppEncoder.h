@@ -46,11 +46,11 @@ typedef struct {
 } MppEncoderOptions;
 
 typedef struct {
-    uint64_t input_copy_us;   /* NV12 copy into MPP input buffer. */
-    uint64_t put_frame_us;    /* encode_put_frame call duration. */
-    uint64_t get_packet_us;   /* encode_get_packet call duration. */
-    uint64_t packet_copy_us;  /* encoded packet copy duration. */
-    uint64_t total_us;        /* Whole mpp_encoder_encode_frame duration. */
+    uint64_t encoder_input_buffer_copy_us; /* NV12 copy into MPP input buffer. */
+    uint64_t encoder_submit_frame_call_us; /* encode_put_frame call duration. */
+    uint64_t encoder_poll_packet_call_us;  /* encode_get_packet call duration. */
+    uint64_t encoder_packet_copy_us;       /* encoded packet copy duration. */
+    uint64_t encode_frame_total_us;        /* Whole mpp_encoder_encode_frame duration. */
 } MppEncoderTiming;
 
 int mpp_encoder_init(MppEncoderCtx *enc,
@@ -75,8 +75,8 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              uint8_t **h264_data,
                              size_t *h264_len,
                              int *is_key_frame,
-                             uint64_t *encode_put_ts_us,
-                             uint64_t *encode_get_ts_us,
+                             uint64_t *encode_start_ts_us,
+                             uint64_t *encode_done_ts_us,
                              MppEncoderTiming *timing);
 
 /*

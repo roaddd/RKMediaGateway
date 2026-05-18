@@ -17,10 +17,10 @@ typedef struct {
     int raw_len;                    /* 当前 NV12 帧有效数据长度。 */
     uint64_t frame_id;              /* 当前采集帧号。 */
     uint64_t dqbuf_ts_us;           /* VIDIOC_DQBUF 返回后的单调时钟时间。 */
-    uint64_t driver_to_dqbuf_us;    /* 驱动帧时间戳到 DQBUF 返回后的时间差。 */
-    uint64_t dqbuf_ioctl_us;        /* VIDIOC_DQBUF ioctl 调用耗时。 */
-    uint64_t frame_copy_us;         /* mmap buffer 拷贝到 frame_cache 的耗时。 */
-    uint64_t capture_call_us;       /* v4l2_capture_frame 整体调用耗时。 */
+    uint64_t camera_buffer_wait_us;     /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间。 */
+    uint64_t dqbuf_ioctl_duration_us;   /* VIDIOC_DQBUF ioctl 调用耗时。 */
+    uint64_t mmap_to_frame_cache_copy_us; /* mmap buffer 拷贝到 frame_cache 的耗时。 */
+    uint64_t capture_call_duration_us;  /* v4l2_capture_frame 整体调用耗时。 */
 } MediaFrame;
 
 typedef struct {

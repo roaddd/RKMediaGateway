@@ -253,8 +253,8 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
  * @param {uint8_t **} h264_data
  * @param {size_t *} h264_len
  * @param {int *} is_key_frame
- * @param {uint64_t *} encode_put_ts_us
- * @param {uint64_t *} encode_get_ts_us
+ * @param {uint64_t *} encode_start_ts_us
+ * @param {uint64_t *} encode_done_ts_us
  * @return {int}
  */
 int mpp_encoder_encode_frame(MppEncoderCtx *enc,
@@ -264,8 +264,8 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              uint8_t **h264_data,
                              size_t *h264_len,
                              int *is_key_frame,
-                             uint64_t *encode_put_ts_us,
-                             uint64_t *encode_get_ts_us,
+                             uint64_t *encode_start_ts_us,
+                             uint64_t *encode_done_ts_us,
                              MppEncoderTiming *timing) {
     uint64_t total_start_us = get_now_us();
     uint64_t stage_start_us;
@@ -305,7 +305,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
     stage_end_us = get_now_us();
     if (timing) {
-        timing->input_copy_us = stage_end_us - stage_start_us;
+        timing->encoder_input_buffer_copy_us = stage_end_us - stage_start_us;
     }
 
     // 投喂一帧并拉取对应编码包（部分情况下可能暂时取不到 packet）。
@@ -318,14 +318,13 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         }
     }
 
-    {
-        uint64_t ts = get_now_us();
-        if (encode_put_ts_us) {
-            *encode_put_ts_us = ts;
-        }
-        // printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
-        //        frame_id, ts);
+
+    if (encode_start_ts_us) {
+        *encode_start_ts_us = get_now_us();;
     }
+    // printf("[TRACE] frame=%" PRIu64 " step=before_encode_put_frame ts_us=%" PRIu64 "\n",
+    //        frame_id, ts);
+
 
     /* 这里是设置该帧的PTS吗，为啥每次加一呢，PTS不是显示时间吗 */
     mpp_frame_set_pts(enc->frame, enc->pts++);
@@ -334,7 +333,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     stage_end_us = get_now_us();
     if (timing) {
         // 这里消耗13ms？
-        timing->put_frame_us = stage_end_us - stage_start_us;
+        timing->encoder_submit_frame_call_us = stage_end_us - stage_start_us;
     }
     if (ret != MPP_OK) {
         mpp_log_error("encode_put_frame failed", ret);
@@ -346,12 +345,12 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
     stage_end_us = get_now_us();
     if (timing) {
-        timing->get_packet_us = stage_end_us - stage_start_us;
+        timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
     }
     {
         uint64_t ts = get_now_us();
-        if (encode_get_ts_us) {
-            *encode_get_ts_us = ts;
+        if (encode_done_ts_us) {
+            *encode_done_ts_us = ts;
         }
         // printf("[TRACE] frame=%" PRIu64 " step=after_encode_get_packet ts_us=%" PRIu64 " ret=%d has_packet=%d\n",
         //        frame_id, ts, ret, packet ? 1 : 0);
@@ -369,7 +368,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
             *is_key_frame = 0;
         }
         if (timing) {
-            timing->total_us = get_now_us() - total_start_us;
+            timing->encode_frame_total_us = get_now_us() - total_start_us;
         }
         return 0;
     }
@@ -397,7 +396,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     memcpy(enc->packet_cache, packet_pos, packet_len);
     stage_end_us = get_now_us();
     if (timing) {
-        timing->packet_copy_us = stage_end_us - stage_start_us;
+        timing->encoder_packet_copy_us = stage_end_us - stage_start_us;
     }
     *h264_data = enc->packet_cache;
     *h264_len = packet_len;
@@ -414,7 +413,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
     mpp_packet_deinit(&packet);
     if (timing) {
-        timing->total_us = get_now_us() - total_start_us; // 包括输入拷贝、编码处理、输出拷贝的整帧耗时
+        timing->encode_frame_total_us = get_now_us() - total_start_us; // 包括输入拷贝、编码处理、输出拷贝的整帧耗时
     }
     return 0;
 }

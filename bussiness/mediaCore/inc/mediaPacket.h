@@ -31,12 +31,20 @@ typedef struct MediaBuffer {
 } MediaBuffer;
 
 typedef struct {
+    uint64_t enqueue_ts_us;    /* 进入输出队列的时间戳，单位微秒，用于统计队列等待。 */
+    uint64_t encode_us;        /* 编码阶段总耗时，单位微秒，用于路径延时日志。 */
+    const char *stream_name;   /* 所属码流名称，仅引用配置中的静态字符串。 */
+    int sample;                /* 是否打印本包的路径延时采样日志。 */
+} MediaPacketPathMetrics;
+
+typedef struct {
     MediaFrameType frame_type; /* 帧类型，区分音视频 */
     MediaCodecType codec;      /* 当前帧使用的编码格式 */
     MediaBuffer *buffer;       /* 指向实际负载数据的共享缓冲区 */
     uint64_t frame_id;         /* 帧序号，便于日志和排查问题 */
     uint64_t pts_us;           /* 显示时间戳，单位微秒 */
     uint64_t dts_us;           /* 解码时间戳，单位微秒 */
+    MediaPacketPathMetrics path_metrics; /* 路径延时采样信息；不影响媒体包核心语义。 */
     int is_key_frame;          /* 是否为关键帧，便于丢帧和重连恢复 */
 } MediaPacket;
 
