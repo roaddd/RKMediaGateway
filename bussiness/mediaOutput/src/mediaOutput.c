@@ -205,9 +205,9 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 static void *media_output_thread(void *arg)
 {
     MediaOutput *output = (MediaOutput *)arg;
-    uint64_t send_start_us;
-    uint64_t send_done_us;
-    int send_ret;
+    uint64_t send_start_us = 0;
+    uint64_t send_done_us = 0;
+    int send_ret = -1;
     MediaPacket packet; /* 每个packet是一帧图像或者音频，一帧编码图像内部可能包含多个H264 NALU */
 
     media_packet_init(&packet);
@@ -281,7 +281,15 @@ static void *media_output_thread(void *arg)
         send_ret = output->vtable->send_packet(output, &packet);
         send_done_us = media_output_metrics_now_us();
         /* 打印一帧音频/视频从采集时间戳到协议层发送完成的路径耗时。 */
-        media_output_log_path_latency(&packet, send_start_us, send_done_us);
+        {
+            MediaOutputPathLatencySample path_sample;
+            path_sample.output_name = output->config.name;
+            path_sample.output_type = output->type;
+            path_sample.packet = &packet;
+            path_sample.send_start_us = send_start_us;
+            path_sample.send_done_us = send_done_us;
+            media_output_log_path_latency(&path_sample);
+        }
         if (send_ret != 0)
         {
             pthread_mutex_lock(&output->lock);

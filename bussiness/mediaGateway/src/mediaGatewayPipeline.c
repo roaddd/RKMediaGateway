@@ -118,6 +118,8 @@ static void video_input_deinit(VideoEncodeInput *input)
 
 /**
  * @description: 将视频帧复制发布到 latest 输入槽。
+ * 当前的设计目标是降低实时链路延迟，宁可丢旧帧，也不让视频积压。
+ * TODO:如果后续要做录像，要改成不丢帧的方式
  */
 int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame *frame)
 {
@@ -307,6 +309,7 @@ static void audio_queue_deinit(AudioEncodeQueue *queue)
 
 /**
  * @description: 将 PCM 音频帧复制发布到编码 FIFO。
+ * 和视频不同，音频不能只保留最新帧，否则容易产生明显断音，所以这里保留短队列
  */
 int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame *frame)
 {
@@ -588,14 +591,14 @@ void media_gateway_pipeline_deinit(MediaGatewayPipeline *pipeline)
  */
 int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
 {
-    int i;
+    int i = 0;
     if (!pipeline || !pipeline->ctx)
     {
         LOG_ERROR("media_gateway_pipeline_start_workers failed: invalid pipeline=%p ctx=%p",
-                  (void *)pipeline,
-                  pipeline ? (void *)pipeline->ctx : NULL);
+                  (void *)pipeline, pipeline ? (void *)pipeline->ctx : NULL);
         return -1;
     }
+    /* 为每个流创建编码线程，TODO：不能无限创建吧，RK的MPP硬件编解码是有限的 */
     for (i = 0; i < pipeline->ctx->config.stream_count; ++i)
     {
         VideoEncodeThreadArg *arg;

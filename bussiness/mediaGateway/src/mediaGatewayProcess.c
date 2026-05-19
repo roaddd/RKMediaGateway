@@ -460,6 +460,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.path_metrics.enqueue_ts_us = media_gateway_get_now_us();
     packet.path_metrics.encode_us = encoder_timing ? encoder_timing->encode_frame_total_us : 0;
     packet.path_metrics.stream_name = ctx->config.streams[stream_idx].name;
+    /* 打印本包路径延时的条件：1.配置开启了统计选项；2.采样间隔帧数大于0；3.当前采集帧号是采样间隔帧数的倍数 */
     packet.path_metrics.sample = ctx->bench.enable &&
                                  ctx->bench.sample_every > 0 &&
                                  ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
