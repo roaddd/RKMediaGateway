@@ -19,6 +19,14 @@ void media_gateway_bench_reset_window(MediaGatewayCtx *ctx)
     ctx->bench.capture_call_duration_max_us = 0;
     ctx->bench.mmap_to_frame_cache_copy_sum_us = 0;
     ctx->bench.mmap_to_frame_cache_copy_max_us = 0;
+    ctx->bench.frame_source_publish_sum_us = 0;
+    ctx->bench.frame_source_publish_max_us = 0;
+    ctx->bench.frame_source_publish_copy_sum_us = 0;
+    ctx->bench.frame_source_publish_copy_max_us = 0;
+    ctx->bench.video_input_publish_copy_sum_us = 0;
+    ctx->bench.video_input_publish_copy_max_us = 0;
+    ctx->bench.video_input_acquire_copy_sum_us = 0;
+    ctx->bench.video_input_acquire_copy_max_us = 0;
     ctx->bench.dqbuf_to_encode_start_sum_us = 0;
     ctx->bench.dqbuf_to_encode_start_max_us = 0;
     ctx->bench.encode_start_to_done_sum_us = 0;
@@ -44,6 +52,10 @@ void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
                                        uint64_t dqbuf_ioctl_duration_us,
                                        uint64_t capture_call_duration_us,
                                        uint64_t mmap_to_frame_cache_copy_us,
+                                       uint64_t frame_source_publish_us,
+                                       uint64_t frame_source_publish_copy_us,
+                                       uint64_t video_input_publish_copy_us,
+                                       uint64_t video_input_acquire_copy_us,
                                        uint64_t dqbuf_to_encode_start_us,
                                        uint64_t encode_start_to_done_us,
                                        const MppEncoderTiming *encoder_timing,
@@ -58,6 +70,10 @@ void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
     ctx->bench.dqbuf_ioctl_duration_sum_us += dqbuf_ioctl_duration_us;
     ctx->bench.capture_call_duration_sum_us += capture_call_duration_us;
     ctx->bench.mmap_to_frame_cache_copy_sum_us += mmap_to_frame_cache_copy_us;
+    ctx->bench.frame_source_publish_sum_us += frame_source_publish_us;
+    ctx->bench.frame_source_publish_copy_sum_us += frame_source_publish_copy_us;
+    ctx->bench.video_input_publish_copy_sum_us += video_input_publish_copy_us;
+    ctx->bench.video_input_acquire_copy_sum_us += video_input_acquire_copy_us;
     ctx->bench.dqbuf_to_encode_start_sum_us += dqbuf_to_encode_start_us;
     ctx->bench.encode_start_to_done_sum_us += encode_start_to_done_us;
     if (encoder_timing)
@@ -79,6 +95,14 @@ void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
         ctx->bench.capture_call_duration_max_us = capture_call_duration_us;
     if (mmap_to_frame_cache_copy_us > ctx->bench.mmap_to_frame_cache_copy_max_us)
         ctx->bench.mmap_to_frame_cache_copy_max_us = mmap_to_frame_cache_copy_us;
+    if (frame_source_publish_us > ctx->bench.frame_source_publish_max_us)
+        ctx->bench.frame_source_publish_max_us = frame_source_publish_us;
+    if (frame_source_publish_copy_us > ctx->bench.frame_source_publish_copy_max_us)
+        ctx->bench.frame_source_publish_copy_max_us = frame_source_publish_copy_us;
+    if (video_input_publish_copy_us > ctx->bench.video_input_publish_copy_max_us)
+        ctx->bench.video_input_publish_copy_max_us = video_input_publish_copy_us;
+    if (video_input_acquire_copy_us > ctx->bench.video_input_acquire_copy_max_us)
+        ctx->bench.video_input_acquire_copy_max_us = video_input_acquire_copy_us;
     if (dqbuf_to_encode_start_us > ctx->bench.dqbuf_to_encode_start_max_us)
         ctx->bench.dqbuf_to_encode_start_max_us = dqbuf_to_encode_start_us;
     if (encode_start_to_done_us > ctx->bench.encode_start_to_done_max_us)
@@ -120,15 +144,37 @@ void media_gateway_bench_log_and_reset_if_due(MediaGatewayCtx *ctx)
         sample_count = (double)ctx->bench.sample_count;
         LOG_WARN("[BENCH_SUMMARY] samples=%" PRIu64
                  " avg_camera_buffer_wait_us=%.2f max_camera_buffer_wait_us=%" PRIu64
+                 " avg_dqbuf_ioctl_duration_us=%.2f max_dqbuf_ioctl_duration_us=%" PRIu64
+                 " avg_capture_call_duration_us=%.2f max_capture_call_duration_us=%" PRIu64
                  " avg_mmap_to_frame_cache_copy_us=%.2f max_mmap_to_frame_cache_copy_us=%" PRIu64
+                 " avg_frame_source_publish_us=%.2f max_frame_source_publish_us=%" PRIu64
+                 " avg_frame_source_publish_copy_us=%.2f max_frame_source_publish_copy_us=%" PRIu64
+                 " avg_video_input_publish_copy_us=%.2f max_video_input_publish_copy_us=%" PRIu64
+                 " avg_video_input_acquire_copy_us=%.2f max_video_input_acquire_copy_us=%" PRIu64
                  " avg_dqbuf_to_encode_start_us=%.2f max_dqbuf_to_encode_start_us=%" PRIu64
+                 " avg_encode_start_to_done_us=%.2f max_encode_start_to_done_us=%" PRIu64
+                 " avg_encoder_input_buffer_copy_us=%.2f max_encoder_input_buffer_copy_us=%" PRIu64
+                 " avg_encoder_submit_frame_call_us=%.2f max_encoder_submit_frame_call_us=%" PRIu64
+                 " avg_encoder_poll_packet_call_us=%.2f max_encoder_poll_packet_call_us=%" PRIu64
+                 " avg_encoder_packet_copy_us=%.2f max_encoder_packet_copy_us=%" PRIu64
                  " avg_encode_frame_total_us=%.2f max_encode_frame_total_us=%" PRIu64
                  " avg_dqbuf_to_encode_done_us=%.2f max_dqbuf_to_encode_done_us=%" PRIu64
                  " avg_dqbuf_to_output_queued_us=%.2f max_dqbuf_to_output_queued_us=%" PRIu64,
                  ctx->bench.sample_count,
                  (double)ctx->bench.camera_buffer_wait_sum_us / sample_count, ctx->bench.camera_buffer_wait_max_us,
+                 (double)ctx->bench.dqbuf_ioctl_duration_sum_us / sample_count, ctx->bench.dqbuf_ioctl_duration_max_us,
+                 (double)ctx->bench.capture_call_duration_sum_us / sample_count, ctx->bench.capture_call_duration_max_us,
                  (double)ctx->bench.mmap_to_frame_cache_copy_sum_us / sample_count, ctx->bench.mmap_to_frame_cache_copy_max_us,
+                 (double)ctx->bench.frame_source_publish_sum_us / sample_count, ctx->bench.frame_source_publish_max_us,
+                 (double)ctx->bench.frame_source_publish_copy_sum_us / sample_count, ctx->bench.frame_source_publish_copy_max_us,
+                 (double)ctx->bench.video_input_publish_copy_sum_us / sample_count, ctx->bench.video_input_publish_copy_max_us,
+                 (double)ctx->bench.video_input_acquire_copy_sum_us / sample_count, ctx->bench.video_input_acquire_copy_max_us,
                  (double)ctx->bench.dqbuf_to_encode_start_sum_us / sample_count, ctx->bench.dqbuf_to_encode_start_max_us,
+                 (double)ctx->bench.encode_start_to_done_sum_us / sample_count, ctx->bench.encode_start_to_done_max_us,
+                 (double)ctx->bench.encoder_input_buffer_copy_sum_us / sample_count, ctx->bench.encoder_input_buffer_copy_max_us,
+                 (double)ctx->bench.encoder_submit_frame_call_sum_us / sample_count, ctx->bench.encoder_submit_frame_call_max_us,
+                 (double)ctx->bench.encoder_poll_packet_call_sum_us / sample_count, ctx->bench.encoder_poll_packet_call_max_us,
+                 (double)ctx->bench.encoder_packet_copy_sum_us / sample_count, ctx->bench.encoder_packet_copy_max_us,
                  (double)ctx->bench.encode_frame_total_sum_us / sample_count, ctx->bench.encode_frame_total_max_us,
                  (double)ctx->bench.dqbuf_to_encode_done_sum_us / sample_count, ctx->bench.dqbuf_to_encode_done_max_us,
                  (double)ctx->bench.dqbuf_to_output_queued_sum_us / sample_count, ctx->bench.dqbuf_to_output_queued_max_us);

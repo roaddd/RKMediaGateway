@@ -25,6 +25,13 @@ static void make_abs_timeout(struct timespec *ts, int timeout_ms)
     ts->tv_nsec = nsec % 1000000000L;
 }
 
+static uint64_t pipeline_now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 /**
  * @description: 标记 pipeline 失败并请求 gateway 退出。
  */
@@ -125,6 +132,8 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
 {
     size_t need_size;
     uint8_t *new_data;
+    uint64_t copy_start_us;
+    uint64_t copy_done_us;
 
     if (!input || !frame || !frame->raw_frame || frame->raw_len <= 0)
     {
@@ -157,9 +166,12 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
     }
     if (input->valid)
         input->dropped_frames++;
+    copy_start_us = pipeline_now_us();
     memcpy(input->data, frame->raw_frame, need_size);
+    copy_done_us = pipeline_now_us();
     input->frame = *frame;
     input->frame.raw_frame = input->data;
+    input->frame.metrics.video_input_publish_copy_us = copy_done_us - copy_start_us;
     input->valid = 1;
     pthread_cond_signal(&input->cond);
     pthread_mutex_unlock(&input->lock);
@@ -179,6 +191,8 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
     int wait_ret;
     size_t need_size;
     uint8_t *new_data;
+    uint64_t copy_start_us;
+    uint64_t copy_done_us;
 
     if (!input || !frame || !local_data || !local_capacity)
     {
@@ -220,9 +234,12 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
         *local_data = new_data;
         *local_capacity = need_size;
     }
-    memcpy(*local_data, input->data, need_size); /* 这里有一次内存复制， */
+    copy_start_us = pipeline_now_us();
+    memcpy(*local_data, input->data, need_size);
+    copy_done_us = pipeline_now_us();
     *frame = input->frame;
     frame->raw_frame = *local_data;
+    frame->metrics.video_input_acquire_copy_us = copy_done_us - copy_start_us;
     input->valid = 0;
     pthread_mutex_unlock(&input->lock);
     return 1;

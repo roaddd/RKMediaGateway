@@ -107,12 +107,17 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     int slot_idx;
     MediaFrameSourceSlot *slot;
     size_t copy_len;
+    uint64_t publish_start_us;
+    uint64_t copy_start_us;
+    uint64_t copy_done_us;
+    uint64_t publish_done_us;
 
     if (!source || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0) {
         LOG_ERROR("frame source publish frame failed: invalid arguments");
         return -1;
     }
     copy_len = (size_t)src_frame->raw_len;
+    publish_start_us = frame_source_now_us();
 
     pthread_mutex_lock(&source->lock);
     slot_idx = frame_source_find_write_slot(source);
@@ -132,15 +137,20 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
         return -1;
     }
 
-    memcpy(slot->data, src_frame->raw_frame, copy_len); /* 从源帧复制数据到采集线程的队列 */
+    copy_start_us = frame_source_now_us();
+    memcpy(slot->data, src_frame->raw_frame, copy_len);
+    copy_done_us = frame_source_now_us();
     slot->frame = *src_frame;
     slot->frame.raw_frame = slot->data;
+    slot->frame.metrics.frame_source_publish_copy_us = copy_done_us - copy_start_us;
     slot->seq = source->next_seq++;
     slot->valid = 1;
     source->latest_slot = slot_idx;
 
     frame_source_drop_stale_slots(source, slot_idx);
     pthread_cond_signal(&source->cond);
+    publish_done_us = frame_source_now_us();
+    slot->frame.metrics.frame_source_publish_us = publish_done_us - publish_start_us;
     pthread_mutex_unlock(&source->lock);
     return 0;
 }
@@ -161,9 +171,9 @@ static void *frame_source_thread(void *arg) {
                                &frame.raw_len,
                                &frame.frame_id,
                                &frame.dqbuf_ts_us,
-                               &frame.camera_buffer_wait_us,
-                               &frame.dqbuf_ioctl_duration_us,
-                               &frame.mmap_to_frame_cache_copy_us) != 0)
+                               &frame.metrics.camera_buffer_wait_us,
+                               &frame.metrics.dqbuf_ioctl_duration_us,
+                               &frame.metrics.mmap_to_frame_cache_copy_us) != 0)
         {
             source->consecutive_failures++;
             if (source->consecutive_failures >= source->max_consecutive_failures) {
@@ -182,7 +192,7 @@ static void *frame_source_thread(void *arg) {
         }
         /* 统计v4l2_capture_frame接口耗时 */
         capture_end_us = frame_source_now_us();
-        frame.capture_call_duration_us = capture_end_us - capture_start_us;
+        frame.metrics.capture_call_duration_us = capture_end_us - capture_start_us;
         source->consecutive_failures = 0;
 
         if (!frame_source_should_run(source)) 

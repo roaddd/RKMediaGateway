@@ -140,6 +140,14 @@ typedef struct {
     uint64_t capture_call_duration_max_us;                 /* v4l2_capture_frame 整体调用最大耗时。 */
     uint64_t mmap_to_frame_cache_copy_sum_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
     uint64_t mmap_to_frame_cache_copy_max_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
+    uint64_t frame_source_publish_sum_us;                  /* 采集线程发布到 MediaFrameSource 槽位的总耗时累计。 */
+    uint64_t frame_source_publish_max_us;                  /* 采集线程发布到 MediaFrameSource 槽位的总耗时最大值。 */
+    uint64_t frame_source_publish_copy_sum_us;             /* frame source 发布时整帧拷贝耗时累计。 */
+    uint64_t frame_source_publish_copy_max_us;             /* frame source 发布时整帧拷贝最大值。 */
+    uint64_t video_input_publish_copy_sum_us;              /* 发布到视频编码输入槽的整帧拷贝耗时累计。 */
+    uint64_t video_input_publish_copy_max_us;              /* 发布到视频编码输入槽的整帧拷贝最大值。 */
+    uint64_t video_input_acquire_copy_sum_us;              /* 编码线程从视频输入槽取本地副本的拷贝耗时累计。 */
+    uint64_t video_input_acquire_copy_max_us;              /* 编码线程从视频输入槽取本地副本的拷贝最大值。 */
     uint64_t dqbuf_to_encode_start_sum_us;                 /* DQBUF 返回到开始送入编码器的时间累计。 */
     uint64_t dqbuf_to_encode_start_max_us;                 /* DQBUF 返回到开始送入编码器的最大时间。 */
     uint64_t encode_start_to_done_sum_us;                  /* 开始送入编码器到拿到编码包的时间累计。 */
