@@ -35,6 +35,7 @@ typedef struct {
      */
     uint64_t samples;
     uint64_t dqbuf_to_send_sum_us;
+    uint64_t dqbuf_to_encode_start_sum_us;
     uint64_t encode_sum_us;
     uint64_t queue_sum_us;
     uint64_t output_sum_us;
@@ -120,6 +121,7 @@ static void media_output_update_path_latency_window(const char *output_name,
                                                     const char *stream_name,
                                                     MediaFrameType frame_type,
                                                     uint64_t dqbuf_to_send_us,
+                                                    uint64_t dqbuf_to_encode_start_us,
                                                     uint64_t encode_us,
                                                     uint64_t queue_us,
                                                     uint64_t output_us)
@@ -127,6 +129,7 @@ static void media_output_update_path_latency_window(const char *output_name,
     PathLatencyWindow *window = NULL;
     uint64_t samples = 0;
     uint64_t dqbuf_to_send_sum_us = 0;
+    uint64_t dqbuf_to_encode_start_sum_us = 0;
     uint64_t encode_sum_us = 0;
     uint64_t queue_sum_us = 0;
     uint64_t output_sum_us = 0;
@@ -142,6 +145,7 @@ static void media_output_update_path_latency_window(const char *output_name,
     {
         window->samples++;
         window->dqbuf_to_send_sum_us += dqbuf_to_send_us;
+        window->dqbuf_to_encode_start_sum_us += dqbuf_to_encode_start_us;
         window->encode_sum_us += encode_us;
         window->queue_sum_us += queue_us;
         window->output_sum_us += output_us;
@@ -155,11 +159,13 @@ static void media_output_update_path_latency_window(const char *output_name,
         {
             samples = window->samples;
             dqbuf_to_send_sum_us = window->dqbuf_to_send_sum_us;
+            dqbuf_to_encode_start_sum_us = window->dqbuf_to_encode_start_sum_us;
             encode_sum_us = window->encode_sum_us;
             queue_sum_us = window->queue_sum_us;
             output_sum_us = window->output_sum_us;
             window->samples = 0;
             window->dqbuf_to_send_sum_us = 0;
+            window->dqbuf_to_encode_start_sum_us = 0;
             window->encode_sum_us = 0;
             window->queue_sum_us = 0;
             window->output_sum_us = 0;
@@ -173,6 +179,7 @@ static void media_output_update_path_latency_window(const char *output_name,
 
     LOG_WARN("[PATH_LATENCY_AVG] output=%s output_type=%s stream=%s media=%s samples=%" PRIu64
              " avg_dqbuf_to_send_us=%.2f"
+             " avg_dqbuf_to_encode_start_us=%.2f"
              " avg_encode_us=%.2f"
              " avg_queue_us=%.2f"
              " avg_output_us=%.2f",
@@ -182,6 +189,7 @@ static void media_output_update_path_latency_window(const char *output_name,
              media_output_metric_media_name(frame_type),
              samples,
              (double)dqbuf_to_send_sum_us / (double)samples,
+             (double)dqbuf_to_encode_start_sum_us / (double)samples,
              (double)encode_sum_us / (double)samples,
              (double)queue_sum_us / (double)samples,
              (double)output_sum_us / (double)samples);
@@ -199,6 +207,7 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
     const MediaPacket *packet = NULL;
     const char *output_name = NULL;
     const char *stream_name = NULL;
+    uint64_t dqbuf_to_encode_start_us = 0;
     uint64_t dqbuf_to_send_us = 0; /* 从v4l2缓冲区取出该帧到发送完成的时间 */
     uint64_t queue_us = 0; /* 该帧从输出队列中取出到发送完成的时间 */
     uint64_t output_us = 0; /* 该帧发送开始到发送完成的时间 */
@@ -223,6 +232,7 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
      * - output_us: 输出模块实际发送调用耗时。
      */
     dqbuf_to_send_us = (sample->send_done_us >= packet->pts_us) ? (sample->send_done_us - packet->pts_us) : 0;
+    dqbuf_to_encode_start_us = packet->path_metrics.dqbuf_to_encode_start_us;
     queue_us = (sample->send_start_us >= packet->path_metrics.enqueue_ts_us)
                    ? (sample->send_start_us - packet->path_metrics.enqueue_ts_us)
                    : 0;
@@ -232,6 +242,7 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
 
     LOG_INFO("[PATH_LATENCY] output=%s output_type=%s stream=%s media=%s frame_id=%" PRIu64
              " dqbuf_to_send_us=%" PRIu64
+             " dqbuf_to_encode_start_us=%" PRIu64
              " encode_us=%" PRIu64
              " queue_us=%" PRIu64
              " output_us=%" PRIu64,
@@ -241,6 +252,7 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
              media_output_metric_media_name(packet->frame_type),
              packet->frame_id,
              dqbuf_to_send_us,
+             dqbuf_to_encode_start_us,
              packet->path_metrics.encode_us,
              queue_us,
              output_us);
@@ -250,6 +262,7 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
                                             stream_name,
                                             packet->frame_type,
                                             dqbuf_to_send_us,
+                                            dqbuf_to_encode_start_us,
                                             packet->path_metrics.encode_us,
                                             queue_us,
                                             output_us);

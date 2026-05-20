@@ -32,6 +32,7 @@ typedef struct MediaBuffer {
 
 typedef struct {
     uint64_t enqueue_ts_us;    /* 进入输出队列的时间戳，单位微秒，用于统计队列等待。 */
+    uint64_t dqbuf_to_encode_start_us; /* DQBUF 返回到开始送入编码器的耗时，单位微秒。 */
     uint64_t encode_us;        /* 编码阶段总耗时，单位微秒，用于路径延时日志。 */
     const char *stream_name;   /* 所属码流名称，仅引用配置中的静态字符串。 */
     int sample;                /* 是否打印本包的路径延时采样日志。 */

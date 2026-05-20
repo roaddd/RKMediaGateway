@@ -434,6 +434,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
                                  uint8_t *h264_data,
                                  size_t h264_len,
                                  int is_key_frame,
+                                 uint64_t encode_start_ts_us,
                                  const MppEncoderTiming *encoder_timing)
 {
     MediaBuffer *buffer = NULL;
@@ -458,6 +459,9 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.pts_us = frame->dqbuf_ts_us;
     packet.dts_us = frame->dqbuf_ts_us;
     packet.path_metrics.enqueue_ts_us = media_gateway_get_now_us();
+    packet.path_metrics.dqbuf_to_encode_start_us = (encode_start_ts_us >= frame->dqbuf_ts_us)
+                                                       ? (encode_start_ts_us - frame->dqbuf_ts_us)
+                                                       : 0;
     packet.path_metrics.encode_us = encoder_timing ? encoder_timing->encode_frame_total_us : 0;
     packet.path_metrics.stream_name = ctx->config.streams[stream_idx].name;
     /* 打印本包路径延时的条件：1.配置开启了统计选项；2.采样间隔帧数大于0；3.当前采集帧号是采样间隔帧数的倍数 */
@@ -726,7 +730,14 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
     }
 
     pthread_mutex_lock(&ctx->stats_lock);
-    if (enqueue_stream_packet(ctx, stream_idx, frame, h264_data, h264_len, is_key_frame, &encoder_timing) != 0)
+    if (enqueue_stream_packet(ctx,
+                              stream_idx,
+                              frame,
+                              h264_data,
+                              h264_len,
+                              is_key_frame,
+                              encode_start_ts_us,
+                              &encoder_timing) != 0)
     {
         LOG_ERROR("media_gateway_process_stream failed: enqueue stream=%d frame=%" PRIu64 " size=%zu key=%d",
                   stream_idx,
