@@ -1,6 +1,7 @@
 #include "mediaFrameSource.h"
 
 #include "logger.h"
+#include "util.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -161,6 +162,7 @@ static void *frame_source_thread(void *arg) {
     uint64_t capture_end_us;
     MediaFrame frame; /* 存放采集的一帧数据 */
 
+    util_set_thread_name(source->thread_name);
     while (frame_source_should_run(source)) 
     {
         memset(&frame, 0, sizeof(frame));
@@ -215,6 +217,7 @@ static void *frame_source_thread(void *arg) {
 
 int media_frame_source_init(MediaFrameSource *source,
                             V4L2CaptureCtx *capture,
+                            const char *thread_name,
                             int retry_ms,
                             int max_consecutive_failures) {
     if (!source || !capture) 
@@ -224,6 +227,10 @@ int media_frame_source_init(MediaFrameSource *source,
     }
     memset(source, 0, sizeof(*source));
     source->capture = capture;
+    snprintf(source->thread_name,
+             sizeof(source->thread_name),
+             "cap-%.11s",
+             (thread_name && thread_name[0] != '\0') ? thread_name : "video");
     source->retry_ms = (retry_ms > 0) ? retry_ms : 5;
     source->max_consecutive_failures = (max_consecutive_failures > 0) ? max_consecutive_failures : 30;
     source->latest_slot = -1;

@@ -780,6 +780,7 @@ static int start_run_frame_sources(MediaGatewayCtx *ctx, MediaGatewayRunResource
             continue;
         if (media_frame_source_init(&res->frame_sources[source_idx],
                                     &ctx->captures[source_idx],
+                                    ctx->config.capture_sources[source_idx].name,
                                     ctx->config.capture_retry_ms,
                                     ctx->config.max_consecutive_failures) != 0)
         {

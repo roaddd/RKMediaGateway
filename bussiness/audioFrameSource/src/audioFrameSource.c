@@ -1,6 +1,7 @@
 #include "audioFrameSource.h"
 
 #include "logger.h"
+#include "util.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -140,6 +141,7 @@ static void *audio_frame_source_thread(void *arg) {
     AudioFrameSource *source = (AudioFrameSource *)arg;
     AudioCaptureFrame frame;
 
+    util_set_thread_name("cap-audio");
     while (audio_frame_source_should_run(source)) {
         memset(&frame, 0, sizeof(frame));
         if (audio_capture_read_frame(source->capture, &frame) != 0) {

@@ -42,6 +42,7 @@ typedef struct {
 
 typedef struct {
     V4L2CaptureCtx *capture;        /* 外部传入的 V4L2 采集上下文，生命周期由 mediaGateway 管理。 */
+    char thread_name[16];           /* Linux thread name, including the trailing NUL. */
     pthread_t thread;               /* 采集线程句柄。 */
     pthread_mutex_t lock;           /* 保护槽位、运行状态和统计字段。 */
     pthread_cond_t cond;            /* 新帧到达或线程退出时唤醒消费者。 */
@@ -72,6 +73,7 @@ typedef struct {
  */
 int media_frame_source_init(MediaFrameSource *source,
                             V4L2CaptureCtx *capture,
+                            const char *thread_name,
                             int retry_ms,
                             int max_consecutive_failures);
 

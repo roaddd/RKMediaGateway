@@ -2,6 +2,7 @@
 
 #include "logger.h"
 #include "mediaPacket.h"
+#include "util.h"
 
 #include <arpa/inet.h>
 #include <eXosip2/eXosip.h>
@@ -1105,6 +1106,7 @@ static void *media_thread_main(void *arg)
 {
     Gb28181DeviceCtx *ctx = (Gb28181DeviceCtx *)arg;
     Gb28181Buffer ps_buffer;
+    util_set_thread_name("gb-media");
     if (!ctx || gb_buffer_init(&ps_buffer, GB28181_PS_BUFFER_INIT_SIZE) != 0)
         return NULL;
     while (ctx->running)

@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "logger.h"
+#include "util.h"
 #include "../inc/gb28181Device.h"
 
 /*
@@ -99,6 +100,7 @@ static void *gb28181_output_sip_loop(void *arg) {
     if (!impl) {
         return NULL;
     }
+    util_set_thread_name("gb-sip");
     gb28181_device_run(&impl->device_ctx);
     return NULL;
 }

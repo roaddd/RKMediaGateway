@@ -3,12 +3,24 @@
 #include "mediaGatewayProcess.h"
 
 #include "logger.h"
+#include "util.h"
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static void pipeline_set_thread_name(const char *prefix, const char *name, int index)
+{
+    char thread_name[16];
+    if (name && name[0] != '\0')
+        snprintf(thread_name, sizeof(thread_name), "%s%.11s", prefix, name);
+    else
+        snprintf(thread_name, sizeof(thread_name), "%s%d", prefix, index);
+    util_set_thread_name(thread_name);
+}
 
 /**
  * @description: 生成 pthread 条件变量使用的绝对超时时间。
@@ -461,6 +473,7 @@ static void *video_encode_thread_main(void *arg)
     MediaFrame frame;
     int ret;
 
+    pipeline_set_thread_name("enc-", pipeline->ctx->config.streams[stream_idx].name, stream_idx);
     free(thread_arg);
     while (pipeline->ctx->running)
     {
@@ -505,6 +518,7 @@ static void *audio_encode_thread_main(void *arg)
     AudioFrame frame;
     int ret;
 
+    pipeline_set_thread_name("enc-", "audio", 0);
     while (pipeline->ctx->running)
     {
         ret = audio_queue_acquire_copy(&pipeline->audio_queue,

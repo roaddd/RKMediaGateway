@@ -5,6 +5,7 @@
 #include "mediaOutputPathMetrics.h"
 #include "rtmp/inc/rtmpOutput.h"
 #include "rtsp/inc/rtspOutput.h"
+#include "util.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -14,6 +15,16 @@
 
 #define DEFAULT_OUTPUT_QUEUE_CAPACITY 32
 #define DEFAULT_RECONNECT_INTERVAL_MS 1000
+
+static void output_set_thread_name(const char *output_name)
+{
+    char thread_name[16];
+    snprintf(thread_name,
+             sizeof(thread_name),
+             "out-%.11s",
+             (output_name && output_name[0] != '\0') ? output_name : "media");
+    util_set_thread_name(thread_name);
+}
 
 /**
  * @description: 初始化输出包队列。
@@ -210,6 +221,7 @@ static void *media_output_thread(void *arg)
     int send_ret = -1;
     MediaPacket packet; /* 每个packet是一帧图像或者音频，一帧编码图像内部可能包含多个H264 NALU */
 
+    output_set_thread_name(output->config.name);
     media_packet_init(&packet);
     while (1)
     {

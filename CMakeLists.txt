@@ -21,6 +21,7 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/logger/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/defValue/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/util/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
@@ -68,6 +69,7 @@ file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c
 file(GLOB MEDIA_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/src/*.c)
 file(GLOB_RECURSE MEDIA_OUTPUT_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/*.c)
 file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
+file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
@@ -90,6 +92,7 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
+        ${UTIL_SRC}
     )
     target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
     if(ENABLE_ALSA_AUDIO AND ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
@@ -218,6 +221,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
         ${DEF_VALUE_SRC}
+        ${UTIL_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -256,6 +260,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
+        ${UTIL_SRC}
         ${DUAL_OUTPUT_SRC}
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -290,6 +295,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
         ${DEF_VALUE_SRC}
+        ${UTIL_SRC}
         ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}
     )

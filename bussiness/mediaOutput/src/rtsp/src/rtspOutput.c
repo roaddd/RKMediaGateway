@@ -10,6 +10,7 @@
 
 #include "logger.h"
 #include "rtsp_server_api.h"
+#include "util.h"
 
 #define DEFAULT_RTSP_OUTPUT_NAME "rtsp"
 #define DEFAULT_RTSP_SESSION "live"
@@ -186,6 +187,7 @@ static int rtsp_output_send_video_packet(RtspOutputImpl *impl, const MediaPacket
 /* 共享 RTSP 服务线程入口：阻塞运行 rtspStartServer。 */
 static void *shared_rtsp_server_thread(void *arg) {
     RtspSharedServer *shared = (RtspSharedServer *)arg;
+    util_set_thread_name("rtsp-server");
     rtspStartServer(shared->auth_enable,
                     shared->server_ip,
                     shared->server_port,
