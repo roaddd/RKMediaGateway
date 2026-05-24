@@ -267,6 +267,49 @@ static void build_encoder_options(const MediaGatewayStreamConfig *cfg, MppEncode
 }
 
 /**
+ * @description: 使用 V4L2 协商结果覆盖 MPP 输入 stride，优先尝试 DMA-BUF 直通。
+ */
+static void apply_capture_layout_encoder_options(MediaGatewayCtx *ctx, int stream_idx, MppEncoderOptions *opt)
+{
+    const MediaGatewayStreamConfig *stream_cfg;
+    const V4L2CaptureFormat *capture_format;
+    int source_idx;
+
+    if (!ctx || !opt || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return;
+
+    stream_cfg = &ctx->config.streams[stream_idx];
+    source_idx = stream_cfg->source_index;
+    if (source_idx < 0 || source_idx >= ctx->config.capture_source_count || !ctx->capture_ready[source_idx])
+        return;
+
+    capture_format = &ctx->captures[source_idx].format;
+    if (capture_format->pixelformat != V4L2_PIX_FMT_NV12 ||
+        capture_format->num_planes != 1 ||
+        stream_cfg->width != capture_format->width ||
+        stream_cfg->height != capture_format->height ||
+        capture_format->planes[0].bytesperline == 0)
+    {
+        return;
+    }
+
+    /*
+     * 尝试让 MPP 按 V4L2 single-plane NV12 的真实布局解释 DMA-BUF。
+     * main 1920x1080 的 V4L2 sizeimage 是紧凑 NV12，因此 ver_stride 先用
+     * 有效高度 1080，而不是默认对齐到 1088。
+     */
+    opt->input_hor_stride = (int)capture_format->planes[0].bytesperline;
+    opt->input_ver_stride = capture_format->height;
+    LOG_INFO("stream=%d use capture layout for MPP input: size=%dx%d stride=%dx%d sizeimage=%u",
+             stream_idx,
+             capture_format->width,
+             capture_format->height,
+             opt->input_hor_stride,
+             opt->input_ver_stride,
+             capture_format->planes[0].sizeimage);
+}
+
+/**
  * @description: 按当前 stream 配置重建 MPP 编码器。
  */
 int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
@@ -283,6 +326,7 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
 
     stream_cfg = &ctx->config.streams[stream_idx];
     build_encoder_options(stream_cfg, &options);
+    apply_capture_layout_encoder_options(ctx, stream_idx, &options);
     if (ctx->encoder_ready[stream_idx])
     {
         mpp_encoder_deinit(&ctx->encoders[stream_idx]);

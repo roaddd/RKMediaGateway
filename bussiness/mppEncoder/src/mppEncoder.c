@@ -110,8 +110,16 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     memset(enc, 0, sizeof(*enc));
     enc->width = width;
     enc->height = height;
-    enc->hor_stride = MPP_ALIGN(width, 16);
-    enc->ver_stride = MPP_ALIGN(height, 16);
+    enc->hor_stride = (options && options->input_hor_stride > 0) ? options->input_hor_stride : MPP_ALIGN(width, 16);
+    enc->ver_stride = (options && options->input_ver_stride > 0) ? options->input_ver_stride : MPP_ALIGN(height, 16);
+    if (enc->hor_stride < width || enc->ver_stride < height) {
+        LOG_ERROR("mpp_encoder_init failed: invalid input stride size=%dx%d stride=%dx%d",
+                  width,
+                  height,
+                  enc->hor_stride,
+                  enc->ver_stride);
+        return -1;
+    }
     enc->fps = fps;
     enc->bitrate = bitrate;
     enc->gop = gop;

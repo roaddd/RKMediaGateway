@@ -43,6 +43,8 @@ typedef struct {
     int qp_min_i;       /* I 帧最小 QP；<=0 表示使用 MPP 默认值。 */
     int qp_max_i;       /* I 帧最大 QP；<=0 表示使用 MPP 默认值。 */
     int qp_max_step;    /* 相邻帧最大 QP 变化步长；<=0 表示使用 MPP 默认值。 */
+    int input_hor_stride; /* 输入 buffer 水平 stride；<=0 表示默认 16 对齐。 */
+    int input_ver_stride; /* 输入 buffer 垂直 stride；<=0 表示默认 16 对齐。 */
 } MppEncoderOptions;
 
 typedef struct {
