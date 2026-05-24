@@ -534,7 +534,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
         if (dmabuf_direct)
         {
             const V4L2CaptureFormat *format = &frame->capture_buffer->capture->format;
-            LOG_INFO("DMA-BUF direct enabled stream=%d name=%s size=%dx%d bytesperline=%u sizeimage=%u mpp_stride=%dx%d",
+            LOG_WARN("DMA-BUF direct enabled stream=%d name=%s size=%dx%d bytesperline=%u sizeimage=%u mpp_stride=%dx%d",
                      stream_idx,
                      stream_cfg->name ? stream_cfg->name : "unknown",
                      format->width,
@@ -645,6 +645,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
                                  ctx->bench.sample_every > 0 &&
                                  ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
     packet.is_key_frame = is_key_frame;
+    media_gateway_metrics_log_frame_trace(ctx, stream_idx, frame, &packet, h264_len);
 
     for (i = 0; i < ctx->output_count; ++i)
     {

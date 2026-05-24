@@ -6,6 +6,50 @@
 
 #include <inttypes.h>
 
+#define FRAME_TRACE_MAIN_STREAM_INDEX 0
+#define FRAME_TRACE_SAMPLE_INTERVAL 30ULL
+
+void media_gateway_metrics_log_frame_trace(MediaGatewayCtx *ctx,
+                                           int stream_idx,
+                                           const MediaFrame *frame,
+                                           const MediaPacket *packet,
+                                           size_t h264_len)
+{
+    uint64_t dqbuf_to_output_queued_us;
+    uint64_t camera_to_output_queued_us;
+
+    if (!ctx || !frame || !packet)
+        return;
+    if (stream_idx != FRAME_TRACE_MAIN_STREAM_INDEX ||
+        (frame->frame_id % FRAME_TRACE_SAMPLE_INTERVAL) != 0)
+    {
+        return;
+    }
+
+    dqbuf_to_output_queued_us =
+        (packet->path_metrics.enqueue_ts_us >= frame->dqbuf_ts_us)
+            ? (packet->path_metrics.enqueue_ts_us - frame->dqbuf_ts_us)
+            : 0;
+    camera_to_output_queued_us = frame->metrics.camera_buffer_wait_us + dqbuf_to_output_queued_us;
+
+    LOG_WARN("[FRAME_TRACE] stream=%s frame_id=%" PRIu64
+             " camera_to_output_queued_us=%" PRIu64
+             " camera_buffer_wait_us=%" PRIu64
+             " dqbuf_to_output_queued_us=%" PRIu64
+             " dqbuf_to_encode_start_us=%" PRIu64
+             " encode_us=%" PRIu64
+             " key=%d h264_len=%zu",
+             ctx->config.streams[stream_idx].name ? ctx->config.streams[stream_idx].name : "unknown",
+             frame->frame_id,
+             camera_to_output_queued_us,
+             frame->metrics.camera_buffer_wait_us,
+             dqbuf_to_output_queued_us,
+             packet->path_metrics.dqbuf_to_encode_start_us,
+             packet->path_metrics.encode_us,
+             packet->is_key_frame,
+             h264_len);
+}
+
 void media_gateway_bench_reset_window(MediaGatewayCtx *ctx)
 {
     if (!ctx)
