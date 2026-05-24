@@ -29,6 +29,127 @@ static uint64_t get_now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
+/**
+ * @description: 将已经释放完上层引用的采集 buffer 重新放回 V4L2 驱动队列。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
+ * @param {int} index 待归还的驱动 buffer 下标。
+ * @return {int} 0 成功，-1 失败。
+ */
+static int v4l2_capture_requeue_buffer(V4L2CaptureCtx *ctx, int index)
+{
+    struct v4l2_buffer buf;
+    struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
+    if (!ctx || ctx->fd < 0 || index < 0 || index >= ctx->buf_count)
+    {
+        LOG_ERROR("v4l2_capture_requeue_buffer failed: invalid args ctx=%p fd=%d index=%d",
+                  (void *)ctx,
+                  ctx ? ctx->fd : -1,
+                  index);
+        return -1;
+    }
+
+    memset(&buf, 0, sizeof(buf));
+    memset(planes, 0, sizeof(planes));
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.index = (uint32_t)index;
+    buf.length = V4L2_CAPTURE_MAX_PLANES;
+    buf.m.planes = planes;
+    if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0)
+    {
+        LOG_ERROR("v4l2 capture qbuf failed index=%d errno=%d(%s)", index, errno, strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 增加一份采集 buffer 引用。
+ * @param {V4L2CaptureBufferRef *} buffer_ref 待增加引用的采集 buffer。
+ * @return {void}
+ */
+void v4l2_capture_buffer_ref(V4L2CaptureBufferRef *buffer_ref)
+{
+    V4L2CaptureCtx *ctx = NULL;
+    if (!buffer_ref || !buffer_ref->capture)
+    {
+        LOG_ERROR("v4l2_capture_buffer_ref failed: invalid args buffer_ref=%p", (void *)buffer_ref);
+        return;
+    }
+    ctx = buffer_ref->capture;
+    pthread_mutex_lock(&ctx->buffer_lock);
+    buffer_ref->refs++;
+    pthread_mutex_unlock(&ctx->buffer_lock);
+}
+
+/**
+ * @description: 释放一份采集 buffer 引用，引用归零时将 buffer 归还给驱动。
+ * @param {V4L2CaptureBufferRef *} buffer_ref 待释放引用的采集 buffer。
+ * @return {void}
+ */
+void v4l2_capture_buffer_unref(V4L2CaptureBufferRef *buffer_ref) {
+    V4L2CaptureCtx *ctx = NULL;
+    int requeue = 0;
+    int index = -1;
+    if (!buffer_ref || !buffer_ref->capture)
+    {
+        LOG_ERROR("v4l2_capture_buffer_unref failed: invalid args buffer_ref=%p", (void *)buffer_ref);
+        return;
+    }
+    ctx = buffer_ref->capture;
+    pthread_mutex_lock(&ctx->buffer_lock);
+    if (buffer_ref->refs > 0)
+    {
+        buffer_ref->refs--;
+        requeue = (buffer_ref->refs == 0);
+    }
+    index = buffer_ref->index;
+    pthread_mutex_unlock(&ctx->buffer_lock);
+    if (requeue) v4l2_capture_requeue_buffer(ctx, index);
+}
+
+/**
+ * @description: 获取采集 buffer 对应的 DMA-BUF fd。
+ * @param {const V4L2CaptureBufferRef *} buffer_ref 采集 buffer 引用。
+ * @return {int} 有效 DMA-BUF fd；-1 表示引用无效或导出失败。
+ */
+int v4l2_capture_buffer_dmabuf_fd(const V4L2CaptureBufferRef *buffer_ref) {
+    V4L2CaptureCtx *ctx = NULL;
+    if (!buffer_ref || !buffer_ref->capture)
+    {
+        LOG_ERROR("v4l2_capture_buffer_dmabuf_fd failed: invalid args buffer_ref=%p", (void *)buffer_ref);
+        return -1;
+    }
+    ctx = buffer_ref->capture;
+    if (buffer_ref->index < 0 || buffer_ref->index >= ctx->buf_count)
+    {
+        LOG_ERROR("v4l2_capture_buffer_dmabuf_fd failed: invalid buffer index=%d", buffer_ref->index);
+        return -1;
+    }
+    return ctx->buf_dmabuf_fd[buffer_ref->index];
+}
+
+/**
+ * @description: 获取采集 buffer 的完整容量。
+ * @param {const V4L2CaptureBufferRef *} buffer_ref 采集 buffer 引用。
+ * @return {size_t} buffer 容量；引用无效时返回 0。
+ */
+size_t v4l2_capture_buffer_size(const V4L2CaptureBufferRef *buffer_ref) {
+    V4L2CaptureCtx *ctx = NULL;
+    if (!buffer_ref || !buffer_ref->capture)
+    {
+        LOG_ERROR("v4l2_capture_buffer_size failed: invalid args buffer_ref=%p", (void *)buffer_ref);
+        return 0;
+    }
+    ctx = buffer_ref->capture;
+    if (buffer_ref->index < 0 || buffer_ref->index >= ctx->buf_count)
+    {
+        LOG_ERROR("v4l2_capture_buffer_size failed: invalid buffer index=%d", buffer_ref->index);
+        return 0;
+    }
+    return (size_t)ctx->buf_len[buffer_ref->index];
+}
+
 #if V4L2_CAPTURE_ENABLE_OSD
 /**
  * @description: 获取当前实时时钟时间，单位微秒。
@@ -174,6 +295,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
 
     memset(ctx, 0, sizeof(V4L2CaptureCtx));
     ctx->fd = -1;
+    for (i = 0; i < V4L2_CAPTURE_BUFFER_COUNT; ++i)
+    {
+        ctx->buf_dmabuf_fd[i] = -1;
+    }
 
     ctx->fd = open(device_path, O_RDWR, 0);
     if (ctx->fd < 0) {
@@ -184,6 +309,12 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         return -1;
     }
     printf("[INFO] open camera %s success\n", device_path);
+    if (pthread_mutex_init(&ctx->buffer_lock, NULL) != 0) {
+        LOG_ERROR("v4l2_capture_init_with_config failed: pthread_mutex_init");
+        v4l2_capture_deinit(ctx);
+        return -1;
+    }
+    ctx->buffer_lock_ready = 1;
 
     ret = ioctl(ctx->fd, VIDIOC_QUERYCAP, &cap);
     if (ret < 0) {
@@ -221,13 +352,26 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         return -1;
     }
 
-    printf("[INFO] capture format set: %dx%d, format=0x%x\n",
+    printf("[INFO] v4l2 negotiated format: %dx%d pixelformat=0x%x num_planes=%u\n",
            fmt.fmt.pix_mp.width,
            fmt.fmt.pix_mp.height,
-           fmt.fmt.pix_mp.pixelformat);
-    ctx->width = (int)fmt.fmt.pix_mp.width;
-    ctx->height = (int)fmt.fmt.pix_mp.height;
-    ctx->pixelformat = fmt.fmt.pix_mp.pixelformat;
+           fmt.fmt.pix_mp.pixelformat,
+           fmt.fmt.pix_mp.num_planes);
+    ctx->format.width = (int)fmt.fmt.pix_mp.width;
+    ctx->format.height = (int)fmt.fmt.pix_mp.height;
+    ctx->format.pixelformat = fmt.fmt.pix_mp.pixelformat;
+    ctx->format.num_planes = fmt.fmt.pix_mp.num_planes;
+    if (ctx->format.num_planes > VIDEO_MAX_PLANES) {
+        ctx->format.num_planes = VIDEO_MAX_PLANES;
+    }
+    for (i = 0; i < (int)ctx->format.num_planes; ++i) {
+        ctx->format.planes[i].bytesperline = fmt.fmt.pix_mp.plane_fmt[i].bytesperline;
+        ctx->format.planes[i].sizeimage = fmt.fmt.pix_mp.plane_fmt[i].sizeimage;
+        printf("[INFO] v4l2 negotiated plane[%d]: bytesperline=%u sizeimage=%u\n",
+               i,
+               ctx->format.planes[i].bytesperline,
+               ctx->format.planes[i].sizeimage);
+    }
 
     memset(&req, 0, sizeof(req));
     // V4L2 缓冲深度会影响采集稳定性。
@@ -293,6 +437,27 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
             return -1;
         }
         ctx->buf_len[i] = (int)planes[0].length;
+        ctx->buffer_refs[i].capture = ctx;
+        ctx->buffer_refs[i].index = i;
+        {
+            /**
+             * 尝试导出 DMA-BUF fd，失败不影响正常采集和用户态拷贝链路，但会导致零拷贝链路无法使用。
+             */
+            struct v4l2_exportbuffer expbuf;
+            memset(&expbuf, 0, sizeof(expbuf));
+            expbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            expbuf.index = (uint32_t)i;
+            expbuf.plane = 0;
+            expbuf.flags = O_CLOEXEC;
+            if (ioctl(ctx->fd, VIDIOC_EXPBUF, &expbuf) == 0) {
+                ctx->buf_dmabuf_fd[i] = expbuf.fd;
+            } else {
+                LOG_WARN("v4l2 capture export dmabuf failed buffer=%d errno=%d(%s)",
+                         i,
+                         errno,
+                         strerror(errno));
+            }
+        }
         printf("[INFO] buffer %d mapped: addr=%p, len=%d\n", i, ctx->buf[i], ctx->buf_len[i]);
 
         if (ioctl(ctx->fd, VIDIOC_QBUF, &buf) < 0) {
@@ -317,7 +482,7 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     // 预分配一块用户态缓存。
     // 后续每次取帧都会先把 DQBUF 得到的数据拷贝到这里，再把原始缓冲 QBUF 回驱动。
     // 这样上层拿到的 frame_data 在本次函数返回后仍然有效，不会因为驱动复用底层缓冲而被覆盖。
-    ctx->frame_cache_len = ctx->width * ctx->height * 3 / 2;
+    ctx->frame_cache_len = ctx->format.width * ctx->format.height * 3 / 2;
     ctx->frame_cache = (uint8_t *)malloc((size_t)ctx->frame_cache_len);
     if (!ctx->frame_cache) {
         LOG_ERROR("v4l2_capture_init_with_config failed: malloc frame cache size=%d", ctx->frame_cache_len);
@@ -329,16 +494,79 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
 }
 
 /**
- * @description: 采集一帧 NV12 图像数据。
+ * @description: 采集一帧并返回 V4L2 驱动 buffer 引用，供 DMA-BUF 零拷贝链路继续传递。
  * @param {V4L2CaptureCtx *} ctx 采集上下文。
- * @param {uint8_t **} frame_data 输出帧数据指针，指向内部 frame_cache。
- * @param {int *} frame_len 输出帧数据长度。
- * @param {uint64_t *} frame_id 输出递增帧号。
+ * @param {uint8_t **} frame_data 输出当前 mmap buffer 地址，仅在 buffer_ref 有效期内可用。
+ * @param {int *} frame_len 输出帧有效长度。
+ * @param {uint64_t *} frame_id 输出递增采集帧号。
  * @param {uint64_t *} dqbuf_ts_us VIDIOC_DQBUF 返回后的单调时钟时间。
- * @param {uint64_t *} camera_buffer_wait_us 驱动帧时间戳到 DQBUF 返回后的时间差。
+ * @param {uint64_t *} camera_buffer_wait_us 驱动时间戳到 DQBUF 返回的等待时间。
+ * @param {uint64_t *} dqbuf_ioctl_duration_us VIDIOC_DQBUF ioctl 调用耗时。
+ * @param {V4L2CaptureBufferRef **} buffer_ref 输出采集 buffer 引用，调用方最终必须 unref。
+ * @return {int} 0 成功，-1 失败。
+ */
+int v4l2_capture_acquire_frame(V4L2CaptureCtx *ctx,
+                               uint8_t **frame_data,
+                               int *frame_len,
+                               uint64_t *frame_id,
+                               uint64_t *dqbuf_ts_us,
+                               uint64_t *camera_buffer_wait_us,
+                               uint64_t *dqbuf_ioctl_duration_us,
+                               V4L2CaptureBufferRef **buffer_ref) {
+    struct v4l2_buffer buf;
+    struct v4l2_plane planes[V4L2_CAPTURE_MAX_PLANES];
+    uint64_t driver_ts_us;
+    uint64_t dqbuf_ioctl_start_us;
+
+    if (!ctx || ctx->fd < 0 || !frame_data || !frame_len || !frame_id ||
+        !dqbuf_ts_us || !camera_buffer_wait_us || !dqbuf_ioctl_duration_us ||
+        !buffer_ref) {
+        LOG_ERROR("v4l2_capture_acquire_frame failed: invalid arguments");
+        return -1;
+    }
+    memset(&buf, 0, sizeof(buf));
+    memset(planes, 0, sizeof(planes));
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    buf.length = V4L2_CAPTURE_MAX_PLANES;
+    buf.m.planes = planes;
+
+    dqbuf_ioctl_start_us = get_now_us();
+    if (ioctl(ctx->fd, VIDIOC_DQBUF, &buf) < 0) {
+        LOG_ERROR("v4l2_capture_acquire_frame failed: dqbuf errno=%d(%s)", errno, strerror(errno));
+        return -1;
+    }
+    *dqbuf_ts_us = get_now_us();
+    *dqbuf_ioctl_duration_us = *dqbuf_ts_us - dqbuf_ioctl_start_us;
+    driver_ts_us = (uint64_t)buf.timestamp.tv_sec * 1000000ULL + (uint64_t)buf.timestamp.tv_usec;
+    *camera_buffer_wait_us = (*dqbuf_ts_us >= driver_ts_us) ? (*dqbuf_ts_us - driver_ts_us) : 0;
+    if (buf.index >= (uint32_t)ctx->buf_count) {
+        LOG_ERROR("v4l2_capture_acquire_frame failed: invalid buffer index=%u count=%d", buf.index, ctx->buf_count);
+        return -1;
+    }
+
+    ctx->frame_id++;
+    *frame_id = ctx->frame_id;
+    *frame_data = (uint8_t *)ctx->buf[buf.index];
+    *frame_len = (int)planes[0].bytesused;
+    pthread_mutex_lock(&ctx->buffer_lock);
+    ctx->buffer_refs[buf.index].refs = 1;
+    pthread_mutex_unlock(&ctx->buffer_lock);
+    *buffer_ref = &ctx->buffer_refs[buf.index];
+    return 0;
+}
+
+/**
+ * @description: 采集一帧并拷贝到内部 frame_cache，返回稳定的用户态帧指针。
+ * @param {V4L2CaptureCtx *} ctx 采集上下文。
+ * @param {uint8_t **} frame_data 输出帧数据，指向内部 frame_cache。
+ * @param {int *} frame_len 输出帧有效长度。
+ * @param {uint64_t *} frame_id 输出递增采集帧号。
+ * @param {uint64_t *} dqbuf_ts_us VIDIOC_DQBUF 返回后的单调时钟时间。
+ * @param {uint64_t *} camera_buffer_wait_us 驱动时间戳到 DQBUF 返回的等待时间。
  * @param {uint64_t *} dqbuf_ioctl_duration_us VIDIOC_DQBUF ioctl 调用耗时。
  * @param {uint64_t *} mmap_to_frame_cache_copy_us mmap buffer 拷贝到 frame_cache 的耗时。
- * @return {int}
+ * @return {int} 0 成功，-1 失败。
  */
 int v4l2_capture_frame(V4L2CaptureCtx *ctx,
                        uint8_t **frame_data,
@@ -450,6 +678,10 @@ void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
     }
 
     for (int i = 0; i < ctx->buf_count; i++) {
+        if (ctx->buf_dmabuf_fd[i] >= 0) {
+            close(ctx->buf_dmabuf_fd[i]);
+            ctx->buf_dmabuf_fd[i] = -1;
+        }
         if (ctx->buf[i]) {
             munmap(ctx->buf[i], (size_t)ctx->buf_len[i]);
             ctx->buf[i] = NULL;
@@ -463,6 +695,9 @@ void v4l2_capture_deinit(V4L2CaptureCtx *ctx) {
 
     if (ctx->fd >= 0) {
         close(ctx->fd);
+    }
+    if (ctx->buffer_lock_ready) {
+        pthread_mutex_destroy(&ctx->buffer_lock);
     }
 
     memset(ctx, 0, sizeof(V4L2CaptureCtx));

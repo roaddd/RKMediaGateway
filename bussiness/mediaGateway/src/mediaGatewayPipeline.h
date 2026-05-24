@@ -27,14 +27,12 @@ extern "C" {
  *
  * 该结构不是 FIFO 队列，而是 latest-frame 单槽缓存：主循环发布新帧，
  * 编码线程取走最新帧；如果旧帧尚未被消费就被新帧覆盖，会计入 dropped_frames。
- * 这样优先降低实时链路延迟，但 publish/acquire 会在锁内做整帧拷贝。
+ * 这样优先降低实时链路延迟；零拷贝路径下 publish/acquire 只转交采集帧引用。
  */
 typedef struct {
-    pthread_mutex_t lock;       /* 保护 data/frame/valid/running/dropped_frames。 */
+    pthread_mutex_t lock;       /* 保护 frame/valid/running/dropped_frames。 */
     pthread_cond_t cond;        /* 新帧到达或停止时唤醒编码线程。 */
-    uint8_t *data;              /* 单槽保存的 NV12 帧副本。 */
-    size_t capacity;            /* data 当前已分配容量。 */
-    MediaFrame frame;           /* data 对应的帧元信息，raw_frame 指向 data。 */
+    MediaFrame frame;           /* 单槽持有的最新采集帧引用，不保存 NV12 副本。 */
     int valid;                  /* 当前槽内是否有待编码线程消费的新帧。 */
     int running;                /* 输入槽是否仍允许等待和发布。 */
     int ready;                  /* lock/cond 是否初始化成功，用于安全释放。 */
@@ -129,8 +127,8 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline);
 /*
  * 将一帧视频发布到单路视频编码输入槽。
  *
- * 该函数会复制 frame->raw_frame 到 VideoEncodeInput 内部缓存。
- * 如果槽中已有未消费帧，旧帧会被覆盖并计入 dropped_frames。
+ * 该函数会持有 frame 的 capture buffer 引用到编码线程取走或被新帧覆盖。
+ * 如果槽中已有未消费帧，旧帧会被释放并计入 dropped_frames。
  *
  * @return 0 成功或输入槽已停止，-1 表示参数或内存分配错误。
  */

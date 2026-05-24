@@ -37,13 +37,6 @@ static void make_abs_timeout(struct timespec *ts, int timeout_ms)
     ts->tv_nsec = nsec % 1000000000L;
 }
 
-static uint64_t pipeline_now_us(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
-}
-
 /**
  * @description: 标记 pipeline 失败并请求 gateway 退出。
  */
@@ -124,9 +117,7 @@ static void video_input_deinit(VideoEncodeInput *input)
     if (!input)
         return;
     video_input_stop(input);
-    free(input->data);
-    input->data = NULL;
-    input->capacity = 0;
+    media_frame_reset(&input->frame);
     if (input->ready)
     {
         pthread_cond_destroy(&input->cond);
@@ -136,18 +127,13 @@ static void video_input_deinit(VideoEncodeInput *input)
 }
 
 /**
- * @description: 将视频帧复制发布到 latest 输入槽。
+ * @description: 将视频帧引用发布到 latest 输入槽。
  * 当前的设计目标是降低实时链路延迟，宁可丢旧帧，也不让视频积压。
  * TODO:如果后续要做录像，要改成不丢帧的方式
  */
 int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame *frame)
 {
-    size_t need_size;
-    uint8_t *new_data;
-    uint64_t copy_start_us;
-    uint64_t copy_done_us;
-
-    if (!input || !frame || !frame->raw_frame || frame->raw_len <= 0)
+    if (!input || !frame || !frame->raw_frame || frame->raw_len <= 0 || !frame->capture_buffer)
     {
         LOG_ERROR("media_gateway_video_input_publish failed: invalid args input=%p frame=%p raw=%p len=%d",
                   (void *)input,
@@ -157,33 +143,18 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
         return -1;
     }
 
-    need_size = (size_t)frame->raw_len;
     pthread_mutex_lock(&input->lock);
     if (!input->running)
     {
         pthread_mutex_unlock(&input->lock);
         return 0;
     }
-    if (input->capacity < need_size)
-    {
-        new_data = (uint8_t *)realloc(input->data, need_size);
-        if (!new_data)
-        {
-            LOG_ERROR("media_gateway_video_input_publish failed: realloc need=%zu", need_size);
-            pthread_mutex_unlock(&input->lock);
-            return -1;
-        }
-        input->data = new_data;
-        input->capacity = need_size;
-    }
-    if (input->valid)
+    if (input->valid) {
+        media_frame_reset(&input->frame);
         input->dropped_frames++;
-    copy_start_us = pipeline_now_us();
-    memcpy(input->data, frame->raw_frame, need_size);
-    copy_done_us = pipeline_now_us();
-    input->frame = *frame;
-    input->frame.raw_frame = input->data;
-    input->frame.metrics.video_input_publish_copy_us = copy_done_us - copy_start_us;
+    }
+    media_frame_copy_ref(&input->frame, frame);
+    input->frame.metrics.video_input_publish_copy_us = 0;
     input->valid = 1;
     pthread_cond_signal(&input->cond);
     pthread_mutex_unlock(&input->lock);
@@ -191,28 +162,19 @@ int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame 
 }
 
 /**
- * @description: 编码线程从 latest 输入槽获取一帧本地副本。
+ * @description: 编码线程从 latest 输入槽获取一帧引用。
  */
-static int video_input_acquire_copy(VideoEncodeInput *input,
-                                    MediaFrame *frame,
-                                    uint8_t **local_data,
-                                    size_t *local_capacity,
-                                    int timeout_ms)
+static int video_input_acquire(VideoEncodeInput *input,
+                               MediaFrame *frame,
+                               int timeout_ms)
 {
     struct timespec ts;
     int wait_ret;
-    size_t need_size;
-    uint8_t *new_data;
-    uint64_t copy_start_us;
-    uint64_t copy_done_us;
-
-    if (!input || !frame || !local_data || !local_capacity)
+    if (!input || !frame)
     {
-        LOG_ERROR("video_input_acquire_copy failed: invalid args input=%p frame=%p local_data=%p capacity=%p",
+        LOG_ERROR("video_input_acquire failed: invalid args input=%p frame=%p",
                   (void *)input,
-                  (void *)frame,
-                  (void *)local_data,
-                  (void *)local_capacity);
+                  (void *)frame);
         return -1;
     }
     make_abs_timeout(&ts, timeout_ms);
@@ -233,25 +195,9 @@ static int video_input_acquire_copy(VideoEncodeInput *input,
         return 0;
     }
 
-    need_size = (size_t)input->frame.raw_len;
-    if (*local_capacity < need_size)
-    {
-        new_data = (uint8_t *)realloc(*local_data, need_size);
-        if (!new_data)
-        {
-            LOG_ERROR("video_input_acquire_copy failed: realloc need=%zu", need_size);
-            pthread_mutex_unlock(&input->lock);
-            return -1;
-        }
-        *local_data = new_data;
-        *local_capacity = need_size;
-    }
-    copy_start_us = pipeline_now_us();
-    memcpy(*local_data, input->data, need_size);
-    copy_done_us = pipeline_now_us();
-    *frame = input->frame;
-    frame->raw_frame = *local_data;
-    frame->metrics.video_input_acquire_copy_us = copy_done_us - copy_start_us;
+    media_frame_copy_ref(frame, &input->frame);
+    frame->metrics.video_input_acquire_copy_us = 0;
+    media_frame_reset(&input->frame);
     input->valid = 0;
     pthread_mutex_unlock(&input->lock);
     return 1;
@@ -468,8 +414,6 @@ static void *video_encode_thread_main(void *arg)
     VideoEncodeThreadArg *thread_arg = (VideoEncodeThreadArg *)arg;
     MediaGatewayPipeline *pipeline = thread_arg->pipeline;
     int stream_idx = thread_arg->stream_idx;
-    uint8_t *local_data = NULL;
-    size_t local_capacity = 0;
     MediaFrame frame;
     int ret;
 
@@ -481,11 +425,9 @@ static void *video_encode_thread_main(void *arg)
          * VideoEncodeInput 是单槽 latest-frame 输入，不做 FIFO 排队。
          * 编码线程慢时新帧会覆盖未消费旧帧，优先降低端到端延迟；主要成本是 publish/acquire 都在锁内整帧拷贝。
          */
-        ret = video_input_acquire_copy(&pipeline->video_inputs[stream_idx],
-                                       &frame,
-                                       &local_data,
-                                       &local_capacity,
-                                       100);
+        ret = video_input_acquire(&pipeline->video_inputs[stream_idx],
+                                  &frame,
+                                  100);
         if (ret < 0)
         {
             LOG_ERROR("video encode thread failed: acquire stream=%d", stream_idx);
@@ -500,10 +442,11 @@ static void *video_encode_thread_main(void *arg)
                       stream_idx,
                       frame.frame_id);
             pipeline_set_error(pipeline);
+            media_frame_reset(&frame);
             break;
         }
+        media_frame_reset(&frame);
     }
-    free(local_data);
     return NULL;
 }
 

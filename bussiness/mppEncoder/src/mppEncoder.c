@@ -239,6 +239,13 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     mpp_frame_set_fmt(enc->frame, MPP_FMT_YUV420SP);
     mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
 
+    printf("[INFO] mpp encoder input format: fmt=%d width=%d height=%d hor_stride=%d ver_stride=%d frame_size=%zu\n",
+           MPP_FMT_YUV420SP,
+           enc->width,
+           enc->height,
+           enc->hor_stride,
+           enc->ver_stride,
+           frame_size);
     printf("[INFO] mpp encoder init success: %dx%d fps=%d bitrate=%d gop=%d\n",
            enc->width, enc->height, enc->fps, enc->bitrate, enc->gop);
     return 0;
@@ -300,7 +307,21 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         return -1;
     }
 
-    // 把紧凑 NV12 拷贝到带 stride 的 MPP 输入缓冲。
+    /*
+     * copy 输入路径的上游 nv12_data 是紧凑排布：
+     * - Y 平面每行只有 width 字节；
+     * - UV 平面紧跟在 width * height 后面；
+     * - 行尾和高度方向都没有 MPP 对齐后产生的 padding。
+     *
+     * MPP 编码器初始化时给 MppFrame 配置的是 enc->hor_stride / enc->ver_stride，
+     * 输入 buffer 也按这个 stride 大小申请。若直接把紧凑 NV12 当成带 stride 的
+     * MPP 输入，UV 起始位置和每行步进都会与 MPP 的解释方式不一致。因此 copy 路径
+     * 必须逐行把有效像素搬到带 stride 的 MPP 内部 buffer，同时把对齐区域清零。
+     *
+     * DMA-BUF 零拷贝路径不会经过这里。它不再生成一份重新排布后的 MPP 输入副本，
+     * 而是让 MPP 直接读取外部 DMA-BUF；外部 buffer 的实际排布必须已经与
+     * MppFrame 上配置的格式和 stride 一致。
+     */
     stage_start_us = get_now_us();
     copy_nv12_to_mpp_buffer(enc, (uint8_t *)frame_ptr, nv12_data);
     stage_end_us = get_now_us();
@@ -416,6 +437,177 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         timing->encode_frame_total_us = get_now_us() - total_start_us; // 包括输入拷贝、编码处理、输出拷贝的整帧耗时
     }
     return 0;
+}
+
+/**
+ * @description: 使用外部 DMA-BUF 作为 MPP NV12 输入，编码一帧 Annex-B H264 数据。
+ *
+ * 逻辑说明：
+ * 1. 校验外部 DMA-BUF 至少能覆盖当前 MPP frame 按 stride 计算出的输入尺寸。
+ * 2. 通过 MPP_BUFFER_TYPE_EXT_DMA 把上游导出的 fd 包装成 MppBuffer。
+ * 3. 临时把该外部 MppBuffer 绑定到复用的 enc->frame，复用编码宽高、格式和 stride 元数据。
+ * 4. 提交 frame 并立即轮询本帧输出 packet，输出包仍拷贝到 encoder packet_cache，
+ *    让上层拿到的码流指针在 MPP packet 释放后继续有效。
+ * 5. 编码完成后恢复 enc->frame 的内部 copy-path buffer，释放本次导入的 MppBuffer。
+ *
+ * stride 前提：
+ * - copy 路径会把紧凑 NV12 重排到 enc->hor_stride / enc->ver_stride 对应的 MPP 输入 buffer；
+ * - DMA-BUF 路径为保持零拷贝，不能在本函数内再做这次重排；
+ * - MPP 会按照 enc->frame 当前配置的 MPP_FMT_YUV420SP、hor_stride、ver_stride
+ *   去解释外部 DMA-BUF，所以导入的 V4L2 DMA-BUF 内存布局必须满足这些元数据；
+ * - 若采集驱动给出的 bytesperline/plane layout 与 MPP stride 不一致，正确做法是
+ *   在采集格式协商、RGA 等硬件转换环节统一布局，或回退 copy 路径，不能仅靠 fd 导入。
+ *
+ * @param {MppEncoderCtx *} enc MPP 编码器上下文。
+ * @param {int} dmabuf_fd 上游导出的 DMA-BUF fd。
+ * @param {size_t} dmabuf_size 外部 DMA-BUF 的完整容量。
+ * @param {uint64_t} frame_id 当前采集帧号，仅用于错误日志和链路定位。
+ * @param {uint8_t **} h264_data 输出 Annex-B H264 缓存地址，由 encoder 内部持有。
+ * @param {size_t *} h264_len 输出 H264 数据长度。
+ * @param {int *} is_key_frame 输出是否关键帧；可传 NULL。
+ * @param {uint64_t *} encode_start_ts_us 输出提交编码前的单调时钟时间；可传 NULL。
+ * @param {uint64_t *} encode_done_ts_us 输出取包完成后的单调时钟时间；可传 NULL。
+ * @param {MppEncoderTiming *} timing 输出当前帧编码阶段耗时；可传 NULL。
+ * @return {int} 0 成功，-1 失败。
+ */
+int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
+                              int dmabuf_fd,
+                              size_t dmabuf_size,
+                              uint64_t frame_id,
+                              uint8_t **h264_data,
+                              size_t *h264_len,
+                              int *is_key_frame,
+                              uint64_t *encode_start_ts_us,
+                              uint64_t *encode_done_ts_us,
+                              MppEncoderTiming *timing) {
+    uint64_t total_start_us = get_now_us();
+    uint64_t stage_start_us;
+    uint64_t stage_end_us;
+    size_t frame_size;
+    MppBufferInfo buffer_info;
+    MppBuffer imported_buffer = NULL;
+    MppPacket packet = NULL;
+    MPP_RET ret;
+
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (!enc || !enc->ctx || dmabuf_fd < 0 || !h264_data || !h264_len) {
+        LOG_ERROR("mpp_encoder_encode_dmabuf failed: invalid args enc=%p ctx=%p fd=%d",
+                  (void *)enc,
+                  enc ? (void *)enc->ctx : NULL,
+                  dmabuf_fd);
+        return -1;
+    }
+    /*
+     * 这里按 MPP frame 的 stride 计算可读输入范围，而不是按 width * height。
+     * 零拷贝下 MPP 将直接按 stride 从外部 fd 读数据；容量不足时继续导入会导致
+     * MPP 访问超出 buffer 的有效范围。
+     */
+    frame_size = (size_t)enc->hor_stride * enc->ver_stride * 3 / 2;
+    if (dmabuf_size < frame_size) {
+        LOG_ERROR("mpp_encoder_encode_dmabuf failed: buffer too small got=%zu need=%zu", dmabuf_size, frame_size);
+        return -1;
+    }
+
+    /*
+     * 把 V4L2 等上游导出的 DMA-BUF fd 包装成 MppBuffer。
+     * 这里没有 mpp_buffer_get() 申请新的输入 buffer，也没有 memcpy 原始 NV12；
+     * imported_buffer 只是让 MPP 认识并引用外部物理 buffer。
+     */
+    memset(&buffer_info, 0, sizeof(buffer_info));
+    buffer_info.type = MPP_BUFFER_TYPE_EXT_DMA;
+    buffer_info.fd = dmabuf_fd;
+    buffer_info.size = dmabuf_size;
+    ret = mpp_buffer_import(&imported_buffer, &buffer_info);
+    if (ret != MPP_OK || !imported_buffer) {
+        mpp_log_error("mpp_buffer_import external dmabuf failed", ret);
+        return -1;
+    }
+    /*
+     * enc->frame 在 init 时已设置 width/height/format/stride。这里仅把本帧
+     * 使用的 buffer 从内部 copy-path frame_buffer 暂时切换成外部 DMA-BUF。
+     */
+    mpp_frame_set_buffer(enc->frame, imported_buffer);
+
+    /* 保持与 copy 编码路径一致的周期性 IDR 策略。 */
+    if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
+        if (mpp_encoder_request_idr(enc) != 0)
+            LOG_WARN("mpp_encoder_encode_dmabuf: periodic IDR request failed");
+    }
+    if (encode_start_ts_us) *encode_start_ts_us = get_now_us();
+    mpp_frame_set_pts(enc->frame, enc->pts++);
+    /* 提交外部 DMA-BUF frame；该阶段不再统计 encoder_input_buffer_copy_us。 */
+    stage_start_us = get_now_us();
+    ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
+    stage_end_us = get_now_us();
+    if (timing) timing->encoder_submit_frame_call_us = stage_end_us - stage_start_us;
+    if (ret != MPP_OK) {
+        mpp_log_error("encode_put_frame dmabuf failed", ret);
+        goto fail;
+    }
+
+    /* 拉取编码包，和 copy 路径一样允许编码器暂时还未产出 packet。 */
+    stage_start_us = get_now_us();
+    ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
+    stage_end_us = get_now_us();
+    if (timing) timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
+    if (encode_done_ts_us) *encode_done_ts_us = get_now_us();
+    if (ret != MPP_OK) {
+        mpp_log_error("encode_get_packet dmabuf failed", ret);
+        goto fail;
+    }
+    if (!packet) {
+        *h264_data = NULL;
+        *h264_len = 0;
+        if (is_key_frame) *is_key_frame = 0;
+        if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
+        mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+        mpp_buffer_put(imported_buffer);
+        return 0;
+    }
+
+    {
+        size_t packet_len = (size_t)mpp_packet_get_length(packet);
+        void *packet_pos = mpp_packet_get_pos(packet);
+        if (!packet_pos || packet_len == 0) {
+            *h264_data = NULL;
+            *h264_len = 0;
+            if (is_key_frame) *is_key_frame = 0;
+            goto done;
+        }
+        /*
+         * packet 由 MPP 管理，函数返回前会 deinit。把编码后的码流拷到
+         * enc->packet_cache，保证 h264_data 返回给上层后仍有效。
+         * 这不是原始 NV12 输入帧拷贝，不影响 V4L2 -> MPP 的零拷贝目标。
+         */
+        if (ensure_packet_cache(enc, packet_len) != 0)
+            goto fail;
+        stage_start_us = get_now_us();
+        memcpy(enc->packet_cache, packet_pos, packet_len);
+        stage_end_us = get_now_us();
+        if (timing) timing->encoder_packet_copy_us = stage_end_us - stage_start_us;
+        *h264_data = enc->packet_cache;
+        *h264_len = packet_len;
+    }
+    if (is_key_frame) {
+        RK_S32 intra = 0;
+        MppMeta meta = mpp_packet_get_meta(packet);
+        *is_key_frame = (meta && mpp_meta_get_s32(meta, KEY_OUTPUT_INTRA, &intra) == MPP_OK && intra != 0) ? 1 : 0;
+    }
+
+done:
+    if (packet) mpp_packet_deinit(&packet);
+    if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
+    /* 恢复 copy 路径内部 buffer，避免下一次 copy 编码继续引用本次外部 fd。 */
+    mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+    mpp_buffer_put(imported_buffer);
+    return 0;
+
+fail:
+    if (packet) mpp_packet_deinit(&packet);
+    mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+    mpp_buffer_put(imported_buffer);
+    LOG_ERROR("mpp_encoder_encode_dmabuf failed frame=%" PRIu64, frame_id);
+    return -1;
 }
 
 int mpp_encoder_request_idr(MppEncoderCtx *enc) {

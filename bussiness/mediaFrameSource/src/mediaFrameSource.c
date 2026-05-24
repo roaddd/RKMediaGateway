@@ -35,22 +35,22 @@ static void frame_source_make_abs_timeout(struct timespec *ts, int timeout_ms) {
     ts->tv_nsec = nsec % 1000000000L;
 }
 
-static int frame_source_slot_ensure_capacity(MediaFrameSourceSlot *slot, size_t need_size) {
-    uint8_t *new_data;
-    if (!slot) {
-        LOG_ERROR("frame source ensure slot capacity failed: slot is NULL need=%zu", need_size);
-        return -1;
-    }
-    if (slot->capacity >= need_size) return 0;
+void media_frame_init(MediaFrame *frame) {
+    if (frame) memset(frame, 0, sizeof(*frame));
+}
 
-    new_data = (uint8_t *)realloc(slot->data, need_size);
-    if (!new_data) {
-        LOG_ERROR("frame source realloc slot failed need=%zu", need_size);
-        return -1;
-    }
-    slot->data = new_data;
-    slot->capacity = need_size;
-    return 0;
+void media_frame_copy_ref(MediaFrame *dst, const MediaFrame *src) {
+    if (!dst || !src) return;
+    *dst = *src;
+    if (dst->capture_buffer)
+        v4l2_capture_buffer_ref(dst->capture_buffer);
+}
+
+void media_frame_reset(MediaFrame *frame) {
+    if (!frame) return;
+    if (frame->capture_buffer)
+        v4l2_capture_buffer_unref(frame->capture_buffer);
+    memset(frame, 0, sizeof(*frame));
 }
 
 static int frame_source_find_write_slot(MediaFrameSource *source) {
@@ -98,6 +98,7 @@ static void frame_source_drop_stale_slots(MediaFrameSource *source, int keep_slo
             continue;
         }
         if (!source->slots[i].in_use && source->slots[i].valid) {
+            media_frame_reset(&source->slots[i].frame);
             source->slots[i].valid = 0;
             source->dropped_frames++;
         }
@@ -107,17 +108,13 @@ static void frame_source_drop_stale_slots(MediaFrameSource *source, int keep_slo
 static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame *src_frame) {
     int slot_idx;
     MediaFrameSourceSlot *slot;
-    size_t copy_len;
     uint64_t publish_start_us;
-    uint64_t copy_start_us;
-    uint64_t copy_done_us;
     uint64_t publish_done_us;
 
-    if (!source || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0) {
+    if (!source || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0 || !src_frame->capture_buffer) {
         LOG_ERROR("frame source publish frame failed: invalid arguments");
         return -1;
     }
-    copy_len = (size_t)src_frame->raw_len;
     publish_start_us = frame_source_now_us();
 
     pthread_mutex_lock(&source->lock);
@@ -129,21 +126,9 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     }
 
     slot = &source->slots[slot_idx];
-    if (frame_source_slot_ensure_capacity(slot, copy_len) != 0) {
-        LOG_ERROR("frame source publish frame failed: ensure slot capacity slot=%d size=%zu", slot_idx, copy_len);
-        source->fatal_error = 1;
-        source->running = 0;
-        pthread_cond_broadcast(&source->cond);
-        pthread_mutex_unlock(&source->lock);
-        return -1;
-    }
-
-    copy_start_us = frame_source_now_us();
-    memcpy(slot->data, src_frame->raw_frame, copy_len);
-    copy_done_us = frame_source_now_us();
-    slot->frame = *src_frame;
-    slot->frame.raw_frame = slot->data;
-    slot->frame.metrics.frame_source_publish_copy_us = copy_done_us - copy_start_us;
+    media_frame_reset(&slot->frame);
+    media_frame_copy_ref(&slot->frame, src_frame);
+    slot->frame.metrics.frame_source_publish_copy_us = 0;
     slot->seq = source->next_seq++;
     slot->valid = 1;
     source->latest_slot = slot_idx;
@@ -165,17 +150,17 @@ static void *frame_source_thread(void *arg) {
     util_set_thread_name(source->thread_name);
     while (frame_source_should_run(source)) 
     {
-        memset(&frame, 0, sizeof(frame));
+        media_frame_init(&frame);
         capture_start_us = frame_source_now_us();
-        /* 采集一帧视频数据,会有一次帧拷贝 */
-        if (v4l2_capture_frame(source->capture,
-                               &frame.raw_frame,
-                               &frame.raw_len,
-                               &frame.frame_id,
-                               &frame.dqbuf_ts_us,
-                               &frame.metrics.camera_buffer_wait_us,
-                               &frame.metrics.dqbuf_ioctl_duration_us,
-                               &frame.metrics.mmap_to_frame_cache_copy_us) != 0)
+        /* 采集一帧视频数据并接管 V4L2 buffer 引用，发布前不做整帧拷贝。 */
+        if (v4l2_capture_acquire_frame(source->capture,
+                                       &frame.raw_frame,
+                                       &frame.raw_len,
+                                       &frame.frame_id,
+                                       &frame.dqbuf_ts_us,
+                                       &frame.metrics.camera_buffer_wait_us,
+                                       &frame.metrics.dqbuf_ioctl_duration_us,
+                                       &frame.capture_buffer) != 0)
         {
             source->consecutive_failures++;
             if (source->consecutive_failures >= source->max_consecutive_failures) {
@@ -192,20 +177,24 @@ static void *frame_source_thread(void *arg) {
             usleep((useconds_t)source->retry_ms * 1000U);
             continue;
         }
-        /* 统计v4l2_capture_frame接口耗时 */
+        /* 统计 V4L2 零拷贝取帧接口耗时。 */
         capture_end_us = frame_source_now_us();
         frame.metrics.capture_call_duration_us = capture_end_us - capture_start_us;
+        frame.metrics.mmap_to_frame_cache_copy_us = 0;
         source->consecutive_failures = 0;
 
         if (!frame_source_should_run(source)) 
         {
+            media_frame_reset(&frame);
             break;
         }
-        /* 将采集到的帧放到视频采集线程的队列，会有一次拷贝 */
+        /* 将采集帧引用发布到 latest-frame 槽位。 */
         if (frame_source_publish_frame(source, &frame) != 0) 
         {
+            media_frame_reset(&frame);
             break;
         }
+        media_frame_reset(&frame);
     }
 
     pthread_mutex_lock(&source->lock);
@@ -281,7 +270,7 @@ int media_frame_source_acquire_latest(MediaFrameSource *source,
         return -1;
     }
     *slot_index = -1;
-    memset(frame, 0, sizeof(*frame));
+    media_frame_init(frame);
     frame_source_make_abs_timeout(&ts, timeout_ms);
 
     pthread_mutex_lock(&source->lock);
@@ -314,7 +303,7 @@ int media_frame_source_acquire_latest(MediaFrameSource *source,
     source->slots[idx].valid = 0;
     source->consumed_seq = source->slots[idx].seq;
     source->latest_slot = -1;
-    *frame = source->slots[idx].frame;
+    media_frame_copy_ref(frame, &source->slots[idx].frame);
     *slot_index = idx;
     pthread_mutex_unlock(&source->lock);
     return 1;
@@ -324,6 +313,7 @@ void media_frame_source_release(MediaFrameSource *source, int slot_index) {
     if (!source || slot_index < 0 || slot_index >= MEDIA_FRAME_SOURCE_SLOTS) return;
     pthread_mutex_lock(&source->lock);
     source->slots[slot_index].in_use = 0;
+    media_frame_reset(&source->slots[slot_index].frame);
     pthread_cond_signal(&source->cond);
     pthread_mutex_unlock(&source->lock);
 }
@@ -346,11 +336,8 @@ void media_frame_source_deinit(MediaFrameSource *source) {
     int i;
     if (!source) return;
     media_frame_source_stop(source);
-    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i) {
-        free(source->slots[i].data);
-        source->slots[i].data = NULL;
-        source->slots[i].capacity = 0;
-    }
+    for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i)
+        media_frame_reset(&source->slots[i].frame);
     pthread_cond_destroy(&source->cond);
     pthread_mutex_destroy(&source->lock);
     memset(source, 0, sizeof(*source));

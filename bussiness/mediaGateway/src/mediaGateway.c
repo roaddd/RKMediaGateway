@@ -573,9 +573,9 @@ static int init_gateway_captures(MediaGatewayCtx *ctx)
             return -1;
         }
         ctx->capture_ready[i] = 1;
-        ctx->config.capture_sources[i].width = ctx->captures[i].width;
-        ctx->config.capture_sources[i].height = ctx->captures[i].height;
-        ctx->config.capture_sources[i].pixelformat = ctx->captures[i].pixelformat;
+        ctx->config.capture_sources[i].width = ctx->captures[i].format.width;
+        ctx->config.capture_sources[i].height = ctx->captures[i].format.height;
+        ctx->config.capture_sources[i].pixelformat = ctx->captures[i].format.pixelformat;
     }
     return 0;
 }
@@ -858,7 +858,7 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
             continue;
         if (ctx->config.streams[stream_idx].source_index != source_idx)
             continue;
-        /* 将最新帧发布到对应的视频编码线程输入队列，这里会有一次帧拷贝 */
+        /* 将最新采集帧引用发布到对应的视频编码线程输入槽。 */
         if (media_gateway_video_input_publish(&res->pipeline.video_inputs[stream_idx], &frame) != 0)
         {
             LOG_ERROR("media_gateway_run failed: publish video frame source=%d stream=%d",
@@ -871,6 +871,7 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
     }
 
     media_frame_source_release(&res->frame_sources[source_idx], slot_index);
+    media_frame_reset(&frame);
     return ret;
 }
 

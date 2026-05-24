@@ -377,6 +377,86 @@ static int ensure_stream_input(MediaGatewayCtx *ctx,
 }
 
 /**
+ * @description: 检查当前 V4L2 DMA-BUF 是否与 MPP 输入布局满足直通条件。
+ */
+static int can_encode_stream_dmabuf_direct(const MediaGatewayCtx *ctx,
+                                           int stream_idx,
+                                           const MediaFrame *frame,
+                                           int dmabuf_fd,
+                                           size_t dmabuf_size,
+                                           const char **reason)
+{
+    const MediaGatewayStreamConfig *stream_cfg;
+    const V4L2CaptureFormat *capture_format;
+    const MppEncoderCtx *encoder;
+    size_t mpp_frame_size;
+
+    if (reason)
+        *reason = "invalid arguments";
+    if (!ctx || !frame || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        return 0;
+
+    stream_cfg = &ctx->config.streams[stream_idx];
+    encoder = &ctx->encoders[stream_idx];
+    if (!frame->capture_buffer || !frame->capture_buffer->capture)
+    {
+        if (reason) *reason = "frame has no retained capture buffer";
+        return 0;
+    }
+    if (dmabuf_fd < 0)
+    {
+        if (reason) *reason = "capture buffer has no exported dmabuf fd";
+        return 0;
+    }
+
+    capture_format = &frame->capture_buffer->capture->format;
+    if (capture_format->pixelformat != V4L2_PIX_FMT_NV12)
+    {
+        if (reason) *reason = "capture pixelformat is not NV12";
+        return 0;
+    }
+    if (capture_format->num_planes != 1)
+    {
+        if (reason) *reason = "capture NV12 is not single-plane layout";
+        return 0;
+    }
+    if (stream_cfg->width != capture_format->width ||
+        stream_cfg->height != capture_format->height ||
+        encoder->width != capture_format->width ||
+        encoder->height != capture_format->height)
+    {
+        if (reason) *reason = "capture and encoder effective size differ";
+        return 0;
+    }
+    if ((int)capture_format->planes[0].bytesperline != encoder->hor_stride)
+    {
+        if (reason) *reason = "capture bytesperline differs from MPP hor_stride";
+        return 0;
+    }
+
+    /*
+     * MPP 按自己的 hor_stride/ver_stride 解释外部 NV12。当前 single-plane
+     * V4L2 协商结果能直接给出行步进和容量，先要求两边容量覆盖 MPP 读区间，
+     * 避免 compact 1080p buffer 被按 1088 高度布局直通。
+     */
+    mpp_frame_size = (size_t)encoder->hor_stride * encoder->ver_stride * 3 / 2;
+    if ((size_t)capture_format->planes[0].sizeimage < mpp_frame_size)
+    {
+        if (reason) *reason = "capture sizeimage is smaller than MPP stride frame";
+        return 0;
+    }
+    if (dmabuf_size < mpp_frame_size)
+    {
+        if (reason) *reason = "dmabuf size is smaller than MPP stride frame";
+        return 0;
+    }
+
+    if (reason)
+        *reason = "layout matched";
+    return 1;
+}
+
+/**
  * @description: 编码一帧视频，并在连续失败时重建编码器。
  */
 static int encode_stream_frame(MediaGatewayCtx *ctx,
@@ -393,8 +473,60 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                MppEncoderTiming *encoder_timing)
 {
     const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+    int dmabuf_fd = frame->capture_buffer ? v4l2_capture_buffer_dmabuf_fd(frame->capture_buffer) : -1;
+    size_t dmabuf_size = frame->capture_buffer ? v4l2_capture_buffer_size(frame->capture_buffer) : 0;
+    const char *dmabuf_direct_reason = NULL;
+    int dmabuf_direct = can_encode_stream_dmabuf_direct(ctx,
+                                                        stream_idx,
+                                                        frame,
+                                                        dmabuf_fd,
+                                                        dmabuf_size,
+                                                        &dmabuf_direct_reason);
 
     trigger_external_idr_if_needed(ctx, stream_idx);
+
+    if (!state->dmabuf_direct_logged[stream_idx])
+    {
+        if (dmabuf_direct)
+        {
+            const V4L2CaptureFormat *format = &frame->capture_buffer->capture->format;
+            LOG_INFO("DMA-BUF direct enabled stream=%d name=%s size=%dx%d bytesperline=%u sizeimage=%u mpp_stride=%dx%d",
+                     stream_idx,
+                     stream_cfg->name ? stream_cfg->name : "unknown",
+                     format->width,
+                     format->height,
+                     format->planes[0].bytesperline,
+                     format->planes[0].sizeimage,
+                     ctx->encoders[stream_idx].hor_stride,
+                     ctx->encoders[stream_idx].ver_stride);
+        }
+        else
+        {
+            LOG_WARN("DMA-BUF direct disabled stream=%d name=%s reason=%s; fallback to copy encode",
+                     stream_idx,
+                     stream_cfg->name ? stream_cfg->name : "unknown",
+                     dmabuf_direct_reason ? dmabuf_direct_reason : "unknown");
+        }
+        state->dmabuf_direct_logged[stream_idx] = 1;
+    }
+
+    /* Only the matched V4L2 layout can bypass the copy encode path. */
+    if (dmabuf_direct &&
+        mpp_encoder_encode_dmabuf(&ctx->encoders[stream_idx],
+                                  dmabuf_fd,
+                                  dmabuf_size,
+                                  frame->frame_id,
+                                  h264_data,
+                                  h264_len,
+                                  is_key_frame,
+                                  encode_start_ts_us,
+                                  encode_done_ts_us,
+                                  encoder_timing) == 0)
+    {
+        state->consecutive_encode_fail[stream_idx] = 0;
+        return 0;
+    }
+
     if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
                                  encode_input,
                                  encode_input_len,

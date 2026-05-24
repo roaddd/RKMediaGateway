@@ -80,6 +80,24 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
                              MppEncoderTiming *timing);
 
 /*
+ * 使用外部 DMA-BUF 作为一帧 NV12 输入，避免把采集帧再拷贝到 MPP 输入 buffer。
+ * dmabuf_fd/dmabuf_size: V4L2 等上游模块导出的 DMA-BUF fd 及其完整 buffer 容量。
+ * 外部 buffer 的 NV12 排布必须匹配 enc 中配置的 format/hor_stride/ver_stride；
+ * 若上游给的是紧凑 NV12 或 stride 不一致，应先转换布局或回退 copy 编码接口。
+ * 其余输出参数语义与 mpp_encoder_encode_frame 一致。
+ */
+int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
+                              int dmabuf_fd,
+                              size_t dmabuf_size,
+                              uint64_t frame_id,
+                              uint8_t **h264_data,
+                              size_t *h264_len,
+                              int *is_key_frame,
+                              uint64_t *encode_start_ts_us,
+                              uint64_t *encode_done_ts_us,
+                              MppEncoderTiming *timing);
+
+/*
  * 请求编码器将下一帧编码为 IDR。
  * 常用于会话刚建立时快速给下游提供可解码起点。
  */
