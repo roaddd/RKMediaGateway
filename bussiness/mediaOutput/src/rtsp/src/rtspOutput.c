@@ -117,10 +117,9 @@ static int string_equals(const char *a, const char *b) {
 /* 发送一帧编码音频到 RTSP server，并保留媒体 PTS。 */
 static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
     RtspMediaFrame frame;
-    /* TODO:目前rtsp只支持G711A */
-    if (packet->codec != MEDIA_CODEC_G711A) {
+    if (packet->codec != MEDIA_CODEC_G711A && packet->codec != MEDIA_CODEC_AAC) {
         if (!impl->unsupported_audio_warned) {
-            LOG_WARN("rtsp_output_send_audio_packet skip unsupported audio codec=%d, only G711A/PCMA is supported",
+            LOG_WARN("rtsp_output_send_audio_packet skip unsupported audio codec=%d, only G711A/PCMA and AAC are supported",
                      packet->codec);
             impl->unsupported_audio_warned = 1;
         }
@@ -134,6 +133,45 @@ static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket
         LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioFrame size=%zu frame=%" PRIu64,
                   packet->buffer->size,
                   packet->frame_id);
+        return -1;
+    }
+    return 0;
+}
+
+static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
+    MediaCodecType codec;
+    int sample_rate;
+    int channels;
+    int profile;
+    enum AUDIO_e rtsp_audio_type;
+
+    codec = impl->config.audio_codec;
+    if (codec == MEDIA_CODEC_NONE) {
+        return 0;
+    }
+
+    sample_rate = (impl->config.audio_sample_rate > 0) ? impl->config.audio_sample_rate : 8000;
+    channels = (impl->config.audio_channels > 0) ? impl->config.audio_channels : 1;
+    profile = (impl->config.aac_profile > 0) ? impl->config.aac_profile : 2;
+
+    if (codec == MEDIA_CODEC_AAC) {
+        rtsp_audio_type = AUDIO_AAC;
+    } else if (codec == MEDIA_CODEC_G711A) {
+        rtsp_audio_type = AUDIO_PCMA;
+        profile = 0;
+    } else {
+        LOG_WARN("rtsp_output_start skip unsupported declared audio codec=%d session=%s",
+                 codec,
+                 impl->config.session_name ? impl->config.session_name : "unknown");
+        return 0;
+    }
+
+    if (sessionAddAudio(impl->session, rtsp_audio_type, profile, sample_rate, channels) < 0) {
+        LOG_ERROR("rtsp_output_start failed: sessionAddAudio session=%s codec=%d sample_rate=%d channels=%d",
+                  impl->config.session_name ? impl->config.session_name : "unknown",
+                  codec,
+                  sample_rate,
+                  channels);
         return -1;
     }
     return 0;
@@ -328,9 +366,7 @@ static int rtsp_output_start(MediaOutput *output) {
         impl->shared_server_acquired = 0;
         return -1;
     }
-    if (sessionAddAudio(impl->session, AUDIO_PCMA, 0, 8000, 1) < 0) {
-        LOG_ERROR("rtsp_output_start failed: sessionAddAudio session=%s codec=PCMA sample_rate=8000 channels=1",
-                  impl->config.session_name ? impl->config.session_name : "unknown");
+    if (rtsp_output_add_audio_track(impl) != 0) {
         rtspDelSession(impl->session);
         impl->session = NULL;
         shared_rtsp_server_release();

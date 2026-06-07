@@ -40,7 +40,8 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->audio.sample_rate,
              config->audio.channels,
              config->audio.period_frames,
-             config->audio.g711_mode == G711_ENCODER_MODE_ULAW ? "g711u" : "g711a",
+             config->audio.codec == MEDIA_CODEC_AAC ? "aac" :
+             (config->audio.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a"),
              config->audio.bind_stream_index);
 
     for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)

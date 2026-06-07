@@ -2,7 +2,9 @@
 #define __MEDIA_GATEWAY_METRICS_H__
 
 #include "mediaGateway.h"
+#include "mediaFrameSource.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

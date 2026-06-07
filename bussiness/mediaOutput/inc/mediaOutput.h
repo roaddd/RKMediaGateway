@@ -34,6 +34,10 @@ typedef struct {
     const char *password;     /* 鉴权密码。 */
     int queue_capacity;       /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
     int immediate_sps_pps_on_new_client; /* 新客户端接入时是否立即补发缓存的 SPS/PPS。 */
+    MediaCodecType audio_codec; /* RTSP SDP 中声明的音频编码，支持 G711A/PCMA 或 AAC。 */
+    int audio_sample_rate;      /* RTSP 音频采样率。 */
+    int audio_channels;         /* RTSP 音频声道数。 */
+    int aac_profile;            /* AAC object type，2 表示 AAC-LC。 */
 } MediaOutputRtspConfig;
 
 /**

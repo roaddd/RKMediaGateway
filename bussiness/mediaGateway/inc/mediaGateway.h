@@ -9,6 +9,7 @@
 #include "mediaOutput.h"
 #include "audioCapture.h"
 #include "g711Encoder.h"
+#include "aacEncoder.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,15 +32,18 @@ typedef struct {
 typedef struct {
     int enabled;                     /* 是否启用音频采集与编码。 */
     const char *device_name;         /* ALSA 采集设备，例如 default/hw:0,0。 */
-    int sample_rate;                 /* 音频采样率，G711 常用 8000。 */
-    int channels;                    /* 声道数，当前 G711 编码路径要求 mono。 */
+    int sample_rate;                 /* 音频采样率，G711 常用 8000，AAC 可按设备能力配置。 */
+    int channels;                    /* 声道数，G711 要求 mono，AAC 支持 mono/stereo。 */
     AudioSampleFormat format;        /* 采集 PCM 格式，当前支持 S16LE。 */
     int period_frames;               /* 每个采集周期的单声道采样数。 */
     int buffer_periods;              /* ALSA 设备缓冲周期数。 */
     int source_slots;                /* audioFrameSource ring buffer 槽位数。 */
     int retry_ms;                    /* 音频采集失败后的重试间隔。 */
     int max_consecutive_failures;    /* 连续音频采集失败阈值。 */
+    MediaCodecType codec;            /* 音频编码格式：MEDIA_CODEC_G711A/G711U/AAC。 */
     G711EncoderMode g711_mode;       /* G711 A-law / mu-law。 */
+    int aac_bitrate;                 /* AAC 目标码率，单位 bit/s。 */
+    int aac_profile;                 /* AAC object type，2 表示 AAC-LC。 */
     int bind_stream_index;           /* 音频包投递到哪一路码流绑定的输出。 */
 } AudioSourceConfig;
 
@@ -172,6 +176,7 @@ typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
     AudioCaptureCtx audio_capture;               /* 音频采集上下文。 */
     G711EncoderCtx audio_encoder;                /* G711 音频编码上下文。 */
+    AacEncoderCtx aac_encoder;                    /* AAC 音频编码上下文。 */
     MppEncoderCtx encoders[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块上下文。 */
     int stream_enabled[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流是否启用。 */
     int capture_ready[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源是否已初始化成功。 */

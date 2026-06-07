@@ -294,6 +294,24 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
         dst->audio.retry_ms = DEFAULT_AUDIO_RETRY_MS;
     if (dst->audio.max_consecutive_failures <= 0)
         dst->audio.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
+    if (dst->audio.codec == MEDIA_CODEC_NONE)
+    {
+        dst->audio.codec = (dst->audio.g711_mode == G711_ENCODER_MODE_ULAW) ? MEDIA_CODEC_G711U : MEDIA_CODEC_G711A;
+    }
+    if (dst->audio.codec != MEDIA_CODEC_G711A &&
+        dst->audio.codec != MEDIA_CODEC_G711U &&
+        dst->audio.codec != MEDIA_CODEC_AAC)
+    {
+        dst->audio.codec = MEDIA_CODEC_G711A;
+    }
+    if (dst->audio.codec == MEDIA_CODEC_G711U)
+        dst->audio.g711_mode = G711_ENCODER_MODE_ULAW;
+    else if (dst->audio.codec == MEDIA_CODEC_G711A)
+        dst->audio.g711_mode = G711_ENCODER_MODE_ALAW;
+    if (dst->audio.aac_bitrate <= 0)
+        dst->audio.aac_bitrate = 32000;
+    if (dst->audio.aac_profile <= 0)
+        dst->audio.aac_profile = 2;
     if (dst->audio.bind_stream_index < 0 || dst->audio.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS)
         dst->audio.bind_stream_index = DEFAULT_AUDIO_BIND_STREAM_INDEX;
 
@@ -370,6 +388,17 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         memset(&output_config, 0, sizeof(output_config));
         output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
         output_config.protocol.rtsp = s->rtsp;
+        if (ctx->config.audio.enabled && ctx->config.audio.bind_stream_index == stream_idx)
+        {
+            output_config.protocol.rtsp.audio_codec = ctx->config.audio.codec;
+            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.sample_rate;
+            output_config.protocol.rtsp.audio_channels = ctx->config.audio.channels;
+            output_config.protocol.rtsp.aac_profile = ctx->config.audio.aac_profile;
+        }
+        else
+        {
+            output_config.protocol.rtsp.audio_codec = MEDIA_CODEC_NONE;
+        }
         if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
         {
             LOG_ERROR("setup_outputs_for_stream failed: setup RTSP stream=%d name=%s",
@@ -614,7 +643,7 @@ static int init_gateway_video_encoders(MediaGatewayCtx *ctx)
 }
 
 /**
- * @description: 初始化音频采集设备和 G711 编码器。
+ * @description: 初始化音频采集设备和配置选择的音频编码器。
  */
 static int init_gateway_audio(MediaGatewayCtx *ctx)
 {
@@ -622,6 +651,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
     {
         AudioCaptureConfig audio_capture_config;
         G711EncoderConfig g711_config;
+        AacEncoderConfig aac_config;
 
         memset(&audio_capture_config, 0, sizeof(audio_capture_config));
         audio_capture_config.device_name = ctx->config.audio.device_name;
@@ -642,15 +672,32 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         ctx->config.audio.sample_rate = ctx->audio_capture.config.sample_rate;
         ctx->config.audio.period_frames = ctx->audio_capture.config.period_frames;
 
-        memset(&g711_config, 0, sizeof(g711_config));
-        g711_config.mode = ctx->config.audio.g711_mode;
-        g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
-        g711_config.channels = ctx->audio_capture.config.channels;
-        g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
-        if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0)
+        if (ctx->config.audio.codec == MEDIA_CODEC_AAC)
         {
-            LOG_ERROR("media_gateway_init failed: g711_encoder");
-            return -1;
+            memset(&aac_config, 0, sizeof(aac_config));
+            aac_config.sample_rate = ctx->audio_capture.config.sample_rate;
+            aac_config.channels = ctx->audio_capture.config.channels;
+            aac_config.bitrate = ctx->config.audio.aac_bitrate;
+            aac_config.profile = ctx->config.audio.aac_profile;
+            aac_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
+            if (aac_encoder_init(&ctx->aac_encoder, &aac_config) != 0)
+            {
+                LOG_ERROR("media_gateway_init failed: aac_encoder");
+                return -1;
+            }
+        }
+        else
+        {
+            memset(&g711_config, 0, sizeof(g711_config));
+            g711_config.mode = ctx->config.audio.g711_mode;
+            g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
+            g711_config.channels = ctx->audio_capture.config.channels;
+            g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
+            if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0)
+            {
+                LOG_ERROR("media_gateway_init failed: g711_encoder");
+                return -1;
+            }
         }
         ctx->audio_encoder_ready = 1;
     }
@@ -1063,7 +1110,10 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     }
     if (ctx->audio_encoder_ready)
     {
-        g711_encoder_deinit(&ctx->audio_encoder);
+        if (ctx->config.audio.codec == MEDIA_CODEC_AAC)
+            aac_encoder_deinit(&ctx->aac_encoder);
+        else
+            g711_encoder_deinit(&ctx->audio_encoder);
         ctx->audio_encoder_ready = 0;
     }
     if (ctx->audio_capture_ready)

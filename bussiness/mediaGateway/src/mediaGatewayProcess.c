@@ -675,6 +675,7 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
                                 const AudioFrame *frame,
                                 const uint8_t *audio_data,
                                 size_t audio_len,
+                                uint64_t pts_us,
                                 MediaCodecType codec)
 {
     MediaBuffer *buffer = NULL;
@@ -712,8 +713,8 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     packet.codec = codec;
     packet.buffer = buffer;
     packet.frame_id = frame->frame_id;
-    packet.pts_us = frame->pts_us;
-    packet.dts_us = frame->pts_us;
+    packet.pts_us = pts_us;
+    packet.dts_us = pts_us;
     packet.is_key_frame = 0;
 
     for (i = 0; i < ctx->output_count; ++i)
@@ -744,8 +745,9 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
  */
 int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
 {
-    const uint8_t *g711_data = NULL;
-    size_t g711_len = 0;
+    const uint8_t *audio_data = NULL;
+    size_t audio_len = 0;
+    uint64_t audio_pts_us = 0;
     MediaCodecType codec = MEDIA_CODEC_NONE;
     int stream_idx;
     int ret;
@@ -761,7 +763,7 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     }
     if (!ctx->audio_encoder_ready)
         return 0;
-    if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE || frame->channels != 1)
+    if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE)
     {
         LOG_ERROR("process_gateway_audio failed: unsupported format=%d channels=%d",
                   frame->format,
@@ -773,18 +775,44 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;
 
-    if (g711_encoder_encode_s16le(&ctx->audio_encoder,
-                                  (const int16_t *)frame->data,
-                                  frame->samples_per_channel,
-                                  &g711_data,
-                                  &g711_len,
-                                  &codec) != 0)
+    if (ctx->config.audio.codec == MEDIA_CODEC_AAC)
     {
-        LOG_ERROR("process_gateway_audio failed: g711 encode frame=%" PRIu64, frame->frame_id);
-        return -1;
+        if (aac_encoder_encode_s16le(&ctx->aac_encoder,
+                                     (const int16_t *)frame->data,
+                                     frame->samples_per_channel,
+                                     frame->pts_us,
+                                     &audio_data,
+                                     &audio_len,
+                                     &audio_pts_us,
+                                     &codec) != 0)
+        {
+            LOG_ERROR("process_gateway_audio failed: aac encode frame=%" PRIu64, frame->frame_id);
+            return -1;
+        }
+        if (audio_len == 0)
+            return 0;
+    }
+    else
+    {
+        if (frame->channels != 1)
+        {
+            LOG_ERROR("process_gateway_audio failed: G711 requires mono channels=%d", frame->channels);
+            return -1;
+        }
+        if (g711_encoder_encode_s16le(&ctx->audio_encoder,
+                                      (const int16_t *)frame->data,
+                                      frame->samples_per_channel,
+                                      &audio_data,
+                                      &audio_len,
+                                      &codec) != 0)
+        {
+            LOG_ERROR("process_gateway_audio failed: g711 encode frame=%" PRIu64, frame->frame_id);
+            return -1;
+        }
+        audio_pts_us = frame->pts_us;
     }
     pthread_mutex_lock(&ctx->stats_lock);
-    ret = enqueue_audio_packet(ctx, stream_idx, frame, g711_data, g711_len, codec);
+    ret = enqueue_audio_packet(ctx, stream_idx, frame, audio_data, audio_len, audio_pts_us, codec);
     pthread_mutex_unlock(&ctx->stats_lock);
     return ret;
 }

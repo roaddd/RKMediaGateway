@@ -202,7 +202,10 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_SOURCE_SLOTS", 8);
     set_value_int("AUDIO_RETRY_MS", 5);
     set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
+    set_value_int("AUDIO_CODEC", MEDIA_CODEC_NONE);
     set_value_int("AUDIO_G711_MODE", G711_ENCODER_MODE_ALAW);
+    set_value_int("AUDIO_AAC_BITRATE", 32000);
+    set_value_int("AUDIO_AAC_PROFILE", 2);
     set_value_int("AUDIO_BIND_STREAM_INDEX", 0);
 }
 
@@ -256,7 +259,7 @@ static void load_defaults(void) {
     set_value_int("CAPTURE_SUB_BUFFER_COUNT", V4L2_CAPTURE_BUFFER_COUNT);
 
     set_stream_defaults("STREAM_MAIN_", 1, CAPTURE_WIDTH, CAPTURE_HEIGHT, 30, 2 * 1024 * 1024);
-    set_stream_defaults("STREAM_SUB_", 0, 1280, 720, 15, 1024 * 1024);
+    set_stream_defaults("STREAM_SUB_", 0, 1280, 720, 30, 1024 * 1024);
     set_audio_defaults();
 
     set_value("RTSP_NAME", "rtsp");
@@ -329,7 +332,10 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->source_slots = value_int("AUDIO_SOURCE_SLOTS");
     audio->retry_ms = value_int("AUDIO_RETRY_MS");
     audio->max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
+    audio->codec = (MediaCodecType)value_int("AUDIO_CODEC");
     audio->g711_mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
+    audio->aac_bitrate = value_int("AUDIO_AAC_BITRATE");
+    audio->aac_profile = value_int("AUDIO_AAC_PROFILE");
     audio->bind_stream_index = value_int("AUDIO_BIND_STREAM_INDEX");
 }
 

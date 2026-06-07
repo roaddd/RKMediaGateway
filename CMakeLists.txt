@@ -14,6 +14,7 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
@@ -63,6 +64,7 @@ file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
 file(GLOB G711_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/src/*.c)
+file(GLOB AAC_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
@@ -73,6 +75,7 @@ file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
+option(ENABLE_FDK_AAC "Build AAC encoder support with FDK-AAC" ON)
 set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
 
 if(ENABLE_ALSA_AUDIO)
@@ -85,6 +88,16 @@ if(ENABLE_ALSA_AUDIO)
     endif()
 endif()
 
+if(ENABLE_FDK_AAC)
+    find_path(FDK_AAC_INCLUDE_DIR NAMES fdk-aac/aacenc_lib.h aacenc_lib.h)
+    find_library(FDK_AAC_LIBRARY NAMES fdk-aac fdk_aac)
+    if(FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        message(STATUS "FDK-AAC encoder enabled")
+    else()
+        message(WARNING "ENABLE_FDK_AAC=ON but FDK-AAC headers/library not found; AAC config will report unsupported at runtime")
+    endif()
+endif()
+
 if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(audio_pipeline_test
         ${PROJECT_SOURCE_DIR}/main/main_audio_pipeline_test.cpp
@@ -92,6 +105,7 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
+        ${AAC_ENCODER_SRC}
         ${UTIL_SRC}
     )
     target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
@@ -99,6 +113,11 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
         target_include_directories(audio_pipeline_test PRIVATE ${ALSA_INCLUDE_DIR})
         target_link_libraries(audio_pipeline_test PRIVATE ${ALSA_LIBRARY})
         target_compile_definitions(audio_pipeline_test PRIVATE ENABLE_ALSA_AUDIO=1)
+    endif()
+    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        target_include_directories(audio_pipeline_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
+        target_link_libraries(audio_pipeline_test PRIVATE ${FDK_AAC_LIBRARY})
+        target_compile_definitions(audio_pipeline_test PRIVATE ENABLE_FDK_AAC=1)
     endif()
     set_target_properties(audio_pipeline_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
@@ -217,6 +236,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
+        ${AAC_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -240,6 +260,11 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         target_link_libraries(rtsp_gateway PRIVATE ${ALSA_LIBRARY})
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_ALSA_AUDIO=1)
     endif()
+    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        target_include_directories(rtsp_gateway PRIVATE ${FDK_AAC_INCLUDE_DIR})
+        target_link_libraries(rtsp_gateway PRIVATE ${FDK_AAC_LIBRARY})
+        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_FDK_AAC=1)
+    endif()
     set_target_properties(rtsp_gateway PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -257,6 +282,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
+        ${AAC_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -279,6 +305,11 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         target_link_libraries(dual_output_test PRIVATE ${ALSA_LIBRARY})
         target_compile_definitions(dual_output_test PRIVATE ENABLE_ALSA_AUDIO=1)
     endif()
+    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        target_include_directories(dual_output_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
+        target_link_libraries(dual_output_test PRIVATE ${FDK_AAC_LIBRARY})
+        target_compile_definitions(dual_output_test PRIVATE ENABLE_FDK_AAC=1)
+    endif()
     set_target_properties(dual_output_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -291,6 +322,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
+        ${AAC_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -310,6 +342,11 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         target_link_libraries(all_services PRIVATE ${ALSA_LIBRARY})
         target_compile_definitions(all_services PRIVATE ENABLE_ALSA_AUDIO=1)
     endif()
+    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        target_include_directories(all_services PRIVATE ${FDK_AAC_INCLUDE_DIR})
+        target_link_libraries(all_services PRIVATE ${FDK_AAC_LIBRARY})
+        target_compile_definitions(all_services PRIVATE ENABLE_FDK_AAC=1)
+    endif()
     set_target_properties(all_services PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -318,8 +355,11 @@ endif()
 message(STATUS "BUILD_TARGET=${BUILD_TARGET}")
 message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
 message(STATUS "ENABLE_ALSA_AUDIO=${ENABLE_ALSA_AUDIO}")
+message(STATUS "ENABLE_FDK_AAC=${ENABLE_FDK_AAC}")
 message(STATUS "ALSA_INCLUDE_DIR=${ALSA_INCLUDE_DIR}")
 message(STATUS "ALSA_LIBRARY=${ALSA_LIBRARY}")
+message(STATUS "FDK_AAC_INCLUDE_DIR=${FDK_AAC_INCLUDE_DIR}")
+message(STATUS "FDK_AAC_LIBRARY=${FDK_AAC_LIBRARY}")
 message(STATUS "LIBRTMP_INCLUDE_DIR=${LIBRTMP_INCLUDE_DIR}")
 message(STATUS "LIBRTMP_LIBRARY=${LIBRTMP_LIBRARY}")
 message(STATUS "EXOSIP_COMPAT_INCLUDE_DIR=${EXOSIP_COMPAT_INCLUDE_DIR}")
