@@ -755,19 +755,36 @@ static const char *resolve_sensor_name(IspControllerCtx *ctx)
     const char *video_device = safe_config_str(ctx->config.sensor.video_device, "");
     const char *bound_sensor = NULL;
 
+    LOG_WARN("[ISP] resolve sensor: config_sensor='%s' video_device='%s'",
+             sensor_name,
+             video_device);
+
     if (sensor_name[0] != '\0')
+    {
+        LOG_WARN("[ISP] resolve sensor: use configured sensor='%s'", sensor_name);
         return sensor_name;
+    }
 
     if (video_device[0] == '\0')
+    {
+        LOG_ERROR("[ISP] resolve sensor failed: video_device is empty");
         return "";
+    }
 
 
     /* 根据 video_device 查找绑定的 sensor entity，例如 m00_b_ov13850。 */
     bound_sensor = rk_aiq_uapi2_sysctl_getBindedSnsEntNmByVd(video_device);
+    LOG_WARN("[ISP] resolve sensor: binded sensor by video='%s' is '%s'",
+             video_device,
+             bound_sensor ? bound_sensor : "NULL");
     if (!bound_sensor || bound_sensor[0] == '\0')
+    {
+        LOG_ERROR("[ISP] resolve sensor failed: no sensor bound to video_device='%s'", video_device);
         return "";
+    }
 
     snprintf(ctx->resolved_sensor_name, sizeof(ctx->resolved_sensor_name), "%s", bound_sensor);
+    LOG_WARN("[ISP] resolve sensor success: sensor='%s'", ctx->resolved_sensor_name);
     return ctx->resolved_sensor_name;
 }
 #endif
@@ -818,14 +835,20 @@ int isp_controller_init(IspControllerCtx *ctx, const IspControllerConfig *config
 
         if (!sensor_name || sensor_name[0] == '\0')
         {
-            LOG_ERROR("[ISP] failed to resolve sensor name from config sensor=%s video=%s",
+            LOG_ERROR("[ISP] failed to resolve sensor name from config sensor='%s' video='%s'",
                       safe_config_str(ctx->config.sensor.sensor_name, ""),
                       ctx->config.sensor.video_device);
             return isp_controller_should_fallback(&ctx->config) ? 0 : -1;
         }
         snprintf(ctx->resolved_sensor_name, sizeof(ctx->resolved_sensor_name), "%s", sensor_name);
+        if (ctx->resolved_sensor_name[0] == '\0')
+        {
+            LOG_ERROR("[ISP] resolved sensor is empty after copy; abort RKAIQ init video='%s'",
+                      ctx->config.sensor.video_device);
+            return isp_controller_should_fallback(&ctx->config) ? 0 : -1;
+        }
 
-        LOG_WARN("[ISP] init RKAIQ sensor=%s iq_dir=%s size=%dx%d mode=%d force_iq=%s",
+        LOG_WARN("[ISP] init RKAIQ sensor='%s' iq_dir='%s' size=%dx%d mode=%d force_iq='%s'",
                  ctx->resolved_sensor_name,
                  ctx->config.sensor.iq_dir,
                  ctx->config.sensor.width,
