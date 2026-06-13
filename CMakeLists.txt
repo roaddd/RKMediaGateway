@@ -82,14 +82,25 @@ option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
 option(ENABLE_FDK_AAC "Build AAC encoder support with FDK-AAC" ON)
 option(ENABLE_RKAIQ "Build RKAIQ/ISP lifecycle support" ON)
+set(RKAIQ_ISP_HW_VERSION "V21" CACHE STRING "RKAIQ ISP hardware version: V20 or V21")
 set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
 
 if(ENABLE_RKAIQ)
+    if(RKAIQ_ISP_HW_VERSION STREQUAL "V20")
+        add_definitions(-DISP_HW_V20=1)
+    elseif(RKAIQ_ISP_HW_VERSION STREQUAL "V21")
+        add_definitions(-DISP_HW_V21=1)
+    else()
+        message(FATAL_ERROR "RKAIQ_ISP_HW_VERSION must be V20 or V21")
+    endif()
     include_directories(
+        ${THIRDPARTY_RKAIQ_ROOT}/inc
         ${THIRDPARTY_RKAIQ_ROOT}/inc/uAPI2
         ${THIRDPARTY_RKAIQ_ROOT}/inc/uAPI
         ${THIRDPARTY_RKAIQ_ROOT}/inc/common
         ${THIRDPARTY_RKAIQ_ROOT}/inc/algos
+        ${THIRDPARTY_RKAIQ_ROOT}/inc/iq_parser
+        ${THIRDPARTY_RKAIQ_ROOT}/inc/iq_parser_v2
         ${THIRDPARTY_RKAIQ_ROOT}/inc/xcore
     )
     if(EXISTS ${THIRDPARTY_RKAIQ_LIB_DIR}/librkaiq.so)
@@ -393,6 +404,7 @@ message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
 message(STATUS "ENABLE_ALSA_AUDIO=${ENABLE_ALSA_AUDIO}")
 message(STATUS "ENABLE_FDK_AAC=${ENABLE_FDK_AAC}")
 message(STATUS "ENABLE_RKAIQ=${ENABLE_RKAIQ}")
+message(STATUS "RKAIQ_ISP_HW_VERSION=${RKAIQ_ISP_HW_VERSION}")
 message(STATUS "ALSA_INCLUDE_DIR=${ALSA_INCLUDE_DIR}")
 message(STATUS "ALSA_LIBRARY=${ALSA_LIBRARY}")
 message(STATUS "FDK_AAC_INCLUDE_DIR=${FDK_AAC_INCLUDE_DIR}")
@@ -403,4 +415,3 @@ message(STATUS "EXOSIP_COMPAT_INCLUDE_DIR=${EXOSIP_COMPAT_INCLUDE_DIR}")
 message(STATUS "OPENSSL_COMPAT_INCLUDE_DIR=${OPENSSL_COMPAT_INCLUDE_DIR}")
 message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 message(STATUS "C compiler=${CMAKE_C_COMPILER}")
-

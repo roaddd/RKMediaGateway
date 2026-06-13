@@ -466,13 +466,13 @@ static int can_encode_stream_dmabuf_direct(const MediaGatewayCtx *ctx,
     }
     if (stream_cfg->width != capture_format->width ||
         stream_cfg->height != capture_format->height ||
-        encoder->width != capture_format->width ||
-        encoder->height != capture_format->height)
+        encoder->input.width != capture_format->width ||
+        encoder->input.height != capture_format->height)
     {
         if (reason) *reason = "capture and encoder effective size differ";
         return 0;
     }
-    if ((int)capture_format->planes[0].bytesperline != encoder->hor_stride)
+    if ((int)capture_format->planes[0].bytesperline != encoder->input.hor_stride)
     {
         if (reason) *reason = "capture bytesperline differs from MPP hor_stride";
         return 0;
@@ -483,7 +483,7 @@ static int can_encode_stream_dmabuf_direct(const MediaGatewayCtx *ctx,
      * V4L2 协商结果能直接给出行步进和容量，先要求两边容量覆盖 MPP 读区间，
      * 避免 compact 1080p buffer 被按 1088 高度布局直通。
      */
-    mpp_frame_size = (size_t)encoder->hor_stride * encoder->ver_stride * 3 / 2;
+    mpp_frame_size = (size_t)encoder->input.hor_stride * encoder->input.ver_stride * 3 / 2;
     if ((size_t)capture_format->planes[0].sizeimage < mpp_frame_size)
     {
         if (reason) *reason = "capture sizeimage is smaller than MPP stride frame";
@@ -541,8 +541,8 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                      format->height,
                      format->planes[0].bytesperline,
                      format->planes[0].sizeimage,
-                     ctx->encoders[stream_idx].hor_stride,
-                     ctx->encoders[stream_idx].ver_stride);
+                     ctx->encoders[stream_idx].input.hor_stride,
+                     ctx->encoders[stream_idx].input.ver_stride);
         }
         else
         {
