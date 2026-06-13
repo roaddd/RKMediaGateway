@@ -17,6 +17,8 @@ NC='\033[0m'
 PROJECT_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BUILD_DIR=${PROJECT_ROOT}/build/output
 TOOLCHAIN_FILE=${PROJECT_ROOT}/build/rk3568.cmake
+RK3568_TOOLCHAIN_ROOT=/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/prebuilts/gcc/linux-x86/aarch64/gcc-buildroot-9.3.0-2020.03-x86_64_aarch64-rockchip-linux-gnu
+RK3568_TOOLCHAIN_HOST_LIB=${RK3568_TOOLCHAIN_ROOT}/lib
 
 BUILD_TARGET=${1:-"all"}
 BUILD_TYPE=${2:-"Release"}
@@ -41,8 +43,10 @@ echo -e "${YELLOW}=== CMake configure: target=${BUILD_TARGET}, type=${BUILD_TYPE
 cmake_cmd="cmake ${PROJECT_ROOT} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TARGET=${BUILD_TARGET}"
 
 if [ "${CROSS_COMPILE}" = "ON" ]; then
+    export LD_LIBRARY_PATH=${RK3568_TOOLCHAIN_HOST_LIB}:${LD_LIBRARY_PATH}
     cmake_cmd="${cmake_cmd} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}"
     echo -e "${YELLOW}Cross compile enabled with RK3568 toolchain${NC}"
+    echo "Toolchain host library path: ${RK3568_TOOLCHAIN_HOST_LIB}"
 else
     cmake_cmd="${cmake_cmd} -DCMAKE_TOOLCHAIN_FILE=''"
     echo -e "${YELLOW}Using host compiler${NC}"
