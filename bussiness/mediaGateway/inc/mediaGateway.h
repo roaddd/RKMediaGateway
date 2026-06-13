@@ -10,6 +10,7 @@
 #include "audioCapture.h"
 #include "g711Encoder.h"
 #include "aacEncoder.h"
+#include "ispController.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,25 @@ typedef struct {
     int aac_profile;                 /* AAC object type，2 表示 AAC-LC。 */
     int bind_stream_index;           /* 音频包投递到哪一路码流绑定的输出。 */
 } AudioSourceConfig;
+
+typedef struct {
+    int enabled;                     /* 是否启用 RKAIQ/ISP 控制链路。 */
+    const char *sensor_name;         /* sensor media entity 名称；为空时按 video_device 自动反查。 */
+    const char *video_device;        /* 用于反查 sensor 的 video node，例如 /dev/video0。 */
+    const char *iq_dir;              /* IQ 文件目录。 */
+    const char *force_iq_file;       /* 可选：强制使用指定 IQ 文件。 */
+    int width;                       /* RKAIQ prepare 宽度，<=0 时使用主采集源宽度。 */
+    int height;                      /* RKAIQ prepare 高度，<=0 时使用主采集源高度。 */
+    int working_mode;                /* rk_aiq_working_mode_t，0 表示 normal。 */
+    int keep_external_hw_state;      /* stop 时是否保留外部补光/IRCut 等硬件状态。 */
+    int fallback_on_error;           /* ISP 初始化失败时是否降级继续运行。 */
+    IspControllerImageControls controls; /* ISP runtime image controls. */
+    int health_check_enable;         /* 是否启用 ISP/RKAIQ 健康诊断。 */
+    int meta_timeout_ms;             /* started 后 metas 回调允许停滞的最长时间。 */
+    int max_error_count;             /* RKAIQ error 回调累计诊断阈值。 */
+    int restart_on_fault;            /* 预留：健康异常时是否允许上层执行协同重启。 */
+    IspControllerLowLightConfig low_light; /* 低照度自动优化策略配置。 */
+} IspSourceConfig;
 
 typedef struct {
     int enabled;                     /* 该码流是否启用。 */
@@ -105,6 +125,7 @@ typedef struct {
     int log_level;                   /* 全局日志等级：0 debug, 1 info, 2 warn, 3 error。 */
     int capture_source_count;        /* 采集源数量。 */
     CaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
+    IspSourceConfig isp;             /* RKAIQ/ISP 初始化与生命周期配置。 */
     AudioSourceConfig audio;         /* 音频采集与编码配置。 */
     int stream_count;                /* 流配置数量，<=0 表示使用兼容模式自动生成 main 流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
@@ -174,6 +195,8 @@ typedef struct {
 
 typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
+    IspControllerCtx isp;                       /* RKAIQ/ISP 控制上下文。 */
+    int isp_ready;                              /* ISP 控制链路是否已启动。 */
     AudioCaptureCtx audio_capture;               /* 音频采集上下文。 */
     G711EncoderCtx audio_encoder;                /* G711 音频编码上下文。 */
     AacEncoderCtx aac_encoder;                    /* AAC 音频编码上下文。 */
@@ -189,6 +212,8 @@ typedef struct {
     int rtsp_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 RTSP 输出索引。 */
     int gb28181_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 GB28181 输出索引。 */
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
+    int low_light_bitrate_active;                 /* 当前低照度编码联动策略是否已应用；用于进入/退出时恢复码率或 QP profile。 */
+    uint64_t last_isp_policy_ts_us;               /* 上次运行 ISP/低照度策略的时间戳，避免策略跟随日志周期。 */
     int running;                               /* 主循环是否正在运行。 */
     FILE *record_fp;                           /* 本地录像文件句柄。 */
     pthread_mutex_t stats_lock;                /* 保护吞吐、benchmark 和本地录像写入。 */

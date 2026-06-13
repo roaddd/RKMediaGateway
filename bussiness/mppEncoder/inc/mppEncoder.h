@@ -5,38 +5,105 @@
 #include <stdint.h>
 
 #include "rk_mpi.h"
+#include "rk_venc_rc.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+typedef enum {
+    MPP_ENCODER_RC_MODE_VBR = MPP_ENC_RC_MODE_VBR,       /* 变码率。 */
+    MPP_ENCODER_RC_MODE_CBR = MPP_ENC_RC_MODE_CBR,       /* 定码率。 */
+    MPP_ENCODER_RC_MODE_FIXQP = MPP_ENC_RC_MODE_FIXQP,   /* 固定 QP。 */
+    MPP_ENCODER_RC_MODE_AVBR = MPP_ENC_RC_MODE_AVBR,     /* 平均码率控制。 */
+    MPP_ENCODER_RC_MODE_BUTT = MPP_ENC_RC_MODE_BUTT      /* 无效边界值。 */
+} MppEncoderRcMode;
+
+typedef enum {
+    MPP_ENCODER_H264_PROFILE_DEFAULT = 0,                /* 使用编码器默认 High profile。 */
+    MPP_ENCODER_H264_PROFILE_BASELINE = 66,              /* H.264 Baseline profile。 */
+    MPP_ENCODER_H264_PROFILE_MAIN = 77,                  /* H.264 Main profile。 */
+    MPP_ENCODER_H264_PROFILE_HIGH = 100                  /* H.264 High profile。 */
+} MppEncoderH264Profile;
+
+typedef enum {
+    MPP_ENCODER_H264_LEVEL_DEFAULT = 0,                  /* 使用编码器默认 level 4.0。 */
+    MPP_ENCODER_H264_LEVEL_30 = 30,                      /* H.264 level 3.0。 */
+    MPP_ENCODER_H264_LEVEL_31 = 31,                      /* H.264 level 3.1。 */
+    MPP_ENCODER_H264_LEVEL_40 = 40,                      /* H.264 level 4.0。 */
+    MPP_ENCODER_H264_LEVEL_41 = 41,                      /* H.264 level 4.1。 */
+    MPP_ENCODER_H264_LEVEL_42 = 42,                      /* H.264 level 4.2。 */
+    MPP_ENCODER_H264_LEVEL_50 = 50,                      /* H.264 level 5.0。 */
+    MPP_ENCODER_H264_LEVEL_51 = 51,                      /* H.264 level 5.1。 */
+    MPP_ENCODER_H264_LEVEL_52 = 52                       /* H.264 level 5.2。 */
+} MppEncoderH264Level;
+
+typedef enum {
+    MPP_ENCODER_CABAC_DEFAULT = -1,                      /* 使用编码器默认 CABAC 策略。 */
+    MPP_ENCODER_CABAC_DISABLED = 0,                      /* 关闭 CABAC。 */
+    MPP_ENCODER_CABAC_ENABLED = 1                        /* 开启 CABAC。 */
+} MppEncoderCabacMode;
+
 typedef struct {
     MppCtx ctx;                 /* MPP 编码上下文句柄。 */
     MppApi *mpi;                /* MPP 提供的接口函数表。 */
     MppEncCfg cfg;              /* 编码配置对象。 */
+} MppEncoderMppObjects;
 
+typedef struct {
     MppBufferGroup frame_group; /* 输入帧缓冲组。 */
     MppBuffer frame_buffer;     /* 当前输入帧对应的 MPP Buffer。 */
     MppFrame frame;             /* 当前送入编码器的帧对象。 */
-
     int width;                  /* 输入图像宽度。 */
     int height;                 /* 输入图像高度。 */
     int hor_stride;             /* 水平 stride。 */
     int ver_stride;             /* 垂直 stride。 */
+} MppEncoderInputFrame;
+
+typedef struct {
     int fps;                    /* 编码帧率。 */
     int bitrate;                /* 目标码率。 */
     int gop;                    /* GOP 长度。 */
-    int64_t pts;                /* 送入 MPP 的时间戳计数。 */
+    MppEncoderRcMode rc_mode;   /* 当前生效的码控模式。 */
+} MppEncoderRcState;
 
+typedef struct {
+    int qp_init;                /* QP 初始值。 */
+    int qp_min;                 /* P/B 帧最小 QP。 */
+    int qp_max;                 /* P/B 帧最大 QP。 */
+    int qp_min_i;               /* I 帧最小 QP。 */
+    int qp_max_i;               /* I 帧最大 QP。 */
+    int qp_max_step;            /* 相邻帧最大 QP 变化步长。 */
+} MppEncoderQpValues;
+
+typedef struct {
+    MppEncoderQpValues base;    /* 初始化时的 QP 基线，用于低光 FIXQP profile 退出后恢复。 */
+    MppEncoderQpValues current; /* 当前下发到 MPP 的 QP profile。 */
+} MppEncoderQpState;
+
+typedef struct {
+    int64_t pts;                /* 送入 MPP 的时间戳计数。 */
+} MppEncoderRuntimeState;
+
+typedef struct {
     uint8_t *packet_cache;      /* 编码输出缓存，保存导出的 Annex-B 码流。 */
     size_t packet_cache_size;   /* packet_cache 当前容量。 */
+} MppEncoderOutputCache;
+
+typedef struct {
+    MppEncoderMppObjects mpp;    /* MPP 上下文、接口表和配置对象。 */
+    MppEncoderInputFrame input;  /* 输入帧 buffer、MppFrame 和几何信息。 */
+    MppEncoderRcState rc;        /* 码控模式、目标码率、帧率和 GOP。 */
+    MppEncoderQpState qp;        /* FIXQP/码控 QP 基线和当前 profile。 */
+    MppEncoderRuntimeState runtime; /* 编码运行时状态，例如递增 PTS。 */
+    MppEncoderOutputCache output;   /* 编码输出缓存。 */
 } MppEncoderCtx;
 
 typedef struct {
-    int rc_mode;        /* MPP_ENC_RC_MODE_*；<=0 表示使用默认 CBR。 */
-    int h264_profile;   /* H264 profile，例如 66/77/100；<=0 表示默认 100。 */
-    int h264_level;     /* H264 level，例如 40；<=0 表示默认 40。 */
-    int h264_cabac_en;  /* 是否启用 CABAC；<0 表示默认 1。 */
+    MppEncoderRcMode rc_mode;           /* 码控模式；无 options 时使用默认 CBR，0 是有效 VBR。 */
+    MppEncoderH264Profile h264_profile; /* H264 profile；DEFAULT 表示默认 High。 */
+    MppEncoderH264Level h264_level;     /* H264 level；DEFAULT 表示默认 4.0。 */
+    MppEncoderCabacMode h264_cabac_en;  /* CABAC 开关；DEFAULT 表示使用默认开启策略。 */
     int qp_init;        /* 初始 QP；<=0 表示使用 MPP 默认值。 */
     int qp_min;         /* P/B 帧最小 QP；<=0 表示使用 MPP 默认值。 */
     int qp_max;         /* P/B 帧最大 QP；<=0 表示使用 MPP 默认值。 */
@@ -104,6 +171,19 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
  * 常用于会话刚建立时快速给下游提供可解码起点。
  */
 int mpp_encoder_request_idr(MppEncoderCtx *enc);
+
+/*
+ * 运行时更新编码目标码率。
+ * 低照度噪声升高、场景复杂度变化时可通过该接口联动码率控制。
+ */
+int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate);
+
+/*
+ * 运行时更新 FIXQP 相关 QP profile。
+ * qp_delta 以初始化时的 QP 配置为基线，负数降低 QP 提升画质，0 恢复基线。
+ * 该接口主要用于低照度策略在 FIXQP 模式下的兼容联动。
+ */
+int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta);
 
 #ifdef __cplusplus
 }

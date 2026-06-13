@@ -2,6 +2,7 @@
 #include "mediaGatewayClock.h"
 #include "mediaGatewayMetrics.h"
 #include "mediaGatewayPipeline.h"
+#include "mediaGatewayPolicy.h"
 #include "mediaGatewayProcess.h"
 #include "mediaGatewayStats.h"
 
@@ -55,6 +56,90 @@ typedef struct {
 static const char *safe_str(const char *value, const char *fallback)
 {
     return (value && value[0] != '\0') ? value : fallback;
+}
+
+/**
+ * @description: 归一化 ISP 运行时图像控制配置。
+ *
+ * 当控制功能未启用时，将所有控制项设置为“不修改”哨兵值，避免 RKAIQ 启动后
+ * 被默认配置意外改写亮度、曝光、白平衡、降噪等 IQ/3A 参数。控制功能启用时保留
+ * 用户配置，由 ispController 在下发前按各字段范围进一步裁剪。
+ */
+static void fill_default_isp_controls(IspControllerImageControls *controls)
+{
+    if (!controls)
+        return;
+
+    controls->enabled = controls->enabled ? 1 : 0;
+    if (!controls->enabled)
+    {
+        controls->brightness = -1;
+        controls->contrast = -1;
+        controls->saturation = -1;
+        controls->hue = -1;
+        controls->sharpness = -1;
+        controls->exposure_mode = -1;
+        controls->exposure_time = -1.0f;
+        controls->exposure_gain = -1.0f;
+        controls->wb_mode = -1;
+        controls->wb_ct = 0;
+        controls->wb_rgain = -1.0f;
+        controls->wb_grgain = -1.0f;
+        controls->wb_gbgain = -1.0f;
+        controls->wb_bgain = -1.0f;
+        controls->anti_flicker_enable = -1;
+        controls->power_line_freq = -1;
+        controls->nr_mode = -1;
+        controls->anr_strength = -1;
+        controls->dehaze_mode = -1;
+        controls->dehaze_strength = -1;
+    }
+}
+
+/**
+ * @description: 归一化低照度自动优化配置。
+ *
+ * 该函数只补齐策略阈值和合法范围，不直接修改 ISP 或编码器状态。真正的低照度检测、
+ * RKAIQ 参数下发和码率联动会在运行期统计周期中完成。
+ */
+static void fill_default_low_light_config(IspControllerLowLightConfig *cfg)
+{
+    if (!cfg)
+        return;
+
+    /*
+     * 低照度策略默认关闭，避免未经过板端验证时自动改变曝光、降噪、锐度和码率。
+     * 启用后使用 env_lux + mean_luma 双阈值判断，并通过 enter/exit 差值形成回滞。
+     */
+    cfg->enabled = cfg->enabled ? 1 : 0;
+    if (cfg->enter_lux <= 0.0f)
+        cfg->enter_lux = 20.0f;
+    if (cfg->exit_lux <= cfg->enter_lux)
+        cfg->exit_lux = 35.0f;
+    if (cfg->enter_mean_luma <= 0.0f)
+        cfg->enter_mean_luma = 35.0f;
+    if (cfg->exit_mean_luma <= cfg->enter_mean_luma)
+        cfg->exit_mean_luma = 48.0f;
+    if (cfg->nr_strength < -1)
+        cfg->nr_strength = -1;
+    if (cfg->sharpness < -1)
+        cfg->sharpness = -1;
+    if (cfg->normal_nr_strength < -1)
+        cfg->normal_nr_strength = -1;
+    if (cfg->normal_sharpness < -1)
+        cfg->normal_sharpness = -1;
+    /*
+     * 码率提升按百分比配置，MediaGatewayStats 会以每路原始配置码率为基准计算目标码率。
+     * 这里只做合法性归一化，不直接改 stream bitrate。
+     */
+    if (cfg->bitrate_boost_percent < 0)
+        cfg->bitrate_boost_percent = 0;
+    if (cfg->qp_delta < -20)
+        cfg->qp_delta = -20;
+    if (cfg->qp_delta > 20)
+        cfg->qp_delta = 20;
+    if (cfg->min_switch_interval_ms <= 0)
+        cfg->min_switch_interval_ms = 5000;
 }
 
 /**
@@ -146,7 +231,7 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
         dst->bitrate = (stream_idx == 0) ? DEFAULT_ENCODE_BITRATE : (DEFAULT_ENCODE_BITRATE / 2);
     if (dst->gop <= 0)
         dst->gop = DEFAULT_ENCODE_GOP;
-    if (dst->rc_mode <= 0)
+    if (!has_src || dst->rc_mode < 0 || dst->rc_mode >= MPP_ENC_RC_MODE_BUTT)
         dst->rc_mode = DEFAULT_RC_MODE;
     if (dst->h264_profile <= 0)
         dst->h264_profile = DEFAULT_H264_PROFILE;
@@ -244,7 +329,7 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
         dst->bitrate = DEFAULT_ENCODE_BITRATE;
     if (dst->gop <= 0)
         dst->gop = DEFAULT_ENCODE_GOP;
-    if (dst->rc_mode <= 0)
+    if (!has_src || dst->rc_mode < 0 || dst->rc_mode >= MPP_ENC_RC_MODE_BUTT)
         dst->rc_mode = DEFAULT_RC_MODE;
     if (dst->h264_profile <= 0)
         dst->h264_profile = DEFAULT_H264_PROFILE;
@@ -266,6 +351,24 @@ static void fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfi
         dst->bench_sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
     if (dst->bench_print_interval_sec <= 0)
         dst->bench_print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
+
+    dst->isp.enabled = dst->isp.enabled ? 1 : 0;
+    dst->isp.video_device = safe_str(dst->isp.video_device, "/dev/video0");
+    dst->isp.iq_dir = safe_str(dst->isp.iq_dir, "thirdparty/rkaiq");
+    dst->isp.force_iq_file = safe_str(dst->isp.force_iq_file, "");
+    dst->isp.sensor_name = safe_str(dst->isp.sensor_name, "");
+    if (dst->isp.working_mode < 0)
+        dst->isp.working_mode = 0;
+    dst->isp.keep_external_hw_state = dst->isp.keep_external_hw_state ? 1 : 0;
+    dst->isp.fallback_on_error = dst->isp.fallback_on_error ? 1 : 0;
+    dst->isp.health_check_enable = dst->isp.health_check_enable ? 1 : 0;
+    if (dst->isp.meta_timeout_ms <= 0)
+        dst->isp.meta_timeout_ms = 2000;
+    if (dst->isp.max_error_count <= 0)
+        dst->isp.max_error_count = 3;
+    dst->isp.restart_on_fault = dst->isp.restart_on_fault ? 1 : 0;
+    fill_default_isp_controls(&dst->isp.controls);
+    fill_default_low_light_config(&dst->isp.low_light);
 
     if (dst->capture_source_count <= 0)
         dst->capture_source_count = 1;
@@ -541,11 +644,12 @@ static void log_effective_config(const MediaGatewayConfig *cfg)
 {
     if (!cfg)
         return;
-    LOG_INFO("[CFG] capture_source_count=%d stream_count=%d low_latency=%d stats_interval_sec=%d",
+    LOG_INFO("[CFG] capture_source_count=%d stream_count=%d low_latency=%d stats_interval_sec=%d isp_enable=%d",
              cfg->capture_source_count,
              cfg->stream_count,
              cfg->low_latency_mode,
-             cfg->stats_interval_sec);
+             cfg->stats_interval_sec,
+             cfg->isp.enabled);
 }
 
 /**
@@ -569,6 +673,60 @@ static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *con
     {
         ctx->rtsp_output_index[i] = -1;
         ctx->gb28181_output_index[i] = -1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 初始化 RKAIQ/ISP 控制链路；失败时可按配置降级继续运行。
+ */
+static int init_gateway_isp(MediaGatewayCtx *ctx)
+{
+    IspControllerConfig isp_config;
+    int source_idx = 0;
+
+    if (!ctx->config.isp.enabled)
+        return 0;
+
+    memset(&isp_config, 0, sizeof(isp_config));
+    isp_config.lifecycle.enabled = ctx->config.isp.enabled;
+    isp_config.sensor.sensor_name = ctx->config.isp.sensor_name;
+    isp_config.sensor.video_device = safe_str(ctx->config.isp.video_device,
+                                              ctx->config.capture_sources[0].device_path);
+    isp_config.sensor.iq_dir = ctx->config.isp.iq_dir;
+    isp_config.sensor.force_iq_file = ctx->config.isp.force_iq_file;
+    isp_config.sensor.width = ctx->config.isp.width;
+    isp_config.sensor.height = ctx->config.isp.height;
+    isp_config.sensor.working_mode = ctx->config.isp.working_mode;
+    isp_config.lifecycle.keep_external_hw_state = ctx->config.isp.keep_external_hw_state;
+    isp_config.lifecycle.fallback_on_error = ctx->config.isp.fallback_on_error;
+    isp_config.controls = ctx->config.isp.controls;
+    isp_config.health.check_enable = ctx->config.isp.health_check_enable;
+    isp_config.health.meta_timeout_ms = ctx->config.isp.meta_timeout_ms;
+    isp_config.health.max_error_count = ctx->config.isp.max_error_count;
+    isp_config.health.restart_on_fault = ctx->config.isp.restart_on_fault;
+    isp_config.low_light = ctx->config.isp.low_light;
+
+    if (ctx->config.capture_source_count > 0)
+        source_idx = 0;
+    if (isp_config.sensor.width <= 0)
+        isp_config.sensor.width = ctx->config.capture_sources[source_idx].width;
+    if (isp_config.sensor.height <= 0)
+        isp_config.sensor.height = ctx->config.capture_sources[source_idx].height;
+
+    if (isp_controller_init(&ctx->isp, &isp_config) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init ISP sensor=%s iq_dir=%s fallback=%d",
+                  safe_str(isp_config.sensor.sensor_name, "auto"),
+                  safe_str(isp_config.sensor.iq_dir, "unknown"),
+                  isp_config.lifecycle.fallback_on_error);
+        return -1;
+    }
+
+    ctx->isp_ready = isp_controller_is_started(&ctx->isp);
+    if (ctx->config.isp.enabled && !ctx->isp_ready)
+    {
+        LOG_WARN("[ISP] requested but not active; gateway continues with plain V4L2 capture");
     }
     return 0;
 }
@@ -778,6 +936,12 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
     {
         LOG_ERROR("media_gateway_init failed: init gateway base");
         return -1;
+    }
+    /* 初始化ISP控制 */
+    if (init_gateway_isp(ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_init failed: init gateway ISP");
+        goto fail;
     }
     if (init_gateway_captures(ctx) != 0)
     {
@@ -997,6 +1161,9 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
         return -1;
     }
 
+    /* 运行期策略有 ISP/编码器副作用，独立于统计日志周期调度。 */
+    media_gateway_update_runtime_policies_if_due(ctx);
+
     pthread_mutex_lock(&ctx->stats_lock);
     media_gateway_log_throughput_if_due(ctx);
     pthread_mutex_unlock(&ctx->stats_lock);
@@ -1139,6 +1306,11 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
             v4l2_capture_deinit(&ctx->captures[i]);
             ctx->capture_ready[i] = 0;
         }
+    }
+    if (ctx->isp_ready || ctx->isp.initialized || ctx->isp.status_lock_ready)
+    {
+        isp_controller_deinit(&ctx->isp);
+        ctx->isp_ready = 0;
     }
     if (ctx->stats_lock_ready)
     {

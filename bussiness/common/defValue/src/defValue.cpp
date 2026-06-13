@@ -55,6 +55,22 @@ static int value_int(const char *key) {
     return (int)parsed;
 }
 
+static float value_float(const char *key) {
+    std::map<std::string, std::string>::const_iterator it = g_values.find(key);
+    char *end_ptr = NULL;
+    float parsed = 0.0f;
+
+    if (it == g_values.end() || it->second.empty()) {
+        return 0.0f;
+    }
+
+    parsed = std::strtof(it->second.c_str(), &end_ptr);
+    if (!end_ptr || *end_ptr != '\0') {
+        return 0.0f;
+    }
+    return parsed;
+}
+
 static int file_has_key(const char *key) {
     return g_file_values.find(key) != g_file_values.end();
 }
@@ -242,6 +258,56 @@ static void load_defaults(void) {
     set_value_int("GATEWAY_CAPTURE_SOURCE_COUNT", 2);
     set_value_int("GATEWAY_STREAM_COUNT", 2);
 
+    set_value_int("ISP_ENABLE", 0);
+    set_value("ISP_SENSOR_NAME", "");
+    set_value("ISP_VIDEO_DEVICE", "/dev/video0");
+    set_value("ISP_IQ_DIR", "thirdparty/rkaiq");
+    set_value("ISP_FORCE_IQ_FILE", "");
+    set_value_int("ISP_WIDTH", 0);
+    set_value_int("ISP_HEIGHT", 0);
+    set_value_int("ISP_WORKING_MODE", 0);
+    set_value_int("ISP_KEEP_EXTERNAL_HW_STATE", 0);
+    set_value_int("ISP_FALLBACK_ON_ERROR", 1);
+    set_value_int("ISP_HEALTH_CHECK_ENABLE", 1);
+    set_value_int("ISP_META_TIMEOUT_MS", 2000);
+    set_value_int("ISP_MAX_ERROR_COUNT", 3);
+    set_value_int("ISP_RESTART_ON_FAULT", 0);
+    set_value_int("ISP_LOW_LIGHT_ENABLE", 0);
+    set_value("ISP_LOW_LIGHT_ENTER_LUX", "20");
+    set_value("ISP_LOW_LIGHT_EXIT_LUX", "35");
+    set_value("ISP_LOW_LIGHT_ENTER_MEAN_LUMA", "35");
+    set_value("ISP_LOW_LIGHT_EXIT_MEAN_LUMA", "48");
+    set_value("ISP_LOW_LIGHT_EXPOSURE_GAIN", "-1");
+    set_value("ISP_LOW_LIGHT_EXPOSURE_TIME", "-1");
+    set_value_int("ISP_LOW_LIGHT_NR_STRENGTH", 70);
+    set_value_int("ISP_LOW_LIGHT_SHARPNESS", 35);
+    set_value_int("ISP_LOW_LIGHT_NORMAL_NR_STRENGTH", -1);
+    set_value_int("ISP_LOW_LIGHT_NORMAL_SHARPNESS", -1);
+    set_value_int("ISP_LOW_LIGHT_BITRATE_BOOST_PERCENT", 25);
+    set_value_int("ISP_LOW_LIGHT_QP_DELTA", -3);
+    set_value_int("ISP_LOW_LIGHT_MIN_SWITCH_INTERVAL_MS", 5000);
+    set_value_int("ISP_CONTROL_ENABLE", 0);
+    set_value_int("ISP_BRIGHTNESS", -1);
+    set_value_int("ISP_CONTRAST", -1);
+    set_value_int("ISP_SATURATION", -1);
+    set_value_int("ISP_HUE", -1);
+    set_value_int("ISP_SHARPNESS", -1);
+    set_value_int("ISP_EXPOSURE_MODE", -1);
+    set_value("ISP_EXPOSURE_TIME", "-1");
+    set_value("ISP_EXPOSURE_GAIN", "-1");
+    set_value_int("ISP_WB_MODE", -1);
+    set_value_int("ISP_WB_CT", 0);
+    set_value("ISP_WB_RGAIN", "-1");
+    set_value("ISP_WB_GRGAIN", "-1");
+    set_value("ISP_WB_GBGAIN", "-1");
+    set_value("ISP_WB_BGAIN", "-1");
+    set_value_int("ISP_ANTI_FLICKER_ENABLE", -1);
+    set_value_int("ISP_POWER_LINE_FREQ", -1);
+    set_value_int("ISP_NR_MODE", -1);
+    set_value_int("ISP_ANR_STRENGTH", -1);
+    set_value_int("ISP_DEHAZE_MODE", -1);
+    set_value_int("ISP_DEHAZE_STRENGTH", -1);
+
     set_value_int("CAPTURE_MAIN_ENABLE", 1);
     set_value("CAPTURE_MAIN_NAME", "main_path");
     set_value("CAPTURE_MAIN_DEVICE", "/dev/video0");
@@ -337,6 +403,58 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->aac_bitrate = value_int("AUDIO_AAC_BITRATE");
     audio->aac_profile = value_int("AUDIO_AAC_PROFILE");
     audio->bind_stream_index = value_int("AUDIO_BIND_STREAM_INDEX");
+}
+
+static void fill_isp_source(IspSourceConfig *isp) {
+    isp->enabled = value_int("ISP_ENABLE");
+    isp->sensor_name = value_string("ISP_SENSOR_NAME");
+    isp->video_device = value_string("ISP_VIDEO_DEVICE");
+    isp->iq_dir = value_string("ISP_IQ_DIR");
+    isp->force_iq_file = value_string("ISP_FORCE_IQ_FILE");
+    isp->width = value_int("ISP_WIDTH");
+    isp->height = value_int("ISP_HEIGHT");
+    isp->working_mode = value_int("ISP_WORKING_MODE");
+    isp->keep_external_hw_state = value_int("ISP_KEEP_EXTERNAL_HW_STATE");
+    isp->fallback_on_error = value_int("ISP_FALLBACK_ON_ERROR");
+    isp->health_check_enable = value_int("ISP_HEALTH_CHECK_ENABLE");
+    isp->meta_timeout_ms = value_int("ISP_META_TIMEOUT_MS");
+    isp->max_error_count = value_int("ISP_MAX_ERROR_COUNT");
+    isp->restart_on_fault = value_int("ISP_RESTART_ON_FAULT");
+    isp->low_light.enabled = value_int("ISP_LOW_LIGHT_ENABLE");
+    isp->low_light.enter_lux = value_float("ISP_LOW_LIGHT_ENTER_LUX");
+    isp->low_light.exit_lux = value_float("ISP_LOW_LIGHT_EXIT_LUX");
+    isp->low_light.enter_mean_luma = value_float("ISP_LOW_LIGHT_ENTER_MEAN_LUMA");
+    isp->low_light.exit_mean_luma = value_float("ISP_LOW_LIGHT_EXIT_MEAN_LUMA");
+    isp->low_light.exposure_gain = value_float("ISP_LOW_LIGHT_EXPOSURE_GAIN");
+    isp->low_light.exposure_time = value_float("ISP_LOW_LIGHT_EXPOSURE_TIME");
+    isp->low_light.nr_strength = value_int("ISP_LOW_LIGHT_NR_STRENGTH");
+    isp->low_light.sharpness = value_int("ISP_LOW_LIGHT_SHARPNESS");
+    isp->low_light.normal_nr_strength = value_int("ISP_LOW_LIGHT_NORMAL_NR_STRENGTH");
+    isp->low_light.normal_sharpness = value_int("ISP_LOW_LIGHT_NORMAL_SHARPNESS");
+    isp->low_light.bitrate_boost_percent = value_int("ISP_LOW_LIGHT_BITRATE_BOOST_PERCENT");
+    isp->low_light.qp_delta = value_int("ISP_LOW_LIGHT_QP_DELTA");
+    isp->low_light.min_switch_interval_ms = value_int("ISP_LOW_LIGHT_MIN_SWITCH_INTERVAL_MS");
+    isp->controls.enabled = value_int("ISP_CONTROL_ENABLE");
+    isp->controls.brightness = value_int("ISP_BRIGHTNESS");
+    isp->controls.contrast = value_int("ISP_CONTRAST");
+    isp->controls.saturation = value_int("ISP_SATURATION");
+    isp->controls.hue = value_int("ISP_HUE");
+    isp->controls.sharpness = value_int("ISP_SHARPNESS");
+    isp->controls.exposure_mode = value_int("ISP_EXPOSURE_MODE");
+    isp->controls.exposure_time = value_float("ISP_EXPOSURE_TIME");
+    isp->controls.exposure_gain = value_float("ISP_EXPOSURE_GAIN");
+    isp->controls.wb_mode = value_int("ISP_WB_MODE");
+    isp->controls.wb_ct = value_int("ISP_WB_CT");
+    isp->controls.wb_rgain = value_float("ISP_WB_RGAIN");
+    isp->controls.wb_grgain = value_float("ISP_WB_GRGAIN");
+    isp->controls.wb_gbgain = value_float("ISP_WB_GBGAIN");
+    isp->controls.wb_bgain = value_float("ISP_WB_BGAIN");
+    isp->controls.anti_flicker_enable = value_int("ISP_ANTI_FLICKER_ENABLE");
+    isp->controls.power_line_freq = value_int("ISP_POWER_LINE_FREQ");
+    isp->controls.nr_mode = value_int("ISP_NR_MODE");
+    isp->controls.anr_strength = value_int("ISP_ANR_STRENGTH");
+    isp->controls.dehaze_mode = value_int("ISP_DEHAZE_MODE");
+    isp->controls.dehaze_strength = value_int("ISP_DEHAZE_STRENGTH");
 }
 
 static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
@@ -540,6 +658,7 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
 
     fill_capture_source(&config->capture_sources[0], "CAPTURE_MAIN_");
     fill_capture_source(&config->capture_sources[1], "CAPTURE_SUB_");
+    fill_isp_source(&config->isp);
     fill_audio_source(&config->audio);
     fill_stream(&config->streams[0], "STREAM_MAIN_");
     fill_stream(&config->streams[1], "STREAM_SUB_");

@@ -254,10 +254,10 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
 static void build_encoder_options(const MediaGatewayStreamConfig *cfg, MppEncoderOptions *opt)
 {
     memset(opt, 0, sizeof(*opt));
-    opt->rc_mode = cfg->rc_mode;
-    opt->h264_profile = cfg->h264_profile;
-    opt->h264_level = cfg->h264_level;
-    opt->h264_cabac_en = cfg->h264_cabac_en;
+    opt->rc_mode = (MppEncoderRcMode)cfg->rc_mode;
+    opt->h264_profile = (MppEncoderH264Profile)cfg->h264_profile;
+    opt->h264_level = (MppEncoderH264Level)cfg->h264_level;
+    opt->h264_cabac_en = (MppEncoderCabacMode)cfg->h264_cabac_en;
     opt->qp_init = cfg->qp_init;
     opt->qp_min = cfg->qp_min;
     opt->qp_max = cfg->qp_max;

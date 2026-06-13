@@ -1,4 +1,4 @@
-﻿#include "mppEncoder.h"
+#include "mppEncoder.h"
 #include "logger.h"
 #include "mpp_meta.h"
 #include "rk_mpi_cmd.h"
@@ -10,6 +10,14 @@
 #include <time.h>
 
 #define MPP_ALIGN(x, a) (((x) + (a)-1) & ~((a)-1))
+
+static int clamp_int(int value, int min_value, int max_value) {
+    if (value < min_value)
+        return min_value;
+    if (value > max_value)
+        return max_value;
+    return value;
+}
 
 /**
  * @description: 输出 MPP 接口错误日志
@@ -29,18 +37,18 @@ static void mpp_log_error(const char *msg, MPP_RET ret) {
  */
 static int ensure_packet_cache(MppEncoderCtx *enc, size_t need_size) {
     // 输出码流长度会波动，按需扩容缓存，避免每帧都 malloc/free。
-    if (enc->packet_cache_size >= need_size) {
+    if (enc->output.packet_cache_size >= need_size) {
         return 0;
     }
 
-    uint8_t *new_buf = (uint8_t *)realloc(enc->packet_cache, need_size);
+    uint8_t *new_buf = (uint8_t *)realloc(enc->output.packet_cache, need_size);
     if (!new_buf) {
         LOG_ERROR("ensure_packet_cache failed: realloc need=%zu", need_size);
         return -1;
     }
 
-    enc->packet_cache = new_buf;
-    enc->packet_cache_size = need_size;
+    enc->output.packet_cache = new_buf;
+    enc->output.packet_cache_size = need_size;
     return 0;
 }
 
@@ -62,24 +70,24 @@ static uint64_t get_now_us(void) {
  * @return {static void}
  */
 static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint8_t *src) {
-    size_t y_src_stride = (size_t)enc->width;
-    size_t uv_src_stride = (size_t)enc->width;
-    size_t y_dst_stride = (size_t)enc->hor_stride;
-    size_t uv_dst_stride = (size_t)enc->hor_stride;
+    size_t y_src_stride = (size_t)enc->input.width;
+    size_t uv_src_stride = (size_t)enc->input.width;
+    size_t y_dst_stride = (size_t)enc->input.hor_stride;
+    size_t uv_dst_stride = (size_t)enc->input.hor_stride;
 
     const uint8_t *src_y = src;
-    const uint8_t *src_uv = src + (size_t)enc->width * enc->height;
+    const uint8_t *src_uv = src + (size_t)enc->input.width * enc->input.height;
     uint8_t *dst_y = dst;
-    uint8_t *dst_uv = dst + (size_t)enc->hor_stride * enc->ver_stride;
+    uint8_t *dst_uv = dst + (size_t)enc->input.hor_stride * enc->input.ver_stride;
 
     // 先清空整块缓冲，避免未覆盖到的对齐区域出现脏数据。
-    memset(dst, 0, (size_t)enc->hor_stride * enc->ver_stride * 3 / 2);
+    memset(dst, 0, (size_t)enc->input.hor_stride * enc->input.ver_stride * 3 / 2);
 
-    for (int h = 0; h < enc->height; ++h) {
+    for (int h = 0; h < enc->input.height; ++h) {
         memcpy(dst_y + (size_t)h * y_dst_stride, src_y + (size_t)h * y_src_stride, y_src_stride);
     }
 
-    for (int h = 0; h < enc->height / 2; ++h) {
+    for (int h = 0; h < enc->input.height / 2; ++h) {
         memcpy(dst_uv + (size_t)h * uv_dst_stride, src_uv + (size_t)h * uv_src_stride, uv_src_stride);
     }
 }
@@ -96,6 +104,17 @@ static void copy_nv12_to_mpp_buffer(MppEncoderCtx *enc, uint8_t *dst, const uint
  * @return {int}
  */
 int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bitrate, int gop, const MppEncoderOptions *options) {
+    MppEncoderRcMode rc_mode = (options && options->rc_mode >= 0) ? options->rc_mode : MPP_ENCODER_RC_MODE_CBR;
+    MppEncoderH264Profile h264_profile = (options && options->h264_profile > 0)
+                                             ? options->h264_profile
+                                             : MPP_ENCODER_H264_PROFILE_HIGH;
+    MppEncoderH264Level h264_level = (options && options->h264_level > 0)
+                                         ? options->h264_level
+                                         : MPP_ENCODER_H264_LEVEL_40;
+    MppEncoderCabacMode h264_cabac_en = (options && options->h264_cabac_en >= 0)
+                                            ? options->h264_cabac_en
+                                            : MPP_ENCODER_CABAC_ENABLED;
+
     if (!enc || width <= 0 || height <= 0 || fps <= 0 || bitrate <= 0 || gop <= 0) {
         LOG_ERROR("mpp_encoder_init failed: invalid params enc=%p size=%dx%d fps=%d bitrate=%d gop=%d",
                   (void *)enc,
@@ -106,98 +125,117 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
                   gop);
         return -1;
     }
+    if (rc_mode >= MPP_ENCODER_RC_MODE_BUTT) {
+        LOG_WARN("mpp_encoder_init: invalid rc_mode=%d, fallback to CBR", rc_mode);
+        rc_mode = MPP_ENCODER_RC_MODE_CBR;
+    }
 
     memset(enc, 0, sizeof(*enc));
-    enc->width = width;
-    enc->height = height;
-    enc->hor_stride = (options && options->input_hor_stride > 0) ? options->input_hor_stride : MPP_ALIGN(width, 16);
-    enc->ver_stride = (options && options->input_ver_stride > 0) ? options->input_ver_stride : MPP_ALIGN(height, 16);
-    if (enc->hor_stride < width || enc->ver_stride < height) {
+    enc->input.width = width;
+    enc->input.height = height;
+    enc->input.hor_stride = (options && options->input_hor_stride > 0) ? options->input_hor_stride : MPP_ALIGN(width, 16);
+    enc->input.ver_stride = (options && options->input_ver_stride > 0) ? options->input_ver_stride : MPP_ALIGN(height, 16);
+    if (enc->input.hor_stride < width || enc->input.ver_stride < height) {
         LOG_ERROR("mpp_encoder_init failed: invalid input stride size=%dx%d stride=%dx%d",
                   width,
                   height,
-                  enc->hor_stride,
-                  enc->ver_stride);
+                  enc->input.hor_stride,
+                  enc->input.ver_stride);
         return -1;
     }
-    enc->fps = fps;
-    enc->bitrate = bitrate;
-    enc->gop = gop;
-    enc->pts = 0;
+    enc->rc.fps = fps;
+    enc->rc.bitrate = bitrate;
+    enc->rc.gop = gop;
+    enc->rc.rc_mode = rc_mode;
+    if (options) {
+        enc->qp.base.qp_init = options->qp_init;
+        enc->qp.base.qp_min = options->qp_min;
+        enc->qp.base.qp_max = options->qp_max;
+        enc->qp.base.qp_min_i = options->qp_min_i;
+        enc->qp.base.qp_max_i = options->qp_max_i;
+        enc->qp.base.qp_max_step = options->qp_max_step;
+    }
+    enc->qp.current.qp_init = enc->qp.base.qp_init;
+    enc->qp.current.qp_min = enc->qp.base.qp_min;
+    enc->qp.current.qp_max = enc->qp.base.qp_max;
+    enc->qp.current.qp_min_i = enc->qp.base.qp_min_i;
+    enc->qp.current.qp_max_i = enc->qp.base.qp_max_i;
+    enc->qp.current.qp_max_step = enc->qp.base.qp_max_step;
+    enc->runtime.pts = 0;
 
     // 1) 创建编码上下文并初始化为 H264 编码器。
-    MPP_RET ret = mpp_create(&enc->ctx, &enc->mpi);
+    MPP_RET ret = mpp_create(&enc->mpp.ctx, &enc->mpp.mpi);
     if (ret != MPP_OK) {
         mpp_log_error("mpp_create failed", ret);
         return -1;
     }
 
-    ret = mpp_init(enc->ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC);
+    ret = mpp_init(enc->mpp.ctx, MPP_CTX_ENC, MPP_VIDEO_CodingAVC);
     if (ret != MPP_OK) {
         mpp_log_error("mpp_init failed", ret);
-        mpp_destroy(enc->ctx);
-        enc->ctx = NULL;
+        mpp_destroy(enc->mpp.ctx);
+        enc->mpp.ctx = NULL;
         return -1;
     }
 
     // 2) 读取默认配置后覆盖关键参数（输入格式、码率控制、H264 细节）。
-    mpp_enc_cfg_init(&enc->cfg);
-    ret = enc->mpi->control(enc->ctx, MPP_ENC_GET_CFG, enc->cfg);
+    mpp_enc_cfg_init(&enc->mpp.cfg);
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_GET_CFG, enc->mpp.cfg);
     if (ret != MPP_OK) {
         mpp_log_error("MPP_ENC_GET_CFG failed", ret);
         mpp_encoder_deinit(enc);
         return -1;
     }
 
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:width", enc->width);
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:height", enc->height);
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:hor_stride", enc->hor_stride);
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:ver_stride", enc->ver_stride);
-    mpp_enc_cfg_set_s32(enc->cfg, "prep:format", MPP_FMT_YUV420SP); /* 图像色彩空间格式以及内存排布方式 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "prep:width", enc->input.width);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "prep:height", enc->input.height);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "prep:hor_stride", enc->input.hor_stride);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "prep:ver_stride", enc->input.ver_stride);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "prep:format", MPP_FMT_YUV420SP); /* 图像色彩空间格式以及内存排布方式 */
     /* Rate Control(RC) 模块 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:mode", (options && options->rc_mode > 0) ? options->rc_mode : MPP_ENC_RC_MODE_CBR); /* 码率控制模式 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:gop", enc->gop); /*两个I帧之间的间隔 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_flex", 0); /* 输入帧率是否可变, fps_in_flex=0 表示固定输入帧率 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:mode", enc->rc.rc_mode); /* 码率控制模式 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:gop", enc->rc.gop); /*两个I帧之间的间隔 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_flex", 0); /* 输入帧率是否可变, fps_in_flex=0 表示固定输入帧率 */
 
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_num", enc->fps); /* 输入帧率分数值的分子部分，默认值为30 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_in_denorm", 1); /* 输入帧率分数值的分母部分，默认值为1 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_flex", 0); /* 输出帧率是否可变的标志位，默认为0,fps_out_flex=0 表示固定输出帧率 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_num", enc->fps); /* 输出帧率分数值的分子部分，默认值为30 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:fps_out_denorm", 1); /* 输出帧率分数值的分母部分，默认值为1 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_target", enc->bitrate); /* 定码率(CBR)模式下的目标码率 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_max", enc->bitrate * 17 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最高码率 */
-    mpp_enc_cfg_set_s32(enc->cfg, "rc:bps_min", enc->bitrate * 15 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最低码率 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_num", enc->rc.fps); /* 输入帧率分数值的分子部分，默认值为30 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_denorm", 1); /* 输入帧率分数值的分母部分，默认值为1 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_flex", 0); /* 输出帧率是否可变的标志位，默认为0,fps_out_flex=0 表示固定输出帧率 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_num", enc->rc.fps); /* 输出帧率分数值的分子部分，默认值为30 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_denorm", 1); /* 输出帧率分数值的分母部分，默认值为1 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_target", enc->rc.bitrate); /* 定码率(CBR)模式下的目标码率 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_max", enc->rc.bitrate * 17 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最高码率 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_min", enc->rc.bitrate * 15 / 16); /* 变码率(VBR)和自适应码率模式(AVBR)下的最低码率 */
 
     if (options) {
-        if (options->qp_init > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_init", options->qp_init); /* 初始QP值 */
+        if (enc->qp.current.qp_init > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_init", enc->qp.current.qp_init); /* 初始QP值 */
         }
-        if (options->qp_min > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min", options->qp_min); /* P、B帧的最小QP值 */
+        if (enc->qp.current.qp_min > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min", enc->qp.current.qp_min); /* P、B帧的最小QP值 */
         }
-        if (options->qp_max > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max", options->qp_max); /* P、B帧的最大QP值 */
+        if (enc->qp.current.qp_max > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max", enc->qp.current.qp_max); /* P、B帧的最大QP值 */
         }
-        if (options->qp_min_i > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_min_i", options->qp_min_i); /* I帧的最小QP值 */
+        if (enc->qp.current.qp_min_i > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min_i", enc->qp.current.qp_min_i); /* I帧的最小QP值 */
         }
-        if (options->qp_max_i > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_i", options->qp_max_i); /* I帧的最大QP值 */
+        if (enc->qp.current.qp_max_i > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_i", enc->qp.current.qp_max_i); /* I帧的最大QP值 */
         }
-        if (options->qp_max_step > 0) {
-            mpp_enc_cfg_set_s32(enc->cfg, "rc:qp_max_step", options->qp_max_step);
+        if (enc->qp.current.qp_max_step > 0) {
+            mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_step", enc->qp.current.qp_max_step);
         }
     }
-    mpp_enc_cfg_set_s32(enc->cfg, "codec:type", MPP_VIDEO_CodingAVC); /* 表示MppEncCodecCfg对应的协议类型，需要与MppCtx初始化函数mpp_init的参数一致 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "codec:type", MPP_VIDEO_CodingAVC); /* 表示MppEncCodecCfg对应的协议类型，需要与MppCtx初始化函数mpp_init的参数一致 */
     // 低延时思路：
     // RTSP 推流链路按 Annex-B 拆 NALU 发包，强制编码器输出 Annex-B，
     // 避免格式不一致导致的解析/重组等待。
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:stream_type", 0);
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:profile", (options && options->h264_profile > 0) ? options->h264_profile : 100); /* SPS中的profile_idc参数 */
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:level", (options && options->h264_level > 0) ? options->h264_level : 40); /* SPS中的level_idc参数 */
-    mpp_enc_cfg_set_s32(enc->cfg, "h264:cabac_en", (options && options->h264_cabac_en >= 0) ? options->h264_cabac_en : 1);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "h264:stream_type", 0);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "h264:profile", h264_profile); /* SPS中的profile_idc参数 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "h264:level", h264_level); /* SPS中的level_idc参数 */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "h264:cabac_en", h264_cabac_en);
 
-    ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_CFG, enc->cfg);
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_CFG, enc->mpp.cfg);
     if (ret != MPP_OK) {
         mpp_log_error("MPP_ENC_SET_CFG failed", ret);
         mpp_encoder_deinit(enc);
@@ -206,7 +244,7 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
 
     // 每个 IDR 前输出 SPS/PPS，便于后续 RTSP/网络场景中途加入观看端。
     MppEncHeaderMode header_mode = MPP_ENC_HEADER_MODE_EACH_IDR;
-    ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_HEADER_MODE, &header_mode);
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_HEADER_MODE, &header_mode);
     if (ret != MPP_OK) {
         mpp_log_error("MPP_ENC_SET_HEADER_MODE failed", ret);
         mpp_encoder_deinit(enc);
@@ -214,9 +252,9 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     }
 
     // 3) 申请输入帧缓冲。优先 DRM，失败回退 ION（兼容不同系统配置）。
-    ret = mpp_buffer_group_get_internal(&enc->frame_group, MPP_BUFFER_TYPE_DRM);
+    ret = mpp_buffer_group_get_internal(&enc->input.frame_group, MPP_BUFFER_TYPE_DRM);
     if (ret != MPP_OK) {
-        ret = mpp_buffer_group_get_internal(&enc->frame_group, MPP_BUFFER_TYPE_ION);
+        ret = mpp_buffer_group_get_internal(&enc->input.frame_group, MPP_BUFFER_TYPE_ION);
         if (ret != MPP_OK) {
             mpp_log_error("mpp_buffer_group_get_internal failed", ret);
             mpp_encoder_deinit(enc);
@@ -224,8 +262,8 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
         }
     }
 
-    size_t frame_size = (size_t)enc->hor_stride * enc->ver_stride * 3 / 2;
-    ret = mpp_buffer_get(enc->frame_group, &enc->frame_buffer, frame_size);
+    size_t frame_size = (size_t)enc->input.hor_stride * enc->input.ver_stride * 3 / 2;
+    ret = mpp_buffer_get(enc->input.frame_group, &enc->input.frame_buffer, frame_size);
     if (ret != MPP_OK) {
         mpp_log_error("mpp_buffer_get failed", ret);
         mpp_encoder_deinit(enc);
@@ -233,29 +271,29 @@ int mpp_encoder_init(MppEncoderCtx *enc, int width, int height, int fps, int bit
     }
 
     // 4) 初始化 MppFrame 元数据，后续每帧只更新数据和 pts 即可。
-    ret = mpp_frame_init(&enc->frame);
+    ret = mpp_frame_init(&enc->input.frame);
     if (ret != MPP_OK) {
         mpp_log_error("mpp_frame_init failed", ret);
         mpp_encoder_deinit(enc);
         return -1;
     }
 
-    mpp_frame_set_width(enc->frame, enc->width);
-    mpp_frame_set_height(enc->frame, enc->height);
-    mpp_frame_set_hor_stride(enc->frame, enc->hor_stride);
-    mpp_frame_set_ver_stride(enc->frame, enc->ver_stride);
-    mpp_frame_set_fmt(enc->frame, MPP_FMT_YUV420SP);
-    mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+    mpp_frame_set_width(enc->input.frame, enc->input.width);
+    mpp_frame_set_height(enc->input.frame, enc->input.height);
+    mpp_frame_set_hor_stride(enc->input.frame, enc->input.hor_stride);
+    mpp_frame_set_ver_stride(enc->input.frame, enc->input.ver_stride);
+    mpp_frame_set_fmt(enc->input.frame, MPP_FMT_YUV420SP);
+    mpp_frame_set_buffer(enc->input.frame, enc->input.frame_buffer);
 
     printf("[INFO] mpp encoder input format: fmt=%d width=%d height=%d hor_stride=%d ver_stride=%d frame_size=%zu\n",
            MPP_FMT_YUV420SP,
-           enc->width,
-           enc->height,
-           enc->hor_stride,
-           enc->ver_stride,
+           enc->input.width,
+           enc->input.height,
+           enc->input.hor_stride,
+           enc->input.ver_stride,
            frame_size);
     printf("[INFO] mpp encoder init success: %dx%d fps=%d bitrate=%d gop=%d\n",
-           enc->width, enc->height, enc->fps, enc->bitrate, enc->gop);
+           enc->input.width, enc->input.height, enc->rc.fps, enc->rc.bitrate, enc->rc.gop);
     return 0;
 }
 
@@ -290,10 +328,10 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         memset(timing, 0, sizeof(*timing));
     }
 
-    if (!enc || !enc->ctx || !nv12_data || !h264_data || !h264_len) {
+    if (!enc || !enc->mpp.ctx || !nv12_data || !h264_data || !h264_len) {
         LOG_ERROR("mpp_encoder_encode_frame failed: invalid args enc=%p ctx=%p nv12=%p h264_data=%p h264_len=%p",
                   (void *)enc,
-                  enc ? (void *)enc->ctx : NULL,
+                  enc ? (void *)enc->mpp.ctx : NULL,
                   (const void *)nv12_data,
                   (void *)h264_data,
                   (void *)h264_len);
@@ -301,7 +339,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     // 采集侧通常给紧凑 NV12（width*height*1.5），这里按有效图像大小做校验。
-    size_t valid_nv12_size = (size_t)enc->width * enc->height * 3 / 2;
+    size_t valid_nv12_size = (size_t)enc->input.width * enc->input.height * 3 / 2;
     if (nv12_len < valid_nv12_size) {
         LOG_ERROR("mpp_encoder_encode_frame failed: input NV12 len too small got=%zu need=%zu",
                   nv12_len,
@@ -309,7 +347,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
         return -1;
     }
 
-    void *frame_ptr = mpp_buffer_get_ptr(enc->frame_buffer);
+    void *frame_ptr = mpp_buffer_get_ptr(enc->input.frame_buffer);
     if (!frame_ptr) {
         LOG_ERROR("mpp_encoder_encode_frame failed: mpp_buffer_get_ptr");
         return -1;
@@ -321,7 +359,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
      * - UV 平面紧跟在 width * height 后面；
      * - 行尾和高度方向都没有 MPP 对齐后产生的 padding。
      *
-     * MPP 编码器初始化时给 MppFrame 配置的是 enc->hor_stride / enc->ver_stride，
+     * MPP 编码器初始化时给 MppFrame 配置的是 enc->input.hor_stride / enc->input.ver_stride，
      * 输入 buffer 也按这个 stride 大小申请。若直接把紧凑 NV12 当成带 stride 的
      * MPP 输入，UV 起始位置和每行步进都会与 MPP 的解释方式不一致。因此 copy 路径
      * 必须逐行把有效像素搬到带 stride 的 MPP 内部 buffer，同时把对齐区域清零。
@@ -341,7 +379,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     // 低延时思路：
     // 周期性强制 IDR，确保播放器不会长时间“等关键帧”，
     // 尤其是客户端中途接入或网络抖动后的恢复速度会明显更快。
-    if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
+    if (enc->rc.gop > 0 && enc->runtime.pts > 0 && (enc->runtime.pts % enc->rc.gop) == 0) {
         if (mpp_encoder_request_idr(enc) != 0) {
             LOG_WARN("mpp_encoder_encode_frame: periodic IDR request failed");
         }
@@ -356,9 +394,9 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
 
     /* 这里是设置该帧的PTS吗，为啥每次加一呢，PTS不是显示时间吗 */
-    mpp_frame_set_pts(enc->frame, enc->pts++);
+    mpp_frame_set_pts(enc->input.frame, enc->runtime.pts++);
     stage_start_us = get_now_us();
-    MPP_RET ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
+    MPP_RET ret = enc->mpp.mpi->encode_put_frame(enc->mpp.ctx, enc->input.frame);
     stage_end_us = get_now_us();
     if (timing) {
         // 这里消耗13ms？
@@ -371,7 +409,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
     MppPacket packet = NULL;
     stage_start_us = get_now_us();
-    ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
+    ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
     stage_end_us = get_now_us();
     if (timing) {
         timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
@@ -422,12 +460,12 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
     // 把 MPP packet 拷贝到可复用缓存，返回给上层写文件/推流。
     stage_start_us = get_now_us();
-    memcpy(enc->packet_cache, packet_pos, packet_len);
+    memcpy(enc->output.packet_cache, packet_pos, packet_len);
     stage_end_us = get_now_us();
     if (timing) {
         timing->encoder_packet_copy_us = stage_end_us - stage_start_us;
     }
-    *h264_data = enc->packet_cache;
+    *h264_data = enc->output.packet_cache;
     *h264_len = packet_len;
 
     if (is_key_frame) {
@@ -453,15 +491,15 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
  * 逻辑说明：
  * 1. 校验外部 DMA-BUF 至少能覆盖当前 MPP frame 按 stride 计算出的输入尺寸。
  * 2. 通过 MPP_BUFFER_TYPE_EXT_DMA 把上游导出的 fd 包装成 MppBuffer。
- * 3. 临时把该外部 MppBuffer 绑定到复用的 enc->frame，复用编码宽高、格式和 stride 元数据。
+ * 3. 临时把该外部 MppBuffer 绑定到复用的 enc->input.frame，复用编码宽高、格式和 stride 元数据。
  * 4. 提交 frame 并立即轮询本帧输出 packet，输出包仍拷贝到 encoder packet_cache，
  *    让上层拿到的码流指针在 MPP packet 释放后继续有效。
- * 5. 编码完成后恢复 enc->frame 的内部 copy-path buffer，释放本次导入的 MppBuffer。
+ * 5. 编码完成后恢复 enc->input.frame 的内部 copy-path buffer，释放本次导入的 MppBuffer。
  *
  * stride 前提：
- * - copy 路径会把紧凑 NV12 重排到 enc->hor_stride / enc->ver_stride 对应的 MPP 输入 buffer；
+ * - copy 路径会把紧凑 NV12 重排到 enc->input.hor_stride / enc->input.ver_stride 对应的 MPP 输入 buffer；
  * - DMA-BUF 路径为保持零拷贝，不能在本函数内再做这次重排；
- * - MPP 会按照 enc->frame 当前配置的 MPP_FMT_YUV420SP、hor_stride、ver_stride
+ * - MPP 会按照 enc->input.frame 当前配置的 MPP_FMT_YUV420SP、hor_stride、ver_stride
  *   去解释外部 DMA-BUF，所以导入的 V4L2 DMA-BUF 内存布局必须满足这些元数据；
  * - 若采集驱动给出的 bytesperline/plane layout 与 MPP stride 不一致，正确做法是
  *   在采集格式协商、RGA 等硬件转换环节统一布局，或回退 copy 路径，不能仅靠 fd 导入。
@@ -498,10 +536,10 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
     MPP_RET ret;
 
     if (timing) memset(timing, 0, sizeof(*timing));
-    if (!enc || !enc->ctx || dmabuf_fd < 0 || !h264_data || !h264_len) {
+    if (!enc || !enc->mpp.ctx || dmabuf_fd < 0 || !h264_data || !h264_len) {
         LOG_ERROR("mpp_encoder_encode_dmabuf failed: invalid args enc=%p ctx=%p fd=%d",
                   (void *)enc,
-                  enc ? (void *)enc->ctx : NULL,
+                  enc ? (void *)enc->mpp.ctx : NULL,
                   dmabuf_fd);
         return -1;
     }
@@ -510,7 +548,7 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
      * 零拷贝下 MPP 将直接按 stride 从外部 fd 读数据；容量不足时继续导入会导致
      * MPP 访问超出 buffer 的有效范围。
      */
-    frame_size = (size_t)enc->hor_stride * enc->ver_stride * 3 / 2;
+    frame_size = (size_t)enc->input.hor_stride * enc->input.ver_stride * 3 / 2;
     if (dmabuf_size < frame_size) {
         LOG_ERROR("mpp_encoder_encode_dmabuf failed: buffer too small got=%zu need=%zu", dmabuf_size, frame_size);
         return -1;
@@ -531,21 +569,21 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
         return -1;
     }
     /*
-     * enc->frame 在 init 时已设置 width/height/format/stride。这里仅把本帧
+     * enc->input.frame 在 init 时已设置 width/height/format/stride。这里仅把本帧
      * 使用的 buffer 从内部 copy-path frame_buffer 暂时切换成外部 DMA-BUF。
      */
-    mpp_frame_set_buffer(enc->frame, imported_buffer);
+    mpp_frame_set_buffer(enc->input.frame, imported_buffer);
 
     /* 保持与 copy 编码路径一致的周期性 IDR 策略。 */
-    if (enc->gop > 0 && enc->pts > 0 && (enc->pts % enc->gop) == 0) {
+    if (enc->rc.gop > 0 && enc->runtime.pts > 0 && (enc->runtime.pts % enc->rc.gop) == 0) {
         if (mpp_encoder_request_idr(enc) != 0)
             LOG_WARN("mpp_encoder_encode_dmabuf: periodic IDR request failed");
     }
     if (encode_start_ts_us) *encode_start_ts_us = get_now_us();
-    mpp_frame_set_pts(enc->frame, enc->pts++);
+    mpp_frame_set_pts(enc->input.frame, enc->runtime.pts++);
     /* 提交外部 DMA-BUF frame；该阶段不再统计 encoder_input_buffer_copy_us。 */
     stage_start_us = get_now_us();
-    ret = enc->mpi->encode_put_frame(enc->ctx, enc->frame);
+    ret = enc->mpp.mpi->encode_put_frame(enc->mpp.ctx, enc->input.frame);
     stage_end_us = get_now_us();
     if (timing) timing->encoder_submit_frame_call_us = stage_end_us - stage_start_us;
     if (ret != MPP_OK) {
@@ -555,7 +593,7 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
 
     /* 拉取编码包，和 copy 路径一样允许编码器暂时还未产出 packet。 */
     stage_start_us = get_now_us();
-    ret = enc->mpi->encode_get_packet(enc->ctx, &packet);
+    ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
     stage_end_us = get_now_us();
     if (timing) timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
     if (encode_done_ts_us) *encode_done_ts_us = get_now_us();
@@ -568,7 +606,7 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
         *h264_len = 0;
         if (is_key_frame) *is_key_frame = 0;
         if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
-        mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+        mpp_frame_set_buffer(enc->input.frame, enc->input.frame_buffer);
         mpp_buffer_put(imported_buffer);
         return 0;
     }
@@ -584,16 +622,16 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
         }
         /*
          * packet 由 MPP 管理，函数返回前会 deinit。把编码后的码流拷到
-         * enc->packet_cache，保证 h264_data 返回给上层后仍有效。
+         * enc->output.packet_cache，保证 h264_data 返回给上层后仍有效。
          * 这不是原始 NV12 输入帧拷贝，不影响 V4L2 -> MPP 的零拷贝目标。
          */
         if (ensure_packet_cache(enc, packet_len) != 0)
             goto fail;
         stage_start_us = get_now_us();
-        memcpy(enc->packet_cache, packet_pos, packet_len);
+        memcpy(enc->output.packet_cache, packet_pos, packet_len);
         stage_end_us = get_now_us();
         if (timing) timing->encoder_packet_copy_us = stage_end_us - stage_start_us;
-        *h264_data = enc->packet_cache;
+        *h264_data = enc->output.packet_cache;
         *h264_len = packet_len;
     }
     if (is_key_frame) {
@@ -606,13 +644,13 @@ done:
     if (packet) mpp_packet_deinit(&packet);
     if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
     /* 恢复 copy 路径内部 buffer，避免下一次 copy 编码继续引用本次外部 fd。 */
-    mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+    mpp_frame_set_buffer(enc->input.frame, enc->input.frame_buffer);
     mpp_buffer_put(imported_buffer);
     return 0;
 
 fail:
     if (packet) mpp_packet_deinit(&packet);
-    mpp_frame_set_buffer(enc->frame, enc->frame_buffer);
+    mpp_frame_set_buffer(enc->input.frame, enc->input.frame_buffer);
     mpp_buffer_put(imported_buffer);
     LOG_ERROR("mpp_encoder_encode_dmabuf failed frame=%" PRIu64, frame_id);
     return -1;
@@ -620,18 +658,127 @@ fail:
 
 int mpp_encoder_request_idr(MppEncoderCtx *enc) {
     MPP_RET ret;
-    if (!enc || !enc->ctx || !enc->mpi) {
+    if (!enc || !enc->mpp.ctx || !enc->mpp.mpi) {
         LOG_ERROR("mpp_encoder_request_idr failed: invalid args enc=%p ctx=%p mpi=%p",
                   (void *)enc,
-                  enc ? (void *)enc->ctx : NULL,
-                  enc ? (void *)enc->mpi : NULL);
+                  enc ? (void *)enc->mpp.ctx : NULL,
+                  enc ? (void *)enc->mpp.mpi : NULL);
         return -1;
     }
-    ret = enc->mpi->control(enc->ctx, MPP_ENC_SET_IDR_FRAME, NULL);
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_IDR_FRAME, NULL);
     if (ret != MPP_OK) {
         mpp_log_error("MPP_ENC_SET_IDR_FRAME failed", ret);
         return -1;
     }
+    return 0;
+}
+
+int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate) {
+    MPP_RET ret;
+
+    /*
+     * 动态码率更新必须依赖已初始化的 MPP 编码上下文和 cfg。
+     * 这里不重新创建编码器，只更新 RC 码率字段并重新 SET_CFG，适合低照度等运行时策略联动。
+     */
+    if (!enc || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg || bitrate <= 0) {
+        LOG_ERROR("mpp_encoder_set_bitrate failed: invalid args enc=%p bitrate=%d",
+                  (void *)enc,
+                  bitrate);
+        return -1;
+    }
+
+    if (enc->rc.bitrate == bitrate)
+        return 0;
+
+    /*
+     * 与初始化阶段保持同一组 bps_target/bps_max/bps_min 比例：
+     * target 是 CBR 目标码率，max/min 给 VBR/AVBR 或 RC 内部波动留下轻微余量。
+     */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_target", bitrate);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_max", bitrate * 17 / 16);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_min", bitrate * 15 / 16);
+
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_CFG, enc->mpp.cfg);
+    if (ret != MPP_OK) {
+        mpp_log_error("mpp_encoder_set_bitrate MPP_ENC_SET_CFG failed", ret);
+        return -1;
+    }
+
+    /* SET_CFG 成功后再更新缓存值，保证 enc->rc.bitrate 始终代表编码器当前生效码率。 */
+    LOG_INFO("mpp encoder bitrate updated: old=%d new=%d", enc->rc.bitrate, bitrate);
+    enc->rc.bitrate = bitrate;
+    return 0;
+}
+
+int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta) {
+    int target_qp_init;
+    int target_qp_min;
+    int target_qp_max;
+    int target_qp_min_i;
+    int target_qp_max_i;
+    MPP_RET ret;
+
+    /*
+     * FIXQP 模式下码率目标不会主导输出大小，低光画质补偿应改 QP profile。
+     * 这里始终以初始化参数为基线计算，退出低光时传 qp_delta=0 即可恢复原配置。
+     */
+    if (!enc || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg) {
+        LOG_ERROR("mpp_encoder_set_qp_delta failed: invalid args enc=%p", (void *)enc);
+        return -1;
+    }
+
+    target_qp_init = enc->qp.base.qp_init > 0 ? clamp_int(enc->qp.base.qp_init + qp_delta, 1, 51) : 0;
+    target_qp_min = enc->qp.base.qp_min > 0 ? clamp_int(enc->qp.base.qp_min + qp_delta, 1, 51) : 0;
+    target_qp_max = enc->qp.base.qp_max > 0 ? clamp_int(enc->qp.base.qp_max + qp_delta, 1, 51) : 0;
+    target_qp_min_i = enc->qp.base.qp_min_i > 0 ? clamp_int(enc->qp.base.qp_min_i + qp_delta, 1, 51) : 0;
+    target_qp_max_i = enc->qp.base.qp_max_i > 0 ? clamp_int(enc->qp.base.qp_max_i + qp_delta, 1, 51) : 0;
+
+    if (target_qp_min > 0 && target_qp_max > 0 && target_qp_min > target_qp_max)
+        target_qp_min = target_qp_max;
+    if (target_qp_min_i > 0 && target_qp_max_i > 0 && target_qp_min_i > target_qp_max_i)
+        target_qp_min_i = target_qp_max_i;
+
+    if (enc->qp.current.qp_init == target_qp_init &&
+        enc->qp.current.qp_min == target_qp_min &&
+        enc->qp.current.qp_max == target_qp_max &&
+        enc->qp.current.qp_min_i == target_qp_min_i &&
+        enc->qp.current.qp_max_i == target_qp_max_i)
+    {
+        return 0;
+    }
+
+    if (target_qp_init > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_init", target_qp_init);
+    if (target_qp_min > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min", target_qp_min);
+    if (target_qp_max > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max", target_qp_max);
+    if (target_qp_min_i > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min_i", target_qp_min_i);
+    if (target_qp_max_i > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_i", target_qp_max_i);
+    if (enc->qp.base.qp_max_step > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_step", enc->qp.base.qp_max_step);
+
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_CFG, enc->mpp.cfg);
+    if (ret != MPP_OK) {
+        mpp_log_error("mpp_encoder_set_qp_delta MPP_ENC_SET_CFG failed", ret);
+        return -1;
+    }
+
+    LOG_INFO("mpp encoder qp profile updated: delta=%d qp_init=%d qp_min=%d qp_max=%d qp_min_i=%d qp_max_i=%d",
+             qp_delta,
+             target_qp_init,
+             target_qp_min,
+             target_qp_max,
+             target_qp_min_i,
+             target_qp_max_i);
+    enc->qp.current.qp_init = target_qp_init;
+    enc->qp.current.qp_min = target_qp_min;
+    enc->qp.current.qp_max = target_qp_max;
+    enc->qp.current.qp_min_i = target_qp_min_i;
+    enc->qp.current.qp_max_i = target_qp_max_i;
+    enc->qp.current.qp_max_step = enc->qp.base.qp_max_step;
     return 0;
 }
 
@@ -646,33 +793,33 @@ void mpp_encoder_deinit(MppEncoderCtx *enc) {
     }
 
     // 释放顺序按依赖关系逆序进行，避免悬挂引用。
-    if (enc->frame) {
-        mpp_frame_deinit(&enc->frame);
+    if (enc->input.frame) {
+        mpp_frame_deinit(&enc->input.frame);
     }
 
-    if (enc->frame_buffer) {
-        mpp_buffer_put(enc->frame_buffer);
-        enc->frame_buffer = NULL;
+    if (enc->input.frame_buffer) {
+        mpp_buffer_put(enc->input.frame_buffer);
+        enc->input.frame_buffer = NULL;
     }
 
-    if (enc->frame_group) {
-        mpp_buffer_group_put(enc->frame_group);
-        enc->frame_group = NULL;
+    if (enc->input.frame_group) {
+        mpp_buffer_group_put(enc->input.frame_group);
+        enc->input.frame_group = NULL;
     }
 
-    if (enc->cfg) {
-        mpp_enc_cfg_deinit(enc->cfg);
-        enc->cfg = NULL;
+    if (enc->mpp.cfg) {
+        mpp_enc_cfg_deinit(enc->mpp.cfg);
+        enc->mpp.cfg = NULL;
     }
 
-    if (enc->ctx) {
-        mpp_destroy(enc->ctx);
-        enc->ctx = NULL;
+    if (enc->mpp.ctx) {
+        mpp_destroy(enc->mpp.ctx);
+        enc->mpp.ctx = NULL;
     }
 
-    if (enc->packet_cache) {
-        free(enc->packet_cache);
-        enc->packet_cache = NULL;
+    if (enc->output.packet_cache) {
+        free(enc->output.packet_cache);
+        enc->output.packet_cache = NULL;
     }
-    enc->packet_cache_size = 0;
+    enc->output.packet_cache_size = 0;
 }
