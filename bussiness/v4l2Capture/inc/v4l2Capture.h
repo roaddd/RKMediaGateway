@@ -50,6 +50,7 @@ typedef struct {
     int height;              /* 协商后的采集高度。 */
     uint32_t pixelformat;    /* 协商后的 V4L2 像素格式。 */
     uint32_t num_planes;     /* 协商后的 plane 数量。 */
+    uint32_t field;          /* 协商后的 V4L2 field 类型，驱动可能改写请求值。 */
     V4L2CapturePlaneLayout planes[VIDEO_MAX_PLANES]; /* 各 plane 的协商布局。 */
 } V4L2CaptureFormat;
 

@@ -10,7 +10,16 @@
 extern "C" {
 #endif
 
-#define MEDIA_FRAME_SOURCE_SLOTS 2
+/*
+ * 帧源环形槽位数。
+ *
+ * 从 2 提升到 4，在高运动场景下为编码线程提供更多缓冲：
+ * - 2 槽时，采集线程只能保留 1 帧最新帧 + 1 帧正在被编码线程消费；
+ *   编码耗时抖动时新帧直接丢弃，导致卡顿。
+ * - 4 槽可容忍编码线程短时滞后，降低丢帧率。
+ * 每个槽位只保存 V4L2 buffer 引用，内存开销极小。
+ */
+#define MEDIA_FRAME_SOURCE_SLOTS 4
 
 typedef struct {
     uint64_t camera_buffer_wait_us;          /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间。 */

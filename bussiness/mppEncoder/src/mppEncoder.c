@@ -6,10 +6,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <inttypes.h>
 #include <time.h>
 
 #define MPP_ALIGN(x, a) (((x) + (a)-1) & ~((a)-1))
+#define MPP_ENCODE_PACKET_POLL_TIMEOUT_MS 100
+#define MPP_ENCODE_PACKET_POLL_INTERVAL_US 1000
 
 static int clamp_int(int value, int min_value, int max_value) {
     if (value < min_value)
@@ -408,9 +411,17 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
     }
 
     MppPacket packet = NULL;
-    stage_start_us = get_now_us();
-    ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
-    stage_end_us = get_now_us();
+    {
+        int poll_ms = 0;
+        stage_start_us = get_now_us();
+        ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
+        while (ret == MPP_OK && !packet && poll_ms < MPP_ENCODE_PACKET_POLL_TIMEOUT_MS) {
+            usleep((useconds_t)MPP_ENCODE_PACKET_POLL_INTERVAL_US);
+            poll_ms++;
+            ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
+        }
+        stage_end_us = get_now_us();
+    }
     if (timing) {
         timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
     }
@@ -429,6 +440,7 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
     if (!packet) {
         // 编码器还未产出数据（例如缓存阶段），不是硬错误。
+        LOG_WARN("mpp encode poll timeout frame=%" PRIu64 ", dropping frame", frame_id);
         *h264_data = NULL;
         *h264_len = 0;
         if (is_key_frame) {
@@ -591,10 +603,18 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
         goto fail;
     }
 
-    /* 拉取编码包，和 copy 路径一样允许编码器暂时还未产出 packet。 */
-    stage_start_us = get_now_us();
-    ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
-    stage_end_us = get_now_us();
+    /* 拉取编码包，轮询等待硬件完成本帧编码，避免过早释放外部 DMA-BUF。 */
+    {
+        int poll_ms = 0;
+        stage_start_us = get_now_us();
+        ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
+        while (ret == MPP_OK && !packet && poll_ms < MPP_ENCODE_PACKET_POLL_TIMEOUT_MS) {
+            usleep((useconds_t)MPP_ENCODE_PACKET_POLL_INTERVAL_US);
+            poll_ms++;
+            ret = enc->mpp.mpi->encode_get_packet(enc->mpp.ctx, &packet);
+        }
+        stage_end_us = get_now_us();
+    }
     if (timing) timing->encoder_poll_packet_call_us = stage_end_us - stage_start_us;
     if (encode_done_ts_us) *encode_done_ts_us = get_now_us();
     if (ret != MPP_OK) {
@@ -602,6 +622,7 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
         goto fail;
     }
     if (!packet) {
+        LOG_WARN("mpp encode dmabuf poll timeout frame=%" PRIu64 ", dropping frame", frame_id);
         *h264_data = NULL;
         *h264_len = 0;
         if (is_key_frame) *is_key_frame = 0;

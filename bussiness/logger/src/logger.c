@@ -15,6 +15,17 @@
 #define LOG_COLOR_ERROR "\033[31m"
 #define LOG_COLOR_RESET "\033[0m"
 
+/**
+ * TODO:串口波特率115200时，实际吞吐大约只有11 KB/s，如果每帧打印 [BENCH_FRAME]、[PATH_LATENCY]、编码耗时、队列信息等，一行几百字节，30fps 很容易超过串口吞吐。
+ * 超过后通常有两种结果：
+ * （1）printf/LOG 阻塞：写串口时内核 tty 缓冲满了，业务线程会卡在 write()。如果这个线程在采集、编码、输出路径上，就会直接导致 DQBUF 延迟、编码提交延迟、RTSP 发送延迟。
+ * （2）日志锁竞争：多线程同时打日志时，logger 往往有全局锁。一个线程被串口 write 卡住，其他线程也可能排队等日志锁，最后变成全链路抖动。
+ */
+
+/**
+ * 如果还要保留详细日志，优先写内存 ring buffer 或文件，异步低优先级落盘；不要在采集/编码/RTSP 发送线程里同步打串口
+ */
+
 static pthread_mutex_t g_log_lock = PTHREAD_MUTEX_INITIALIZER;
 static LogLevel g_log_level = LOG_LEVEL_INFO;
 

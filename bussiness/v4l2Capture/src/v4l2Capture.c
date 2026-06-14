@@ -352,11 +352,43 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         return -1;
     }
 
-    printf("[INFO] v4l2 negotiated format: %dx%d pixelformat=0x%x num_planes=%u\n",
+    ctx->format.field = fmt.fmt.pix_mp.field;
+    printf("[INFO] v4l2 negotiated format: %dx%d pixelformat=0x%x num_planes=%u field=%u\n",
            fmt.fmt.pix_mp.width,
            fmt.fmt.pix_mp.height,
            fmt.fmt.pix_mp.pixelformat,
-           fmt.fmt.pix_mp.num_planes);
+           fmt.fmt.pix_mp.num_planes,
+           (unsigned)fmt.fmt.pix_mp.field);
+    /*
+     * Rockchip ISP 驱动在部分传感器/工作模式下可能将请求的 V4L2_FIELD_NONE
+     * 改写为 V4L2_FIELD_INTERLACED。交错场帧包含两个不同时间点的场，
+     * 编码后会表现为运动物体上的横向条纹（"撕裂"）。
+     *
+     * 尝试多轮重试强制协商为 V4L2_FIELD_NONE：
+     * 部分驱动第一轮 S_FMT 不会采纳 field，第二次才会生效。
+     */
+    if (fmt.fmt.pix_mp.field != V4L2_FIELD_NONE) {
+        int field_retry;
+        for (field_retry = 0; field_retry < 3; ++field_retry) {
+            fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+            if (ioctl(ctx->fd, VIDIOC_S_FMT, &fmt) == 0 &&
+                fmt.fmt.pix_mp.field == V4L2_FIELD_NONE) {
+                LOG_WARN("v4l2 field corrected to V4L2_FIELD_NONE after retry=%d", field_retry + 1);
+                ctx->format.field = fmt.fmt.pix_mp.field;
+                break;
+            }
+        }
+        if (fmt.fmt.pix_mp.field != V4L2_FIELD_NONE) {
+            LOG_WARN("v4l2 driver field=%u after %d retries (req=%u V4L2_FIELD_NONE); "
+                     "interlaced frames WILL cause tearing artifacts. "
+                     "Try: v4l2-ctl -d %s --set-fmt-video=field=none",
+                     (unsigned)fmt.fmt.pix_mp.field,
+                     field_retry,
+                     (unsigned)V4L2_FIELD_NONE,
+                     device_path);
+            ctx->format.field = fmt.fmt.pix_mp.field;
+        }
+    }
     ctx->format.width = (int)fmt.fmt.pix_mp.width;
     ctx->format.height = (int)fmt.fmt.pix_mp.height;
     ctx->format.pixelformat = fmt.fmt.pix_mp.pixelformat;

@@ -44,7 +44,7 @@ void media_gateway_metrics_log_frame_trace(MediaGatewayCtx *ctx,
             : 0;
     camera_to_output_queued_us = frame->metrics.camera_buffer_wait_us + dqbuf_to_output_queued_us;
 
-    LOG_WARN("[FRAME_TRACE] stream=%s frame_id=%" PRIu64
+    LOG_INFO("[FRAME_TRACE] stream=%s frame_id=%" PRIu64
              " camera_to_output_queued_us=%" PRIu64
              " camera_buffer_wait_us=%" PRIu64
              " dqbuf_to_output_queued_us=%" PRIu64
