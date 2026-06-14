@@ -48,6 +48,35 @@ static const char *safe_config_str(const char *value, const char *fallback)
 }
 
 /**
+ * @brief 判断字符串是否带指定后缀。
+ */
+static int str_has_suffix(const char *value, const char *suffix)
+{
+    size_t value_len;
+    size_t suffix_len;
+
+    if (!value || !suffix)
+        return 0;
+
+    value_len = strlen(value);
+    suffix_len = strlen(suffix);
+    if (value_len < suffix_len)
+        return 0;
+
+    return strcmp(value + value_len - suffix_len, suffix) == 0;
+}
+
+/**
+ * @brief 当前 RKAIQ uAPI2 preInit 只可靠支持 XML force IQ。
+ */
+static int should_preinit_force_iq_file(const char *force_iq_file)
+{
+    return force_iq_file &&
+           force_iq_file[0] != '\0' &&
+           str_has_suffix(force_iq_file, ".xml");
+}
+
+/**
  * @brief 判断手动白平衡 gain 四个通道是否都已配置。
  */
 static int has_manual_wb_gain(const IspControllerImageControls *controls)
@@ -830,7 +859,7 @@ int isp_controller_init(IspControllerCtx *ctx, const IspControllerConfig *config
 #else
     {
         const char *sensor_name = resolve_sensor_name(ctx);
-        const char *force_iq_file = safe_config_str(ctx->config.sensor.force_iq_file, "");
+        const char *raw_force_iq_file = safe_config_str(ctx->config.sensor.force_iq_file, "");
         XCamReturn ret;
 
         if (!sensor_name || sensor_name[0] == '\0')
@@ -840,7 +869,8 @@ int isp_controller_init(IspControllerCtx *ctx, const IspControllerConfig *config
                       ctx->config.sensor.video_device);
             return isp_controller_should_fallback(&ctx->config) ? 0 : -1;
         }
-        snprintf(ctx->resolved_sensor_name, sizeof(ctx->resolved_sensor_name), "%s", sensor_name);
+        if (sensor_name != ctx->resolved_sensor_name)
+            snprintf(ctx->resolved_sensor_name, sizeof(ctx->resolved_sensor_name), "%s", sensor_name);
         if (ctx->resolved_sensor_name[0] == '\0')
         {
             LOG_ERROR("[ISP] resolved sensor is empty after copy; abort RKAIQ init video='%s'",
@@ -854,21 +884,26 @@ int isp_controller_init(IspControllerCtx *ctx, const IspControllerConfig *config
                  ctx->config.sensor.width,
                  ctx->config.sensor.height,
                  ctx->config.sensor.working_mode,
-                 force_iq_file[0] ? force_iq_file : "none");
+                 raw_force_iq_file[0] ? raw_force_iq_file : "none");
 
-        if (force_iq_file[0] != '\0')
+        if (should_preinit_force_iq_file(raw_force_iq_file))
         {
             ret = rk_aiq_uapi2_sysctl_preInit(ctx->resolved_sensor_name,
                                               (rk_aiq_working_mode_t)ctx->config.sensor.working_mode,
-                                              force_iq_file);
+                                              raw_force_iq_file);
             if (ret != XCAM_RETURN_NO_ERROR)
             {
                 LOG_ERROR("[ISP] rk_aiq_uapi2_sysctl_preInit failed ret=%d sensor=%s iq=%s",
                           ret,
                           ctx->resolved_sensor_name,
-                          force_iq_file);
+                          raw_force_iq_file);
                 return isp_controller_should_fallback(&ctx->config) ? 0 : -1;
             }
+        }
+        else if (raw_force_iq_file[0] != '\0')
+        {
+            LOG_WARN("[ISP] skip RKAIQ preInit force IQ '%s'; this SDK preInit expects XML, JSON IQ will be auto matched from iq_dir",
+                     raw_force_iq_file);
         }
 
         ctx->sys_ctx = rk_aiq_uapi2_sysctl_init(ctx->resolved_sensor_name,
