@@ -152,45 +152,37 @@ typedef struct {
 } MediaGatewayStats;
 
 typedef struct {
+    uint64_t sum_us;                                       /* 当前窗口内耗时累计。 */
+    uint64_t max_us;                                       /* 当前窗口内最大耗时。 */
+} MediaGatewayBenchmarkMetric;
+
+typedef struct {
+    uint64_t sample_count;                                 /* 当前窗口内采样帧数。 */
+    MediaGatewayBenchmarkMetric camera_buffer_wait;        /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间。 */
+    MediaGatewayBenchmarkMetric dqbuf_ioctl_duration;      /* VIDIOC_DQBUF ioctl 调用耗时。 */
+    MediaGatewayBenchmarkMetric capture_call_duration;     /* v4l2_capture_frame 整体调用耗时。 */
+    MediaGatewayBenchmarkMetric mmap_to_frame_cache_copy;  /* V4L2 mmap buffer 拷贝到 frame_cache 耗时。 */
+    MediaGatewayBenchmarkMetric frame_source_publish;      /* 采集线程发布到 MediaFrameSource 槽位的总耗时。 */
+    MediaGatewayBenchmarkMetric frame_source_publish_copy; /* frame source 发布时整帧拷贝耗时。 */
+    MediaGatewayBenchmarkMetric video_input_publish_copy;  /* 发布到视频编码输入槽的整帧拷贝耗时。 */
+    MediaGatewayBenchmarkMetric video_input_acquire_copy;  /* 编码线程从视频输入槽取本地副本的拷贝耗时。 */
+    MediaGatewayBenchmarkMetric dqbuf_to_encode_start;     /* DQBUF 返回到开始送入编码器的时间。 */
+    MediaGatewayBenchmarkMetric encode_start_to_done;      /* 开始送入编码器到拿到编码包的时间。 */
+    MediaGatewayBenchmarkMetric encoder_input_buffer_copy; /* NV12 拷贝到 MPP 输入缓冲耗时。 */
+    MediaGatewayBenchmarkMetric encoder_submit_frame_call; /* encode_put_frame 调用耗时。 */
+    MediaGatewayBenchmarkMetric encoder_poll_packet_call;  /* encode_get_packet 调用耗时。 */
+    MediaGatewayBenchmarkMetric encoder_packet_copy;       /* H264 packet 拷贝耗时。 */
+    MediaGatewayBenchmarkMetric encode_frame_total;        /* mpp_encoder_encode_frame 总耗时。 */
+    MediaGatewayBenchmarkMetric dqbuf_to_encode_done;      /* DQBUF 返回到拿到编码包的时间。 */
+    MediaGatewayBenchmarkMetric dqbuf_to_output_queued;    /* DQBUF 返回到输出队列入队完成的时间。 */
+} MediaGatewayBenchmarkWindow;
+
+typedef struct {
     int enable;                                            /* 是否开启 benchmark 埋点。 */
     int sample_every;                                      /* 采样间隔帧数。 */
     int print_interval_sec;                                /* benchmark 输出周期，单位秒。 */
     uint64_t last_ts_us;                                   /* 上次 benchmark 输出时间戳。 */
-    uint64_t sample_count;                                 /* 当前窗口内采样帧数。 */
-    uint64_t camera_buffer_wait_sum_us;                    /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间累计。 */
-    uint64_t camera_buffer_wait_max_us;                    /* 摄像头/驱动缓冲等待到 DQBUF 返回的最大时间。 */
-    uint64_t dqbuf_ioctl_duration_sum_us;                  /* VIDIOC_DQBUF ioctl 调用耗时累计。 */
-    uint64_t dqbuf_ioctl_duration_max_us;                  /* VIDIOC_DQBUF ioctl 调用最大耗时。 */
-    uint64_t capture_call_duration_sum_us;                 /* v4l2_capture_frame 整体调用耗时累计。 */
-    uint64_t capture_call_duration_max_us;                 /* v4l2_capture_frame 整体调用最大耗时。 */
-    uint64_t mmap_to_frame_cache_copy_sum_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 耗时累计。 */
-    uint64_t mmap_to_frame_cache_copy_max_us;              /* V4L2 mmap buffer 拷贝到 frame_cache 最大耗时。 */
-    uint64_t frame_source_publish_sum_us;                  /* 采集线程发布到 MediaFrameSource 槽位的总耗时累计。 */
-    uint64_t frame_source_publish_max_us;                  /* 采集线程发布到 MediaFrameSource 槽位的总耗时最大值。 */
-    uint64_t frame_source_publish_copy_sum_us;             /* frame source 发布时整帧拷贝耗时累计。 */
-    uint64_t frame_source_publish_copy_max_us;             /* frame source 发布时整帧拷贝最大值。 */
-    uint64_t video_input_publish_copy_sum_us;              /* 发布到视频编码输入槽的整帧拷贝耗时累计。 */
-    uint64_t video_input_publish_copy_max_us;              /* 发布到视频编码输入槽的整帧拷贝最大值。 */
-    uint64_t video_input_acquire_copy_sum_us;              /* 编码线程从视频输入槽取本地副本的拷贝耗时累计。 */
-    uint64_t video_input_acquire_copy_max_us;              /* 编码线程从视频输入槽取本地副本的拷贝最大值。 */
-    uint64_t dqbuf_to_encode_start_sum_us;                 /* DQBUF 返回到开始送入编码器的时间累计。 */
-    uint64_t dqbuf_to_encode_start_max_us;                 /* DQBUF 返回到开始送入编码器的最大时间。 */
-    uint64_t encode_start_to_done_sum_us;                  /* 开始送入编码器到拿到编码包的时间累计。 */
-    uint64_t encode_start_to_done_max_us;                  /* 开始送入编码器到拿到编码包的最大时间。 */
-    uint64_t encoder_input_buffer_copy_sum_us;             /* NV12 拷贝到 MPP 输入缓冲累计。 */
-    uint64_t encoder_input_buffer_copy_max_us;             /* NV12 拷贝到 MPP 输入缓冲最大值。 */
-    uint64_t encoder_submit_frame_call_sum_us;             /* encode_put_frame 调用耗时累计。 */
-    uint64_t encoder_submit_frame_call_max_us;             /* encode_put_frame 调用最大耗时。 */
-    uint64_t encoder_poll_packet_call_sum_us;              /* encode_get_packet 调用耗时累计。 */
-    uint64_t encoder_poll_packet_call_max_us;              /* encode_get_packet 调用最大耗时。 */
-    uint64_t encoder_packet_copy_sum_us;                   /* H264 packet 拷贝耗时累计。 */
-    uint64_t encoder_packet_copy_max_us;                   /* H264 packet 拷贝最大耗时。 */
-    uint64_t encode_frame_total_sum_us;                    /* mpp_encoder_encode_frame 总耗时累计。 */
-    uint64_t encode_frame_total_max_us;                    /* mpp_encoder_encode_frame 总耗时最大值。 */
-    uint64_t dqbuf_to_encode_done_sum_us;                  /* DQBUF 返回到拿到编码包的时间累计。 */
-    uint64_t dqbuf_to_encode_done_max_us;                  /* DQBUF 返回到拿到编码包的最大时间。 */
-    uint64_t dqbuf_to_output_queued_sum_us;                /* DQBUF 返回到输出队列入队完成的时间累计。 */
-    uint64_t dqbuf_to_output_queued_max_us;                /* DQBUF 返回到输出队列入队完成的最大时间。 */
+    MediaGatewayBenchmarkWindow streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 benchmark 统计窗口。 */
 } MediaGatewayBenchmarkStats;
 
 typedef struct {

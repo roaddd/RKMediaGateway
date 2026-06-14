@@ -833,7 +833,7 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
     uint64_t dqbuf_to_encode_done_us = 0;
     uint64_t dqbuf_to_output_queued_us = 0;
 
-    if (!ctx->bench.enable || stream_idx != 0)
+    if (!ctx->bench.enable)
         return;
     if ((frame->frame_id % (uint64_t)ctx->bench.sample_every) != 0)
         return;
@@ -845,6 +845,7 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
     dqbuf_to_output_queued_us = (output_queued_ts_us >= frame->dqbuf_ts_us) ? (output_queued_ts_us - frame->dqbuf_ts_us) : 0;
 
     media_gateway_bench_record_sample(ctx,
+                                      stream_idx,
                                       frame->metrics.camera_buffer_wait_us,
                                       frame->metrics.dqbuf_ioctl_duration_us,
                                       frame->metrics.capture_call_duration_us,

@@ -13,6 +13,7 @@ extern "C" {
 
 void media_gateway_bench_reset_window(MediaGatewayCtx *ctx);
 void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
+                                       int stream_idx,
                                        uint64_t camera_buffer_wait_us,
                                        uint64_t dqbuf_ioctl_duration_us,
                                        uint64_t capture_call_duration_us,

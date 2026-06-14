@@ -225,7 +225,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     }
 
     log_output_stats(ctx);
-    log_isp_status(ctx);
+    // log_isp_status(ctx); /* ISP 状态日志过于频繁且冗长，默认注释掉，需要时再打开 */
     media_gateway_bench_log_and_reset_if_due(ctx);
     reset_throughput_window(ctx);
     ctx->stats.last_ts_us = now;
