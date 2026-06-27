@@ -525,6 +525,49 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     return 0;
 }
 
+int v4l2_capture_set_fps(V4L2CaptureCtx *ctx, int fps)
+{
+    struct v4l2_streamparm parm;
+
+    if (!ctx || ctx->fd < 0 || fps <= 0)
+    {
+        LOG_ERROR("v4l2_capture_set_fps failed: invalid args ctx=%p fd=%d fps=%d",
+                  (void *)ctx,
+                  ctx ? ctx->fd : -1,
+                  fps);
+        return -1;
+    }
+
+    memset(&parm, 0, sizeof(parm));
+    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    if (ioctl(ctx->fd, VIDIOC_G_PARM, &parm) < 0)
+    {
+        LOG_WARN("v4l2_capture_set_fps: VIDIOC_G_PARM failed fps=%d errno=%d(%s), try S_PARM",
+                 fps,
+                 errno,
+                 strerror(errno));
+        memset(&parm, 0, sizeof(parm));
+        parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    }
+
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = (uint32_t)fps;
+    if (ioctl(ctx->fd, VIDIOC_S_PARM, &parm) < 0)
+    {
+        LOG_WARN("v4l2_capture_set_fps failed: fps=%d errno=%d(%s)",
+                 fps,
+                 errno,
+                 strerror(errno));
+        return -1;
+    }
+
+    LOG_WARN("v4l2 capture fps updated: request=%d actual=%u/%u",
+             fps,
+             parm.parm.capture.timeperframe.denominator,
+             parm.parm.capture.timeperframe.numerator);
+    return 0;
+}
+
 /**
  * @description: 采集一帧并返回 V4L2 驱动 buffer 引用，供 DMA-BUF 零拷贝链路继续传递。
  * @param {V4L2CaptureCtx *} ctx 采集上下文。

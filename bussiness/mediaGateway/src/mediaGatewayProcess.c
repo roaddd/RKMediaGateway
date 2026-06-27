@@ -877,7 +877,7 @@ static void maybe_record_stream_file(MediaGatewayCtx *ctx,
     written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
     if (written != h264_len)
         LOG_WARN("local record write short: %zu/%zu", written, h264_len);
-    if ((frame_id % (uint64_t)ctx->config.record_flush_interval_frames) == 0)
+    if ((frame_id % (uint64_t)ctx->config.record.flush_interval_frames) == 0)
         fflush(ctx->record_fp);
 }
 

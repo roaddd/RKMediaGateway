@@ -96,6 +96,8 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
  */
 void v4l2_capture_deinit(V4L2CaptureCtx *ctx);
 
+int v4l2_capture_set_fps(V4L2CaptureCtx *ctx, int fps);
+
 /**
  * @description: 采集一帧并拷贝到内部 frame_cache，返回稳定的用户态帧指针。
  * @param {V4L2CaptureCtx *} ctx 采集上下文。

@@ -731,6 +731,34 @@ int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate) {
     return 0;
 }
 
+int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps)
+{
+    MPP_RET ret;
+
+    if (!enc || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg || fps <= 0)
+    {
+        LOG_ERROR("mpp_encoder_set_fps failed: invalid args enc=%p fps=%d", (void *)enc, fps);
+        return -1;
+    }
+    if (enc->rc.fps == fps)
+        return 0;
+
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_num", fps);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_denorm", 1);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_num", fps);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_denorm", 1);
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_CFG, enc->mpp.cfg);
+    if (ret != MPP_OK)
+    {
+        mpp_log_error("mpp_encoder_set_fps MPP_ENC_SET_CFG failed", ret);
+        return -1;
+    }
+
+    LOG_WARN("mpp encoder fps updated: old=%d new=%d", enc->rc.fps, fps);
+    enc->rc.fps = fps;
+    return 0;
+}
+
 int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta) {
     int target_qp_init;
     int target_qp_min;

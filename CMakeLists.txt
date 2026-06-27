@@ -24,6 +24,7 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/ispController/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/logger/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/defValue/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/util/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
@@ -77,6 +78,7 @@ file(GLOB_RECURSE MEDIA_OUTPUT_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/s
 file(GLOB ISP_CONTROLLER_SRC ${PROJECT_SOURCE_DIR}/bussiness/ispController/src/*.c)
 file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
 file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
+file(GLOB THREAD_MESSAGE_QUEUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
@@ -275,6 +277,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${ISP_CONTROLLER_SRC}
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
+        ${THREAD_MESSAGE_QUEUE_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -325,6 +328,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${MEDIA_FRAME_SOURCE_SRC}
         ${ISP_CONTROLLER_SRC}
         ${UTIL_SRC}
+        ${THREAD_MESSAGE_QUEUE_SRC}
         ${DUAL_OUTPUT_SRC}
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -371,6 +375,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${ISP_CONTROLLER_SRC}
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
+        ${THREAD_MESSAGE_QUEUE_SRC}
         ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}
     )

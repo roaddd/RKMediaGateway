@@ -9,12 +9,12 @@
 
 #define FRAME_TRACE_SAMPLE_INTERVAL 30ULL
 
-static double bench_metric_avg(const MediaGatewayBenchmarkMetric *metric, double sample_count)
+static double bench_metric_avg(const benchmarkMetric *metric, double sample_count)
 {
     return (double)metric->sum_us / sample_count;
 }
 
-static void bench_metric_record(MediaGatewayBenchmarkMetric *metric, uint64_t value_us)
+static void bench_metric_record(benchmarkMetric *metric, uint64_t value_us)
 {
     metric->sum_us += value_us;
     if (value_us > metric->max_us)

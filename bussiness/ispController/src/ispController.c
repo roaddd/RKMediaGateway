@@ -175,6 +175,12 @@ static void fill_health_status(IspControllerCtx *ctx, IspControllerStatus *statu
     uint64_t timeout_us = 0;
     uint64_t base_meta_ts = 0;
 
+    if(!ctx || !status)
+    {
+        LOG_ERROR("[ISP] fill health status failed: invalid argument");
+        return;
+    }
+
     status->health.enabled = ctx->config.health.check_enable ? 1 : 0;
 
     /* 诊断关闭时显式返回 disabled，避免日志误判为异常。 */
@@ -1034,17 +1040,17 @@ static void fill_ae_status(IspControllerCtx *ctx, IspControllerStatus *status)
         return;
     }
 
-    status->ae.valid = 1;
-    status->ae.converged = exp_info.IsConverged ? 1 : 0;
-    status->ae.exp_max = exp_info.IsExpMax ? 1 : 0;
-    status->ae.mean_luma = exp_info.MeanLuma;
-    status->ae.luma_deviation = exp_info.LumaDeviation;
-    status->ae.env_lux = exp_info.GlobalEnvLux;
-    status->ae.integration_time = exp_info.CurExpInfo.LinearExp.exp_real_params.integration_time;
-    status->ae.analog_gain = exp_info.CurExpInfo.LinearExp.exp_real_params.analog_gain;
-    status->ae.digital_gain = exp_info.CurExpInfo.LinearExp.exp_real_params.digital_gain;
-    status->ae.isp_dgain = exp_info.CurExpInfo.LinearExp.exp_real_params.isp_dgain;
-    status->ae.iso = exp_info.CurExpInfo.LinearExp.exp_real_params.iso;
+    status->ae.valid = 1; /* AE状态是否有效 */
+    status->ae.converged = exp_info.IsConverged ? 1 : 0; /* AE是否收敛 */
+    status->ae.exp_max = exp_info.IsExpMax ? 1 : 0; /* 曝光是否达到最大值 */
+    status->ae.mean_luma = exp_info.MeanLuma; /* 当前帧平均亮度，曝光之后的画面有多亮 */
+    status->ae.luma_deviation = exp_info.LumaDeviation; /* 当前帧亮度偏差 */
+    status->ae.env_lux = exp_info.GlobalEnvLux; /* 当前帧环境光照度，算法估计环境本身有多亮 */
+    status->ae.integration_time = exp_info.CurExpInfo.LinearExp.exp_real_params.integration_time; /* 曝光时间 */
+    status->ae.analog_gain = exp_info.CurExpInfo.LinearExp.exp_real_params.analog_gain; /* 模拟增益 */
+    status->ae.digital_gain = exp_info.CurExpInfo.LinearExp.exp_real_params.digital_gain; /* 数字增益 */
+    status->ae.isp_dgain = exp_info.CurExpInfo.LinearExp.exp_real_params.isp_dgain; /* ISP数字增益 */
+    status->ae.iso = exp_info.CurExpInfo.LinearExp.exp_real_params.iso; /* ISO感光度 */
 }
 
 
@@ -1067,15 +1073,15 @@ static void fill_awb_status(IspControllerCtx *ctx, IspControllerStatus *status)
         return;
     }
 
-    status->awb.valid = 1;
-    status->awb.converged = wb_info.awbConverged ? 1 : 0;
-    status->awb.cct = wb_info.cctGloabl.CCT;
-    status->awb.ccri = wb_info.cctGloabl.CCRI;
-    status->awb.wb_rgain = wb_info.gain.rgain;
-    status->awb.wb_grgain = wb_info.gain.grgain;
-    status->awb.wb_gbgain = wb_info.gain.gbgain;
-    status->awb.wb_bgain = wb_info.gain.bgain;
-    status->awb.lv_value = wb_info.LVValue;
+    status->awb.valid = 1; /* AWB状态是否有效 */
+    status->awb.converged = wb_info.awbConverged ? 1 : 0; /* AWB是否收敛 */
+    status->awb.cct = wb_info.cctGloabl.CCT; /* 当前帧色温 */
+    status->awb.ccri = wb_info.cctGloabl.CCRI; /* 当前帧显色性 */
+    status->awb.wb_rgain = wb_info.gain.rgain; /* 红色增益 */
+    status->awb.wb_grgain = wb_info.gain.grgain; /* 绿色增益 */
+    status->awb.wb_gbgain = wb_info.gain.gbgain; /* 蓝色增益 */
+    status->awb.wb_bgain = wb_info.gain.bgain; /* 蓝色增益 */
+    status->awb.lv_value = wb_info.LVValue; /* 当前帧亮度值 */
 }
 #endif
 
@@ -1088,7 +1094,10 @@ static void fill_awb_status(IspControllerCtx *ctx, IspControllerStatus *status)
 int isp_controller_query_status(IspControllerCtx *ctx, IspControllerStatus *status)
 {
     if (!ctx || !status)
-        return -1;
+    {
+        LOG_ERROR("[ISP] query status failed: invalid argument");
+        return -1;  
+    }
 
     memset(status, 0, sizeof(*status));
     status->lifecycle.enabled = ctx->config.lifecycle.enabled ? 1 : 0;
@@ -1116,12 +1125,15 @@ int isp_controller_query_status(IspControllerCtx *ctx, IspControllerStatus *stat
 
     fill_health_status(ctx, status);
     status->low_light.enabled = ctx->config.low_light.enabled ? 1 : 0;
+    /* 低照度时码率提升百分比 */
     status->low_light.bitrate_boost_percent = status->low_light.active
                                                 ? ctx->config.low_light.bitrate_boost_percent
                                                 : 0;
+    /* 低照度时QP调整值 */
     status->low_light.qp_delta = status->low_light.active ? ctx->config.low_light.qp_delta : 0;
 
 #ifdef ENABLE_RKAIQ
+    /* 获取 AE/AWB 状态 */
     fill_ae_status(ctx, status);
     fill_awb_status(ctx, status);
 #endif

@@ -178,6 +178,8 @@ int mpp_encoder_request_idr(MppEncoderCtx *enc);
  */
 int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate);
 
+int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps);
+
 /*
  * 运行时更新 FIXQP 相关 QP profile。
  * qp_delta 以初始化时的 QP 配置为基线，负数降低 QP 提升画质，0 恢复基线。

@@ -15,6 +15,7 @@
 
 #include "audioFrameSource.h"
 #include "mediaFrameSource.h"
+#include "threadMessageQueue.h"
 
 #include <stdint.h>
 
@@ -23,7 +24,7 @@ extern "C" {
 #endif
 
 /*
- * 单路视频编码线程的输入槽。
+ * 单路视频编码线程的输入缓存。
  *
  * 该结构不是 FIFO 队列，而是 latest-frame 单槽缓存：主循环发布新帧，
  * 编码线程取走最新帧；如果旧帧尚未被消费就被新帧覆盖，会计入 dropped_frames。
@@ -37,7 +38,7 @@ typedef struct {
     int running;                /* 输入槽是否仍允许等待和发布。 */
     int ready;                  /* lock/cond 是否初始化成功，用于安全释放。 */
     uint64_t dropped_frames;    /* 因新帧覆盖未消费旧帧而丢弃的数量。 */
-} VideoEncodeInput;
+} VideoEncodeInputBuffer;
 
 /* 音频编码 FIFO 中的一个槽位，保存一帧 PCM 副本及其元信息。 */
 typedef struct {
@@ -65,6 +66,39 @@ typedef struct {
 } AudioEncodeQueue;
 
 /*
+ * 单路视频编码 worker 运行期资源。
+ *
+ * input 只负责 latest-frame 输入缓存；command_queue、thread 和 thread_started 属于 worker
+ * 控制与生命周期状态，不能混入 VideoEncodeInputBuffer，避免输入缓存职责膨胀。
+ */
+typedef struct {
+    VideoEncodeInputBuffer input;     /* 视频编码线程的 latest-frame 输入缓存。*/
+    ThreadMessageQueue command_queue; /* 仅由对应编码线程消费的控制命令队列。*/
+    pthread_t thread;                 /* 视频编码线程句柄。*/
+    int thread_started;               /* 视频编码线程是否已成功启动。*/
+} VideoEncodeWorker;
+
+/*
+ * 视频编码运行期资源集合。
+ *
+ * 每路 stream 对应一个 VideoEncodeWorker，worker 内部再聚合输入缓存、命令队列和线程状态。
+ */
+typedef struct {
+    VideoEncodeWorker workers[MEDIA_GATEWAY_MAX_STREAMS]; /* 所有视频编码 worker。*/
+} MediaGatewayVideoEncodeGroup;
+
+/*
+ * 音频编码运行期资源集合。
+ *
+ * 音频只有一个 FIFO 输入队列和一个编码线程，集中管理后可以和视频编码资源形成对称结构。
+ */
+typedef struct {
+    AudioEncodeQueue queue; /* 音频编码线程输入 FIFO。*/
+    pthread_t thread;       /* 音频编码线程句柄。*/
+    int thread_started;     /* 音频编码线程是否已成功启动。*/
+} MediaGatewayAudioEncodeGroup;
+
+/*
  * mediaGateway 运行期编码 pipeline。
  *
  * pipeline 负责启动/管理视频编码线程、音频编码线程，以及它们的输入队列。
@@ -73,15 +107,12 @@ typedef struct {
 typedef struct {
     MediaGatewayCtx *ctx;                                   /* 所属 gateway 上下文，生命周期由调用方管理。 */
     MediaGatewayRunState state;                             /* 编码过程中的运行状态和失败统计。 */
-    VideoEncodeInput video_inputs[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路视频 stream 的 latest-frame 输入槽。 */
-    AudioEncodeQueue audio_queue;                           /* 音频编码线程输入 FIFO。 */
-    pthread_t video_threads[MEDIA_GATEWAY_MAX_STREAMS];      /* 每路视频编码线程句柄。 */
-    int video_thread_started[MEDIA_GATEWAY_MAX_STREAMS];     /* 对应视频编码线程是否已成功启动。 */
-    pthread_t audio_thread;                                  /* 音频编码线程句柄。 */
-    int audio_thread_started;                                /* 音频编码线程是否已成功启动。 */
+    MediaGatewayVideoEncodeGroup video;                      /* 视频编码输入槽和 worker 线程资源。 */
+    MediaGatewayAudioEncodeGroup audio;                      /* 音频编码输入队列和 worker 线程资源。 */
     pthread_mutex_t ret_lock;                                /* 保护 ret，并在 fatal error 时同步 ctx->running。 */
     int ret_lock_ready;                                      /* ret_lock 是否初始化成功。 */
     int ret;                                                 /* pipeline 运行结果：0 正常，-1 表示工作线程遇到致命错误。 */
+    ThreadMessageQueue *result_queue;                         /* 编码线程执行结果统一回传队列。 */
 } MediaGatewayPipeline;
 
 /* 创建视频编码线程时传入的参数。线程启动后会释放该对象。 */
@@ -97,7 +128,16 @@ typedef struct {
  * @param ctx      已完成配置和模块初始化的 gateway 上下文。
  * @return 0 成功，-1 失败。
  */
-int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline, MediaGatewayCtx *ctx);
+int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
+                                MediaGatewayCtx *ctx,
+                                ThreadMessageQueue *result_queue);
+
+/**
+ * @brief 非阻塞向指定视频编码线程投递控制命令。
+ */
+int media_gateway_pipeline_submit_video_command(MediaGatewayPipeline *pipeline,
+                                                int stream_idx,
+                                                const ThreadMessage *command);
 
 /*
  * 启动所有启用 stream 对应的视频编码线程，以及可选音频编码线程。
@@ -132,7 +172,7 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline);
  *
  * @return 0 成功或输入槽已停止，-1 表示参数或内存分配错误。
  */
-int media_gateway_video_input_publish(VideoEncodeInput *input, const MediaFrame *frame);
+int media_gateway_video_input_publish(VideoEncodeInputBuffer *input, const MediaFrame *frame);
 
 /*
  * 将一帧 PCM 音频发布到音频编码 FIFO。

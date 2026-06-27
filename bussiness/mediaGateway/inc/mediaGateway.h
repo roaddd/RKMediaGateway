@@ -3,6 +3,7 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #include "mppEncoder.h"
 #include "v4l2Capture.h"
@@ -19,6 +20,36 @@ extern "C" {
 #define MEDIA_GATEWAY_MAX_STREAMS 2
 #define MEDIA_GATEWAY_MAX_OUTPUTS 8
 #define MEDIA_GATEWAY_MAX_CAPTURE_SOURCES MEDIA_GATEWAY_MAX_STREAMS
+
+typedef struct {
+    int normal_fps;                  /* 普通场景目标帧率。 */
+    int low_light_fps;               /* 低照度场景目标帧率，OV13850 可用 15。 */
+    int bright_fps;                  /* 亮光/低延迟场景目标帧率，OV13850 可用 60。 */
+} DynamicFrameRateTargets;
+
+typedef struct {
+    int min_switch_interval_ms;      /* 两次目标帧率切换的最小间隔。 */
+    int evaluate_interval_ms;        /* 策略评估周期。 */
+    int bright_confirm_ms;           /* 亮光场景候选持续多久后允许切换。 */
+    int low_light_confirm_ms;        /* 低照场景候选持续多久后允许切换。 */
+    int ae_scene_confirm_ms;         /* AE 三态候选默认确认时间。 */
+} DynamicFrameRateTiming;
+
+typedef struct {
+    float bright_max_exposure_us;    /* 亮光进入 60fps 的最大 AE 曝光时间，单位微秒。 */
+    float bright_max_analog_gain;    /* 亮光进入 60fps 的最大模拟增益。 */
+    float bright_min_mean_luma;      /* 亮光进入 60fps 的最小平均亮度。 */
+    float low_light_min_exposure_ratio; /* 低照进入 15fps 的曝光/当前帧周期比例阈值。 */
+    float low_light_min_analog_gain; /* 低照进入 15fps 的最小模拟增益。 */
+    float low_light_max_mean_luma;   /* 低照进入 15fps 的最大平均亮度。 */
+} DynamicFrameRateAeConfig;
+
+typedef struct {
+    int enabled;                     /* 是否启用动态帧率策略。 */
+    DynamicFrameRateTargets targets; /* 目标帧率集合。 */
+    DynamicFrameRateTiming timing;   /* 评估、确认和切换节流参数。 */
+    DynamicFrameRateAeConfig ae;     /* AE 曝光/增益/亮度三态判定阈值。 */
+} DynamicFrameRateConfig;
 
 typedef struct {
     int enabled;                     /* 该采集源是否启用。 */
@@ -99,35 +130,60 @@ typedef struct {
     int enable_rtsp;                 /* 是否启用 RTSP 输出链路。 */
     int enable_rtmp;                 /* 是否启用 RTMP 输出链路。 */
     int enable_gb28181;              /* 是否启用 GB28181 设备输出链路。 */
-    int fps;                         /* 全局编码帧率，所有输出协议共用。 */
-    int bitrate;                     /* 全局编码目标码率，单位 bit/s。 */
-    int gop;                         /* GOP 长度，影响关键帧间隔和恢复速度。 */
-    int rc_mode;                     /* 编码码率控制模式，取值来自 MPP_ENC_RC_MODE_*。 */
-    int h264_profile;                /* H264 profile 配置，例如 66/77/100。 */
-    int h264_level;                  /* H264 level 配置，例如 40。 */
-    int h264_cabac_en;               /* 是否启用 CABAC。 */
-    int qp_init;                     /* 初始 QP；<=0 表示使用 MPP 默认值。 */
-    int qp_min;                      /* P/B 帧最小 QP；<=0 表示使用 MPP 默认值。 */
-    int qp_max;                      /* P/B 帧最大 QP；<=0 表示使用 MPP 默认值。 */
-    int qp_min_i;                    /* I 帧最小 QP；<=0 表示使用 MPP 默认值。 */
-    int qp_max_i;                    /* I 帧最大 QP；<=0 表示使用 MPP 默认值。 */
-    int qp_max_step;                 /* 相邻帧最大 QP 变化步长；<=0 表示使用 MPP 默认值。 */
+} MediaGatewayOutputSwitchConfig;
+
+typedef struct {
+    int fps;                         /* 顶层默认编码帧率；多码流配置以 streams[i].fps 为准。 */
+    int bitrate;                     /* 顶层默认编码目标码率，单位 bit/s；多码流配置以 streams[i].bitrate 为准。 */
+    int gop;                         /* 顶层默认 GOP 长度；多码流配置以 streams[i].gop 为准。 */
+    int rc_mode;                     /* 默认码率控制模式，取值来自 MPP_ENC_RC_MODE_*。 */
+    int h264_profile;                /* 默认 H264 profile 配置，例如 66/77/100。 */
+    int h264_level;                  /* 默认 H264 level 配置，例如 40。 */
+    int h264_cabac_en;               /* 默认是否启用 CABAC。 */
+    int qp_init;                     /* 默认初始 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min;                      /* 默认 P/B 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max;                      /* 默认 P/B 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_min_i;                    /* 默认 I 帧最小 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_i;                    /* 默认 I 帧最大 QP；<=0 表示使用 MPP 默认值。 */
+    int qp_max_step;                 /* 默认相邻帧最大 QP 变化步长；<=0 表示使用 MPP 默认值。 */
+} MediaGatewayEncodeDefaultConfig;
+
+typedef struct {
     int low_latency_mode;            /* 低延时模式开关，主要影响调试和日志输出策略。 */
     int stats_interval_sec;          /* 统计信息输出周期，单位秒。 */
     int capture_retry_ms;            /* 采集失败后的重试间隔，单位毫秒。 */
     int max_consecutive_failures;    /* 连续失败达到该阈值时主循环退出。 */
-    const char *record_file_path;    /* 本地录像文件路径，为空则不录制。 */
-    int record_flush_interval_frames;/* 本地录像每隔多少帧执行一次 fflush。 */
     const char *config_file_path;    /* 预留的配置文件路径钩子。 */
-    int bench_enable;                /* 是否开启性能测试埋点日志。 */
-    int bench_sample_every;          /* 性能埋点每隔多少帧采样一次。 */
-    int bench_print_interval_sec;    /* 性能埋点日志打印周期，单位秒。 */
-    int log_level;                   /* 全局日志等级：0 debug, 1 info, 2 warn, 3 error。 */
+} MediaGatewayRuntimeConfig;
+
+typedef struct {
+    const char *file_path;           /* 本地录像文件路径，为空则不录制。 */
+    int flush_interval_frames;       /* 本地录像每隔多少帧执行一次 fflush。 */
+} MediaGatewayRecordConfig;
+
+typedef struct {
+    int enabled;                     /* 是否开启性能测试埋点日志。 */
+    int sample_every;                /* 性能埋点每隔多少帧采样一次。 */
+    int print_interval_sec;          /* 性能埋点日志打印周期，单位秒。 */
+} MediaGatewayBenchConfig;
+
+typedef struct {
+    int level;                       /* 全局日志等级：0 debug, 1 info, 2 warn, 3 error。 */
+} MediaGatewayLogConfig;
+
+typedef struct {
+    MediaGatewayOutputSwitchConfig output; /* 顶层输出开关配置；多码流配置以 streams[i] 为准。 */
+    MediaGatewayEncodeDefaultConfig encode; /* 顶层编码默认值；多码流配置以 streams[i] 为准。 */
+    MediaGatewayRuntimeConfig runtime; /* 网关运行期公共配置。 */
+    MediaGatewayRecordConfig record;  /* 本地录像配置。 */
+    MediaGatewayBenchConfig bench;    /* 性能埋点配置。 */
+    MediaGatewayLogConfig log;        /* 日志配置。 */
+    DynamicFrameRateConfig dynamic_fps; /* 动态帧率策略配置。 */
     int capture_source_count;        /* 采集源数量。 */
     CaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
     IspSourceConfig isp;             /* RKAIQ/ISP 初始化与生命周期配置。 */
     AudioSourceConfig audio;         /* 音频采集与编码配置。 */
-    int stream_count;                /* 流配置数量，<=0 表示使用兼容模式自动生成 main 流。 */
+    int stream_count;                /* 流配置数量，<=0 表示不初始化视频流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
     MediaOutputRtspConfig rtsp;      /* RTSP 协议专用配置块。 */
     MediaOutputRtmpConfig rtmp;      /* RTMP 协议专用配置块。 */
@@ -154,27 +210,27 @@ typedef struct {
 typedef struct {
     uint64_t sum_us;                                       /* 当前窗口内耗时累计。 */
     uint64_t max_us;                                       /* 当前窗口内最大耗时。 */
-} MediaGatewayBenchmarkMetric;
+} benchmarkMetric;
 
 typedef struct {
     uint64_t sample_count;                                 /* 当前窗口内采样帧数。 */
-    MediaGatewayBenchmarkMetric camera_buffer_wait;        /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间。 */
-    MediaGatewayBenchmarkMetric dqbuf_ioctl_duration;      /* VIDIOC_DQBUF ioctl 调用耗时。 */
-    MediaGatewayBenchmarkMetric capture_call_duration;     /* v4l2_capture_frame 整体调用耗时。 */
-    MediaGatewayBenchmarkMetric mmap_to_frame_cache_copy;  /* V4L2 mmap buffer 拷贝到 frame_cache 耗时。 */
-    MediaGatewayBenchmarkMetric frame_source_publish;      /* 采集线程发布到 MediaFrameSource 槽位的总耗时。 */
-    MediaGatewayBenchmarkMetric frame_source_publish_copy; /* frame source 发布时整帧拷贝耗时。 */
-    MediaGatewayBenchmarkMetric video_input_publish_copy;  /* 发布到视频编码输入槽的整帧拷贝耗时。 */
-    MediaGatewayBenchmarkMetric video_input_acquire_copy;  /* 编码线程从视频输入槽取本地副本的拷贝耗时。 */
-    MediaGatewayBenchmarkMetric dqbuf_to_encode_start;     /* DQBUF 返回到开始送入编码器的时间。 */
-    MediaGatewayBenchmarkMetric encode_start_to_done;      /* 开始送入编码器到拿到编码包的时间。 */
-    MediaGatewayBenchmarkMetric encoder_input_buffer_copy; /* NV12 拷贝到 MPP 输入缓冲耗时。 */
-    MediaGatewayBenchmarkMetric encoder_submit_frame_call; /* encode_put_frame 调用耗时。 */
-    MediaGatewayBenchmarkMetric encoder_poll_packet_call;  /* encode_get_packet 调用耗时。 */
-    MediaGatewayBenchmarkMetric encoder_packet_copy;       /* H264 packet 拷贝耗时。 */
-    MediaGatewayBenchmarkMetric encode_frame_total;        /* mpp_encoder_encode_frame 总耗时。 */
-    MediaGatewayBenchmarkMetric dqbuf_to_encode_done;      /* DQBUF 返回到拿到编码包的时间。 */
-    MediaGatewayBenchmarkMetric dqbuf_to_output_queued;    /* DQBUF 返回到输出队列入队完成的时间。 */
+    benchmarkMetric camera_buffer_wait;        /* 摄像头/驱动缓冲等待到 DQBUF 返回的时间。 */
+    benchmarkMetric dqbuf_ioctl_duration;      /* VIDIOC_DQBUF ioctl 调用耗时。 */
+    benchmarkMetric capture_call_duration;     /* v4l2_capture_frame 整体调用耗时。 */
+    benchmarkMetric mmap_to_frame_cache_copy;  /* V4L2 mmap buffer 拷贝到 frame_cache 耗时。 */
+    benchmarkMetric frame_source_publish;      /* 采集线程发布到 MediaFrameSource 槽位的总耗时。 */
+    benchmarkMetric frame_source_publish_copy; /* frame source 发布时整帧拷贝耗时。 */
+    benchmarkMetric video_input_publish_copy;  /* 发布到视频编码输入槽的整帧拷贝耗时。 */
+    benchmarkMetric video_input_acquire_copy;  /* 编码线程从视频输入槽取本地副本的拷贝耗时。 */
+    benchmarkMetric dqbuf_to_encode_start;     /* DQBUF 返回到开始送入编码器的时间。 */
+    benchmarkMetric encode_start_to_done;      /* 开始送入编码器到拿到编码包的时间。 */
+    benchmarkMetric encoder_input_buffer_copy; /* NV12 拷贝到 MPP 输入缓冲耗时。 */
+    benchmarkMetric encoder_submit_frame_call; /* encode_put_frame 调用耗时。 */
+    benchmarkMetric encoder_poll_packet_call;  /* encode_get_packet 调用耗时。 */
+    benchmarkMetric encoder_packet_copy;       /* H264 packet 拷贝耗时。 */
+    benchmarkMetric encode_frame_total;        /* mpp_encoder_encode_frame 总耗时。 */
+    benchmarkMetric dqbuf_to_encode_done;      /* DQBUF 返回到拿到编码包的时间。 */
+    benchmarkMetric dqbuf_to_output_queued;    /* DQBUF 返回到输出队列入队完成的时间。 */
 } MediaGatewayBenchmarkWindow;
 
 typedef struct {
@@ -184,6 +240,19 @@ typedef struct {
     uint64_t last_ts_us;                                   /* 上次 benchmark 输出时间戳。 */
     MediaGatewayBenchmarkWindow streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 benchmark 统计窗口。 */
 } MediaGatewayBenchmarkStats;
+
+typedef struct {
+    int current_fps;                                      /* 当前已应用/初始帧率。 */
+    int target_fps;                                       /* 当前策略目标帧率。 */
+    int last_logged_target_fps;                           /* 上次日志记录的目标帧率。 */
+    int low_light_active;                                 /* 最近一次策略评估使用的低照状态。 */
+    int bright_active;                                    /* 最近一次策略评估使用的亮光状态。 */
+    uint64_t last_evaluate_ts_us;                         /* 上次策略评估时间。 */
+    uint64_t last_switch_ts_us;                           /* 上次目标帧率切换时间。 */
+    int pending_fps;                                      /* AE 候选目标帧率。 */
+    uint64_t pending_since_ts_us;                         /* AE 候选目标开始持续时间。 */
+    char reason[128];                                     /* 最近一次策略决策原因。 */
+} MediaGatewayDynamicFpsState;
 
 typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
@@ -200,12 +269,13 @@ typedef struct {
     MediaOutput outputs[MEDIA_GATEWAY_MAX_OUTPUTS];  /* 已启用的输出通道集合。 */
     int output_stream_index[MEDIA_GATEWAY_MAX_OUTPUTS]; /* 每个输出通道绑定的 stream 下标。 */
     int output_count;                           /* 当前启用的输出通道数量。 */
-    MediaGatewayConfig config;                 /* 归一化后的网关配置副本。 */
+    MediaGatewayConfig config;                 /* 配置参数 */
     int rtsp_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 RTSP 输出索引。 */
     int gb28181_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 GB28181 输出索引。 */
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
     int low_light_bitrate_active;                 /* 当前低照度编码联动策略是否已应用；用于进入/退出时恢复码率或 QP profile。 */
     uint64_t last_isp_policy_ts_us;               /* 上次运行 ISP/低照度策略的时间戳，避免策略跟随日志周期。 */
+    MediaGatewayDynamicFpsState dynamic_fps_state; /* 动态帧率策略运行状态。 */
     int running;                               /* 主循环是否正在运行。 */
     FILE *record_fp;                           /* 本地录像文件句柄。 */
     pthread_mutex_t stats_lock;                /* 保护吞吐、benchmark 和本地录像写入。 */

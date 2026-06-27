@@ -1,4 +1,4 @@
-﻿#include "mediaGatewayStats.h"
+#include "mediaGatewayStats.h"
 
 #include "mediaGatewayClock.h"
 #include "mediaGatewayMetrics.h"
@@ -188,7 +188,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     double kbps;
     int i;
 
-    if (span_us < (uint64_t)ctx->config.stats_interval_sec * 1000000ULL)
+    if (span_us < (uint64_t)ctx->config.runtime.stats_interval_sec * 1000000ULL)
         return;
 
     span_sec = (double)span_us / 1000000.0;
