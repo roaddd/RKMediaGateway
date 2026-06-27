@@ -174,6 +174,7 @@ static void fill_health_status(IspControllerCtx *ctx, IspControllerStatus *statu
     uint64_t now_us = get_now_us();
     uint64_t timeout_us = 0;
     uint64_t base_meta_ts = 0;
+    uint64_t stall_ms = 0;
 
     if(!ctx || !status)
     {
@@ -232,11 +233,12 @@ static void fill_health_status(IspControllerCtx *ctx, IspControllerStatus *statu
         timeout_us = (uint64_t)ctx->config.health.meta_timeout_ms * 1000ULL;
         if (status->health.meta_stall_us > timeout_us)
         {
+            stall_ms = status->health.meta_stall_us / 1000ULL;
             status->health.state = ISP_CONTROLLER_HEALTH_META_STALLED;
             snprintf(status->health.reason,
                      sizeof(status->health.reason),
                      "RKAIQ metas stalled: stall_ms=%" PRIu64 " timeout_ms=%d",
-                     status->health.meta_stall_us / 1000ULL,
+                     stall_ms,
                      ctx->config.health.meta_timeout_ms);
             return;
         }

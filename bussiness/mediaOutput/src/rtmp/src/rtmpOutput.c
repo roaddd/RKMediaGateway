@@ -52,6 +52,7 @@ typedef struct {
 } RtmpOutputImpl;
 
 
+#if defined(ENABLE_RTMP_LIBRTMP)
 static const char *rtmp_frame_kind(int is_key_frame) {
     return is_key_frame ? "key" : "inter";
 }
@@ -96,6 +97,7 @@ static void write_be16(uint8_t *dst, uint16_t value) {
     dst[0] = (uint8_t)((value >> 8) & 0xFF);
     dst[1] = (uint8_t)(value & 0xFF);
 }
+#endif
 
 #if defined(ENABLE_RTMP_LIBRTMP)
 
@@ -197,6 +199,7 @@ static void free_parameter_set(uint8_t **data, size_t *size) {
 }
 
 
+#if defined(ENABLE_RTMP_LIBRTMP)
 static int update_parameter_set(uint8_t **dst, size_t *dst_len, const uint8_t *src, size_t src_len, int *changed) {
     uint8_t *copy;
 
@@ -332,8 +335,6 @@ static int rtmp_cache_parameter_sets(RtmpOutputImpl *impl, const NaluView *nalus
 }
 
 static uint32_t packet_timestamp_ms(const MediaPacket *packet);
-
-#if defined(ENABLE_RTMP_LIBRTMP)
 
 /* 发送 RTMP 信息类消息，例如 onMetaData。 */
 static int rtmp_send_info_body(RtmpOutputImpl *impl, const uint8_t *body, size_t body_size, uint32_t timestamp_ms) {
@@ -677,9 +678,6 @@ static int rtmp_send_g711_packet(RtmpOutputImpl *impl, const MediaPacket *packet
     }
     return ret;
 }
-#endif
-
-
 static uint32_t packet_timestamp_ms(const MediaPacket *packet) {
     uint64_t ts_us;
 
@@ -689,6 +687,7 @@ static uint32_t packet_timestamp_ms(const MediaPacket *packet) {
     ts_us = packet->dts_us ? packet->dts_us : packet->pts_us;
     return (uint32_t)(ts_us / 1000ULL);
 }
+#endif
 
 
 static int rtmp_output_start(MediaOutput *output) {
@@ -768,6 +767,7 @@ static int rtmp_output_connect(MediaOutput *output) {
            impl->config.connect_timeout_ms);
     return 0;
 #else
+    (void)impl;
     (void)output;
     LOG_WARN("RTMP output requested but librtmp support is not compiled in");
     return -1;
@@ -842,6 +842,11 @@ done:
     free(nalus);
     return ret;
 #else
+    (void)impl;
+    (void)nalus;
+    (void)nalu_count;
+    (void)timestamp_ms;
+    (void)ret;
     (void)output;
     (void)packet;
     LOG_ERROR("[RTMP][ERROR] send_packet failed: librtmp support is not compiled in\n");

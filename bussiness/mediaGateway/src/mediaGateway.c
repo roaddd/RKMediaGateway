@@ -285,18 +285,6 @@ static void fill_default_capture_source(CaptureSourceConfig *dst,
     if (has_src)
         *dst = src_copy;
 
-    if (require_positive_int("encode.fps", dst->encode.fps) != 0 ||
-        require_positive_int("encode.bitrate", dst->encode.bitrate) != 0 ||
-        require_positive_int("encode.gop", dst->encode.gop) != 0 ||
-        require_positive_int("encode.h264_profile", dst->encode.h264_profile) != 0 ||
-        require_positive_int("encode.h264_level", dst->encode.h264_level) != 0)
-        return;
-    if (dst->encode.rc_mode < 0 || dst->encode.rc_mode >= MPP_ENC_RC_MODE_BUTT)
-    {
-        config_error_int("encode.rc_mode", dst->encode.rc_mode, "is unsupported");
-        return;
-    }
-
     dst->enabled = dst->enabled ? 1 : 0;
     dst->name = safe_str(dst->name, (source_idx == 0) ? "main_path" : "self_path");
     dst->device_path = safe_str(dst->device_path, (source_idx == 0) ? "/dev/video0" : "/dev/video1");
