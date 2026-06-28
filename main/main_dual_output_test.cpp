@@ -1,10 +1,13 @@
 extern "C" {
 #include "mediaGateway.h"
+#include "shellCommandServer.h"
+#include "systemDebug.h"
 }
 
 int main() {
     MediaGatewayCtx gateway;
     MediaGatewayConfig config = {0};
+    int shell_ready = 0;
 
     /* This executable is a manual integration test for concurrent RTSP + RTMP publishing.
      * The gateway keeps one encoder and fans the resulting H.264 stream out to two independent outputs.
@@ -35,13 +38,27 @@ int main() {
     config.rtmp.queue_capacity = 64;
     config.rtmp.audio_enabled = 0;
 
+    if (shell_command_server_init(NULL) == 0) {
+        shell_ready = 1;
+        system_debug_init();
+    }
+
     if (media_gateway_init(&gateway, &config) < 0) {
+        if (shell_ready) {
+            shell_command_server_deinit();
+        }
         return -1;
     }
 
     {
+        if (shell_ready) {
+            shell_command_server_start();
+        }
         int ret = media_gateway_run(&gateway);
         media_gateway_deinit(&gateway);
+        if (shell_ready) {
+            shell_command_server_deinit();
+        }
         return ret;
     }
 }

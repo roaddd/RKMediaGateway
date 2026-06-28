@@ -15,6 +15,8 @@
 extern "C"
 {
 #include "mediaGateway.h"
+#include "shellCommandServer.h"
+#include "systemDebug.h"
 }
 
 /* 打印配置快照 */
@@ -76,6 +78,8 @@ int main(int argc, char **argv)
     MediaGatewayCtx gateway;
     MediaGatewayConfig config;
     const char *config_path = (argc > 1 && argv[1] && argv[1][0] != '\0') ? argv[1] : "media_gateway.conf";
+    int shell_ready = 0;
+    int ret = 0;
 
     def_value_init(config_path);
     def_value_get_media_gateway_config(&config);
@@ -91,12 +95,34 @@ int main(int argc, char **argv)
 
     log_main_config_snapshot(&config);
 
+    if (shell_command_server_init(NULL) == 0)
+    {
+        shell_ready = 1;
+        if (system_debug_init() != 0)
+        {
+            LOG_WARN("system debug init failed");
+        }
+    }
+    else
+    {
+        LOG_WARN("shell command server init failed, runtime shell debug disabled");
+    }
+
     if (media_gateway_init(&gateway, &config) < 0)
     {
+        if (shell_ready)
+            shell_command_server_deinit();
         return -1;
     }
 
-    int ret = media_gateway_run(&gateway);
+    if (shell_ready && shell_command_server_start() != 0)
+    {
+        LOG_WARN("shell command server start failed, runtime shell debug disabled");
+    }
+
+    ret = media_gateway_run(&gateway);
     media_gateway_deinit(&gateway);
+    if (shell_ready)
+        shell_command_server_deinit();
     return ret;
 }

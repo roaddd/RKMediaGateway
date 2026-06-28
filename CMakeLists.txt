@@ -18,13 +18,16 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/debug/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/ispController/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/systemDebug/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/logger/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/defValue/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/util/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/shellCommand/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
@@ -73,12 +76,15 @@ file(GLOB AAC_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/src/*.c)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
+file(GLOB MEDIA_GATEWAY_DEBUG_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/debug/src/*.c)
 file(GLOB MEDIA_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaFrameSource/src/*.c)
 file(GLOB_RECURSE MEDIA_OUTPUT_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/*.c)
 file(GLOB ISP_CONTROLLER_SRC ${PROJECT_SOURCE_DIR}/bussiness/ispController/src/*.c)
 file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
 file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
 file(GLOB THREAD_MESSAGE_QUEUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/src/*.c)
+file(GLOB SHELL_COMMAND_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/shellCommand/src/*.c)
+file(GLOB SYSTEM_DEBUG_SRC ${PROJECT_SOURCE_DIR}/bussiness/systemDebug/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_ALSA_AUDIO "Build ALSA audio capture support" ON)
@@ -261,6 +267,7 @@ endif()
 if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     set(GATEWAY_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
+        ${MEDIA_GATEWAY_DEBUG_SRC}
         ${MEDIA_OUTPUT_SRC}
     )
 
@@ -278,6 +285,8 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
+        ${SHELL_COMMAND_SRC}
+        ${SYSTEM_DEBUG_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -313,6 +322,7 @@ endif()
 if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     set(DUAL_OUTPUT_SRC
         ${MEDIA_GATEWAY_SRC}
+        ${MEDIA_GATEWAY_DEBUG_SRC}
         ${MEDIA_OUTPUT_SRC}
     )
 
@@ -329,6 +339,8 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${ISP_CONTROLLER_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
+        ${SHELL_COMMAND_SRC}
+        ${SYSTEM_DEBUG_SRC}
         ${DUAL_OUTPUT_SRC}
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
@@ -376,8 +388,11 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
+        ${SHELL_COMMAND_SRC}
+        ${SYSTEM_DEBUG_SRC}
         ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}
+        ${MEDIA_GATEWAY_DEBUG_SRC}
     )
     target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     if(ENABLE_RKAIQ)
@@ -421,4 +436,5 @@ message(STATUS "OPENSSL_COMPAT_INCLUDE_DIR=${OPENSSL_COMPAT_INCLUDE_DIR}")
 message(STATUS "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
 message(STATUS "C compiler=${CMAKE_C_COMPILER}")
 
+add_subdirectory(tool)
 add_subdirectory(test)

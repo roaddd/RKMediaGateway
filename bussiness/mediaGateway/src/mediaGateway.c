@@ -13,6 +13,7 @@
 #include "mediaGatewayPolicy.h"
 #include "mediaGatewayProcess.h"
 #include "mediaGatewayStats.h"
+#include "mediaGatewayDebug.h"
 
 #include "audioFrameSource.h"
 #include "mediaControlMessage.h"
@@ -1359,6 +1360,10 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
     }
 
     init_gateway_runtime_stats(ctx);
+
+    /* 初始化调试命令 */
+    if (media_gateway_debug_register_shell_commands(ctx) != 0)
+        LOG_WARN("media_gateway_init warning: register shell commands failed");
     return 0;
 
 fail:
