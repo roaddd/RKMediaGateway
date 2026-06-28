@@ -658,10 +658,8 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
 
     if (output_hit)
     {
-        ctx->stats.frames++;
-        ctx->stats.bytes += h264_len;
-        ctx->stats.stream_frames[stream_idx]++;
-        ctx->stats.stream_bytes[stream_idx] += h264_len;
+        ctx->stats.streams[stream_idx].frames++;
+        ctx->stats.streams[stream_idx].bytes += h264_len;
     }
     media_packet_reset(&packet);
     return 0;
@@ -733,8 +731,8 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
 
     if (output_hit)
     {
-        ctx->stats.audio_frames++;
-        ctx->stats.audio_bytes += audio_len;
+        ctx->stats.audio.frames++;
+        ctx->stats.audio.bytes += audio_len;
     }
     media_packet_reset(&packet);
     return 0;

@@ -19,15 +19,13 @@ static void reset_throughput_window(MediaGatewayCtx *ctx)
 {
     int i;
 
-    ctx->stats.frames = 0;
-    ctx->stats.bytes = 0;
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        ctx->stats.stream_frames[i] = 0;
-        ctx->stats.stream_bytes[i] = 0;
+        ctx->stats.streams[i].frames = 0;
+        ctx->stats.streams[i].bytes = 0;
     }
-    ctx->stats.audio_frames = 0;
-    ctx->stats.audio_bytes = 0;
+    ctx->stats.audio.frames = 0;
+    ctx->stats.audio.bytes = 0;
 }
 
 /**
@@ -186,16 +184,23 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     double span_sec;
     double fps;
     double kbps;
+    uint64_t total_frames = 0;
+    uint64_t total_bytes = 0;
     int i;
 
     if (span_us < (uint64_t)ctx->config.runtime.stats_interval_sec * 1000000ULL)
         return;
 
     span_sec = (double)span_us / 1000000.0;
-    fps = (span_sec > 0.0) ? ((double)ctx->stats.frames / span_sec) : 0.0;
-    kbps = (span_sec > 0.0) ? ((double)ctx->stats.bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+    for (i = 0; i < ctx->config.stream_count; ++i)
+    {
+        total_frames += ctx->stats.streams[i].frames;
+        total_bytes += ctx->stats.streams[i].bytes;
+    }
+    fps = (span_sec > 0.0) ? ((double)total_frames / span_sec) : 0.0;
+    kbps = (span_sec > 0.0) ? ((double)total_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
     LOG_INFO("[STAT] total_fps=%.2f total_bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
-             fps, kbps, ctx->stats.frames, ctx->stats.bytes);
+             fps, kbps, total_frames, total_bytes);
 
     for (i = 0; i < ctx->config.stream_count; ++i)
     {
@@ -203,25 +208,25 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
         double skbps;
         if (!ctx->stream_enabled[i])
             continue;
-        sfps = (span_sec > 0.0) ? ((double)ctx->stats.stream_frames[i] / span_sec) : 0.0;
-        skbps = (span_sec > 0.0) ? ((double)ctx->stats.stream_bytes[i] * 8.0 / 1000.0 / span_sec) : 0.0;
+        sfps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].frames / span_sec) : 0.0;
+        skbps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].bytes * 8.0 / 1000.0 / span_sec) : 0.0;
         LOG_WARN("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  i,
                  ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
                  sfps,
                  skbps,
-                 ctx->stats.stream_frames[i],
-                 ctx->stats.stream_bytes[i]);
+                 ctx->stats.streams[i].frames,
+                 ctx->stats.streams[i].bytes);
     }
     if (ctx->config.audio.enabled)
     {
-        double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio_frames / span_sec) : 0.0;
-        double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+        double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio.frames / span_sec) : 0.0;
+        double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio.bytes * 8.0 / 1000.0 / span_sec) : 0.0;
         LOG_WARN("[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  afps,
                  akbps,
-                 ctx->stats.audio_frames,
-                 ctx->stats.audio_bytes);
+                 ctx->stats.audio.frames,
+                 ctx->stats.audio.bytes);
     }
 
     log_output_stats(ctx);
@@ -237,26 +242,29 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
  * 该接口不会重置统计窗口，只根据当前窗口累计帧数、字节数和
  * last_ts_us 计算即时 fps/bitrate，供外部状态查询或测试程序读取。
  */
-void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *throughput)
+void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSnapshot *snapshot)
 {
     uint64_t now;
     uint64_t span_us;
+    double span_sec = 0.0;
+    int i;
 
-    if (!ctx || !throughput)
+    if (!ctx || !snapshot)
         return;
 
-    memset(throughput, 0, sizeof(*throughput));
+    memset(snapshot, 0, sizeof(*snapshot));
     if (ctx->stats_lock_ready)
         pthread_mutex_lock(&ctx->stats_lock);
     now = media_gateway_get_now_us();
     span_us = now - ctx->stats.last_ts_us;
-    throughput->frames = ctx->stats.frames;
-    throughput->bytes = ctx->stats.bytes;
     if (span_us > 0)
     {
-        double span_sec = (double)span_us / 1000000.0;
-        throughput->fps = (double)ctx->stats.frames / span_sec;
-        throughput->bitrate_kbps = (double)ctx->stats.bytes * 8.0 / 1000.0 / span_sec;
+        span_sec = (double)span_us / 1000000.0;
+    }
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
+        snapshot->streams[i].fps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].frames / span_sec) : 0.0;
+        snapshot->streams[i].bytes = ctx->stats.streams[i].bytes;
     }
     if (ctx->stats_lock_ready)
         pthread_mutex_unlock(&ctx->stats_lock);

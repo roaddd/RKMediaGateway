@@ -191,20 +191,28 @@ typedef struct {
 } MediaGatewayConfig;
 
 typedef struct {
-    double fps;            /* 当前统计窗口内的平均帧率。 */
-    double bitrate_kbps;   /* 当前统计窗口内的平均码率，单位 kbps。 */
-    uint64_t frames;       /* 当前统计窗口内累计处理帧数。 */
-    uint64_t bytes;        /* 当前统计窗口内累计处理字节数。 */
-} MediaGatewayThroughput;
+    uint64_t frames;                                       /* 当前统计窗口内累计视频帧数。 */
+    uint64_t bytes;                                        /* 当前统计窗口内累计视频字节数。 */
+} MediaGatewayStreamStats;
+
+typedef struct {
+    uint64_t frames;                                       /* 当前统计窗口内累计音频帧数。 */
+    uint64_t bytes;                                        /* 当前统计窗口内累计音频字节数。 */
+} MediaGatewayAudioStats;
+
+typedef struct {
+    double fps;                                            /* 当前统计窗口内的平均帧率。 */
+    uint64_t bytes;                                        /* 当前统计窗口内累计视频字节数。 */
+} MediaGatewayStreamStatsSnapshot;
+
+typedef struct {
+    MediaGatewayStreamStatsSnapshot streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流当前统计窗口快照。 */
+} MediaGatewayStatsSnapshot;
 
 typedef struct {
     uint64_t last_ts_us;                                   /* 上次吞吐统计输出时间戳。 */
-    uint64_t frames;                                       /* 当前统计窗口内累计视频帧数。 */
-    uint64_t bytes;                                        /* 当前统计窗口内累计视频字节数。 */
-    uint64_t stream_frames[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流窗口内累计视频帧数。 */
-    uint64_t stream_bytes[MEDIA_GATEWAY_MAX_STREAMS];      /* 各码流窗口内累计视频字节数。 */
-    uint64_t audio_frames;                                 /* 当前统计窗口内累计音频帧数。 */
-    uint64_t audio_bytes;                                  /* 当前统计窗口内累计音频字节数。 */
+    MediaGatewayStreamStats streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流当前统计窗口。 */
+    MediaGatewayAudioStats audio;                          /* 音频当前统计窗口。 */
 } MediaGatewayStats;
 
 typedef struct {
@@ -313,9 +321,9 @@ void media_gateway_stop(MediaGatewayCtx *ctx);
 void media_gateway_deinit(MediaGatewayCtx *ctx);
 
 /**
- * @description: 读取当前吞吐统计窗口的估算值。
+ * @description: 读取当前统计窗口快照。
  */
-void media_gateway_get_throughput(MediaGatewayCtx *ctx, MediaGatewayThroughput *throughput);
+void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSnapshot *snapshot);
 
 #ifdef __cplusplus
 }

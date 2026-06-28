@@ -1077,7 +1077,10 @@ static int init_gateway_isp(MediaGatewayCtx *ctx)
     int source_idx = 0;
 
     if (!ctx->config.isp.enabled)
+    {
+        LOGWARN("[ISP] disabled in config; gateway continues with plain V4L2 capture");
         return 0;
+    }
 
     isp_config.lifecycle.enabled = ctx->config.isp.enabled;
     isp_config.sensor.sensor_name = ctx->config.isp.sensor_name;

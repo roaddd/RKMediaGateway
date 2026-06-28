@@ -14,12 +14,12 @@
  * @description: 处理 getStatus 调试命令，输出 gateway 主状态。
  *
  * 该命令用于快速确认主循环、采集源、编码器、输出链路和吞吐窗口的当前值。
- * 读取过程不改变业务状态，吞吐统计通过 media_gateway_get_throughput 内部锁保护。
+ * 读取过程不改变业务状态，码流统计通过 media_gateway_get_stats_snapshot 内部锁保护。
  */
 static int gateway_shell_get_status(void *user_data, const char *input, char *output)
 {
     MediaGatewayCtx *ctx = NULL;
-    MediaGatewayThroughput throughput = {0};
+    MediaGatewayStatsSnapshot stats_snapshot = {0};
     char *reply = NULL;
     size_t offset = 0;
     int i = 0;
@@ -36,7 +36,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     ctx = (MediaGatewayCtx *)user_data;
     reply = output;
     reply[0] = '\0';
-    media_gateway_get_throughput(ctx, &throughput);
+    media_gateway_get_stats_snapshot(ctx, &stats_snapshot);
 
     shell_command_reply_append(reply, &offset, "cmd=getStatus\n");
     shell_command_reply_append(reply, &offset, "running=%d\n", ctx->running);
@@ -47,11 +47,6 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     shell_command_reply_append(reply, &offset, "audio_enabled=%d\n", ctx->config.audio.enabled);
     shell_command_reply_append(reply, &offset, "audio_capture_ready=%d\n", ctx->audio_capture_ready);
     shell_command_reply_append(reply, &offset, "audio_encoder_ready=%d\n", ctx->audio_encoder_ready);
-    shell_command_reply_append(reply, &offset, "throughput_fps=%.2f\n", throughput.fps);
-    shell_command_reply_append(reply, &offset, "throughput_bitrate_kbps=%.2f\n", throughput.bitrate_kbps);
-    shell_command_reply_append(reply, &offset, "throughput_frames=%" PRIu64 "\n", throughput.frames);
-    shell_command_reply_append(reply, &offset, "throughput_bytes=%" PRIu64 "\n", throughput.bytes);
-
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
     {
         shell_command_reply_append(reply, &offset, "capture%d_ready=%d\n", i, ctx->capture_ready[i]);
@@ -60,6 +55,8 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     {
         shell_command_reply_append(reply, &offset, "stream%d_enabled=%d\n", i, ctx->stream_enabled[i]);
         shell_command_reply_append(reply, &offset, "encoder%d_ready=%d\n", i, ctx->encoder_ready[i]);
+        shell_command_reply_append(reply, &offset, "stream%d_fps=%.2f\n", i, stats_snapshot.streams[i].fps);
+        shell_command_reply_append(reply, &offset, "stream%d_bytes=%" PRIu64 "\n", i, stats_snapshot.streams[i].bytes);
     }
 
     return 0;
