@@ -49,11 +49,11 @@ static const char *log_basename(const char *path) {
 
 static const char *log_level_name(LogLevel level) {
     switch (level) {
-        case LOG_LEVEL_DEBUG: return "DEBUG";
-        case LOG_LEVEL_INFO: return "INFO";
-        case LOG_LEVEL_WARN: return "WARN";
-        case LOG_LEVEL_ERROR: return "ERROR";
-        default: return "UNKNOWN";
+        case LOG_LEVEL_DEBUG: return "D";
+        case LOG_LEVEL_INFO: return "I";
+        case LOG_LEVEL_WARN: return "W";
+        case LOG_LEVEL_ERROR: return "E";
+        default: return "?";
     }
 }
 

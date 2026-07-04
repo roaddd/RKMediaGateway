@@ -85,20 +85,20 @@ static int dynamic_fps_ae_is_bright(const DynamicFrameRateConfig *cfg, const Isp
  */
 static int dynamic_fps_ae_is_low_light(const DynamicFrameRateConfig *cfg,
                                        const IspControllerAeStatus *ae,
-                                       int current_fps)
+                                       int reference_fps)
 {
     float exposure_us = 0;
     float frame_period_us = 0;
     int exposure_near_limit = 0;
 
-    if (!cfg || !ae || !ae->valid || current_fps <= 0)
+    if (!cfg || !ae || !ae->valid || reference_fps <= 0)
     {
-        LOG_ERROR("[DYNAMIC_FPS] ae is invalid or current_fps <= 0, skipping low_light check");
+        LOG_ERROR("[DYNAMIC_FPS] ae is invalid or reference_fps <= 0, skipping low_light check");
         return 0;
     }
 
     exposure_us = ae_exposure_us(ae); /* 将曝光时间转换为微秒 */
-    frame_period_us = 1000000.0f / (float)current_fps; /* 帧周期，单位微秒 */
+    frame_period_us = 1000000.0f / (float)reference_fps; /* 帧周期，单位微秒 */
     /* exp_max 为 ISP 明确给出的曝光上限标志；没有该标志时用曝光/帧周期比例兜底判断。 */
     exposure_near_limit = ae->exp_max ||
                           (exposure_us > 0.0f &&
@@ -176,7 +176,12 @@ void media_gateway_update_runtime_policies_if_due(MediaGatewayCtx *ctx)
         if (ae_valid)
         {
             /* 判断是否为低照度状态。 */
-            low_light_active = dynamic_fps_ae_is_low_light(cfg, &isp_status.ae, state->current_fps);
+            /*
+             * 低照判断使用 normal_fps 对应的帧周期作为参考基线。
+             * 如果使用 current_fps，30fps 切到 15fps 后帧周期变长，同样的曝光时间会被误判为
+             * 未接近曝光上限，导致 min_switch_interval_ms 到期后又切回 30fps。
+             */
+            low_light_active = dynamic_fps_ae_is_low_light(cfg, &isp_status.ae, cfg->targets.normal_fps);
             /* 判断是否为亮光状态。 */
             bright_active = dynamic_fps_ae_is_bright(cfg, &isp_status.ae);
         }
