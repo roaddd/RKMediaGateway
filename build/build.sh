@@ -19,6 +19,7 @@ BUILD_DIR=${PROJECT_ROOT}/build/output
 TOOLCHAIN_FILE=${PROJECT_ROOT}/build/rk3568.cmake
 RK3568_TOOLCHAIN_ROOT=/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/prebuilts/gcc/linux-x86/aarch64/gcc-buildroot-9.3.0-2020.03-x86_64_aarch64-rockchip-linux-gnu
 RK3568_TOOLCHAIN_HOST_LIB=${RK3568_TOOLCHAIN_ROOT}/lib
+RK3568_KERNEL_UAPI_INCLUDE_DIR=${RK3568_KERNEL_UAPI_INCLUDE_DIR:-/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/kernel/include/uapi}
 
 BUILD_TARGET=${1:-"all"}
 BUILD_TYPE=${2:-"Release"}
@@ -44,9 +45,10 @@ cmake_cmd="cmake ${PROJECT_ROOT} -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TARGET
 
 if [ "${CROSS_COMPILE}" = "ON" ]; then
     export LD_LIBRARY_PATH=${RK3568_TOOLCHAIN_HOST_LIB}:${LD_LIBRARY_PATH}
-    cmake_cmd="${cmake_cmd} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE}"
+    cmake_cmd="${cmake_cmd} -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE} -DRK3568_KERNEL_UAPI_INCLUDE_DIR=${RK3568_KERNEL_UAPI_INCLUDE_DIR}"
     echo -e "${YELLOW}Cross compile enabled with RK3568 toolchain${NC}"
     echo "Toolchain host library path: ${RK3568_TOOLCHAIN_HOST_LIB}"
+    echo "Kernel UAPI include path: ${RK3568_KERNEL_UAPI_INCLUDE_DIR}"
 else
     cmake_cmd="${cmake_cmd} -DCMAKE_TOOLCHAIN_FILE=''"
     echo -e "${YELLOW}Using host compiler${NC}"

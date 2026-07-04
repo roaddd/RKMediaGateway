@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/videodev2.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -55,6 +56,8 @@ typedef struct {
 } V4L2CaptureFormat;
 
 struct V4L2CaptureCtx {
+    char device_path[PATH_MAX];        /* 当前采集 video node，例如 /dev/video0。 */
+    char sensor_subdev_path[PATH_MAX]; /* 绑定的 sensor subdev，例如 /dev/v4l-subdev3。 */
     int fd;                 /* 摄像头设备文件描述符。 */
     void *buf[V4L2_CAPTURE_BUFFER_COUNT]; /* 驱动 mmap 出来的采集缓冲区地址。 */
     int buf_len[V4L2_CAPTURE_BUFFER_COUNT]; /* 每个采集缓冲区的长度。 */

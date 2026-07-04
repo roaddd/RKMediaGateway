@@ -1078,7 +1078,7 @@ static int init_gateway_isp(MediaGatewayCtx *ctx)
 
     if (!ctx->config.isp.enabled)
     {
-        LOGWARN("[ISP] disabled in config; gateway continues with plain V4L2 capture");
+        LOG_WARN("[ISP] disabled in config; gateway continues with plain V4L2 capture");
         return 0;
     }
 
