@@ -3,7 +3,6 @@
 set(TOOLCHAIN_PATH "/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/prebuilts/gcc/linux-x86/aarch64/gcc-buildroot-9.3.0-2020.03-x86_64_aarch64-rockchip-linux-gnu/bin" CACHE PATH "RK3568 cross compiler bin path")
 set(CROSS_COMPILE_PREFIX "aarch64-rockchip-linux-gnu-" CACHE STRING "RK3568 cross compiler prefix")
 set(RK3568_SYSROOT "/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/buildroot/output/rockchip_rk3568/host/aarch64-buildroot-linux-gnu/sysroot" CACHE PATH "RK3568 target sysroot path")
-set(RK3568_KERNEL_UAPI_INCLUDE_DIR "/home/topeet/source_code/linux/rk356x_linux/rk356x_linux/kernel/include/uapi" CACHE PATH "RK3568 kernel UAPI include path")
 
 # 设置目标系统为 Linux
 set(CMAKE_SYSTEM_NAME Linux)
