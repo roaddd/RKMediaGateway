@@ -128,7 +128,7 @@ static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket
 
     frame.data = (uint8_t *)packet->buffer->data;
     frame.data_len = (int)packet->buffer->size;
-    frame.pts_us = packet->pts_us;
+    frame.pts_us = packet->pts_us; /* 这个pts_us是DBUF的时间，rtp_ts = pts_us * 90000ULL / 1000000ULL; */
     if (sessionSendAudioFrame(impl->session, &frame) < 0) {
         LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioFrame size=%zu frame=%" PRIu64,
                   packet->buffer->size,

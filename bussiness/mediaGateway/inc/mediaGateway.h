@@ -259,6 +259,7 @@ typedef struct {
     uint64_t last_switch_ts_us;                           /* 上次目标帧率切换时间。 */
     int pending_fps;                                      /* AE 候选目标帧率。 */
     uint64_t pending_since_ts_us;                         /* AE 候选目标开始持续时间。 */
+    int manual_override;                                  /* shell 手动固定帧率标志；置 1 时暂停 AE 自动动态帧率策略。 */
     char reason[128];                                     /* 最近一次策略决策原因。 */
 } MediaGatewayDynamicFpsState;
 

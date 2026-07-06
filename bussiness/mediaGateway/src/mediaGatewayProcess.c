@@ -632,7 +632,15 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.codec = MEDIA_CODEC_H264;
     packet.buffer = buffer;
     packet.frame_id = frame->frame_id;
+    /*
+     * MediaPacket 的 PTS/DTS 是输出层媒体时间戳，单位是微秒。
+     * 这里使用 V4L2 DQBUF 的驱动时间戳，后续 RTSP 会将 pts_us 换算成 RTP timestamp，
+     * 播放端依赖它判断播放节奏、帧顺序和音视频同步。
+     */
     packet.pts_us = frame->dqbuf_ts_us;
+    /*
+     * 当前 H264 编码链路不使用 B 帧，编码顺序和显示顺序一致，因此 DTS 与 PTS 相同。
+     */
     packet.dts_us = frame->dqbuf_ts_us;
     packet.path_metrics.enqueue_ts_us = media_gateway_get_now_us();
     packet.path_metrics.dqbuf_to_encode_start_us = (encode_start_ts_us >= frame->dqbuf_ts_us)

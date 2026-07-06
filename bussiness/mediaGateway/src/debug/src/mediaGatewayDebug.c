@@ -8,7 +8,11 @@
 #include "logger.h"
 #include "shellCommandServer.h"
 
+#include <errno.h>
 #include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 /**
  * @description: 处理 getStatus 调试命令，输出 gateway 主状态。
@@ -91,6 +95,7 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
 
     shell_command_reply_append(reply, &offset, "cmd=getFps\n");
     shell_command_reply_append(reply, &offset, "dynamic_fps_enabled=%d\n", ctx->config.dynamic_fps.enabled);
+    shell_command_reply_append(reply, &offset, "manual_override=%d\n", state->manual_override);
     shell_command_reply_append(reply, &offset, "current_fps=%d\n", state->current_fps);
     shell_command_reply_append(reply, &offset, "target_fps=%d\n", state->target_fps);
     shell_command_reply_append(reply, &offset, "pending_fps=%d\n", state->pending_fps);
@@ -100,6 +105,141 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
     shell_command_reply_append(reply, &offset, "last_switch_ms=%" PRIu64 "\n", state->last_switch_ts_us / 1000ULL);
     shell_command_reply_append(reply, &offset, "reason=%s\n", state->reason);
 
+    return 0;
+}
+
+/**
+ * @description: 处理 setFps 调试命令，手动固定或恢复自动动态帧率。
+ *
+ * 用法：
+ * setFps 15/30/60  手动固定目标帧率，复用 gateway 的 Sensor -> Encoder 异步切换链路。
+ * setFps auto      取消手动覆盖，恢复 AE 自动动态帧率策略。
+ */
+static int gateway_shell_set_fps(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaGatewayDynamicFpsState *state = NULL;
+    char *reply = NULL;
+    char *end = NULL;
+    size_t offset = 0;
+    long fps_value = 0;
+    int target_fps = 0;
+
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    state = &ctx->dynamic_fps_state;
+    reply = output;
+    reply[0] = '\0';
+    shell_command_reply_append(reply, &offset, "cmd=setFps\n");
+
+    if (!input || input[0] == '\0')
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: missing input");
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=missing fps input\n");
+        shell_command_reply_append(reply, &offset, "usage=setFps <15|30|60|auto>\n");
+        return -1;
+    }
+
+    if (strcmp(input, "auto") == 0)
+    {
+        if (!state->manual_override)
+        {
+            LOG_WARN("[DYNAMIC_FPS] manual override already disabled by shell current=%d target=%d",
+                     state->current_fps,
+                     state->target_fps);
+        }
+        state->manual_override = 0;
+        state->pending_fps = 0;
+        state->pending_since_ts_us = 0;
+        snprintf(state->reason, sizeof(state->reason), "%s", "manual override disabled");
+        LOG_WARN("[DYNAMIC_FPS] manual override disabled by shell current=%d target=%d",
+                 state->current_fps,
+                 state->target_fps);
+        shell_command_reply_append(reply, &offset, "ret=0\n");
+        shell_command_reply_append(reply, &offset, "manual_override=0\n");
+        shell_command_reply_append(reply, &offset, "current_fps=%d\n", state->current_fps);
+        shell_command_reply_append(reply, &offset, "target_fps=%d\n", state->target_fps);
+        return 0;
+    }
+
+    errno = 0;
+    fps_value = strtol(input, &end, 10);
+    if (errno != 0 || end == input || (end && end[0] != '\0'))
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: invalid fps input='%s' errno=%d",
+                  input,
+                  errno);
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=invalid fps input\n");
+        shell_command_reply_append(reply, &offset, "usage=setFps <15|30|60|auto>\n");
+        return -1;
+    }
+
+    if (fps_value != 15 && fps_value != 30 && fps_value != 60)
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: unsupported fps=%ld", fps_value);
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=unsupported fps %ld\n", fps_value);
+        shell_command_reply_append(reply, &offset, "supported=15,30,60\n");
+        return -1;
+    }
+
+    target_fps = (int)fps_value;
+    if (!ctx->running)
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: gateway not running target=%d current=%d",
+                  target_fps,
+                  state->current_fps);
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=gateway not running\n");
+        return -1;
+    }
+    if (!ctx->capture_ready[0])
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: capture source 0 not ready target=%d", target_fps);
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=capture source 0 not ready\n");
+        return -1;
+    }
+    if (!ctx->config.dynamic_fps.enabled)
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: dynamic_fps disabled, async fps transition is not driven target=%d",
+                  target_fps);
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=dynamic_fps disabled\n");
+        shell_command_reply_append(reply, &offset, "hint=enable dynamic_fps or extend transition driver for manual mode\n");
+        return -1;
+    }
+
+    if (target_fps == state->current_fps)
+    {
+        LOG_WARN("[DYNAMIC_FPS] manual override target equals current fps current=%d target=%d",
+                 state->current_fps,
+                 target_fps);
+    }
+
+    state->manual_override = 1;
+    state->target_fps = target_fps;
+    state->pending_fps = target_fps;
+    state->pending_since_ts_us = 0;
+    snprintf(state->reason, sizeof(state->reason), "manual shell target fps=%d", target_fps);
+    LOG_WARN("[DYNAMIC_FPS] manual override target set by shell current=%d target=%d",
+             state->current_fps,
+             state->target_fps);
+
+    shell_command_reply_append(reply, &offset, "ret=0\n");
+    shell_command_reply_append(reply, &offset, "manual_override=1\n");
+    shell_command_reply_append(reply, &offset, "current_fps=%d\n", state->current_fps);
+    shell_command_reply_append(reply, &offset, "target_fps=%d\n", state->target_fps);
+    shell_command_reply_append(reply, &offset, "note=async transition will be executed by gateway main loop\n");
     return 0;
 }
 
@@ -187,6 +327,11 @@ int media_gateway_debug_register_shell_commands(MediaGatewayCtx *ctx)
     if (regShellCmd("getFps", gateway_shell_get_fps, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd getFps");
+        return -1;
+    }
+    if (regShellCmd("setFps", gateway_shell_set_fps, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd setFps");
         return -1;
     }
     if (regShellCmd("getIsp", gateway_shell_get_isp, ctx) != 0)

@@ -397,6 +397,10 @@ int mpp_encoder_encode_frame(MppEncoderCtx *enc,
 
 
     /* 这里是设置该帧的PTS吗，为啥每次加一呢，PTS不是显示时间吗 */
+    /*
+     * MPP 输入帧 PTS 只用于编码器内部标记输入顺序。
+     * 当前这里使用 0、1、2... 的递增帧序号，不是微秒时间戳，也不直接传给 RTSP 播放端。
+     */
     mpp_frame_set_pts(enc->input.frame, enc->runtime.pts++);
     stage_start_us = get_now_us();
     MPP_RET ret = enc->mpp.mpi->encode_put_frame(enc->mpp.ctx, enc->input.frame);
@@ -592,6 +596,10 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
             LOG_WARN("mpp_encoder_encode_dmabuf: periodic IDR request failed");
     }
     if (encode_start_ts_us) *encode_start_ts_us = get_now_us();
+    /*
+     * MPP 输入帧 PTS 只用于编码器内部标记输入顺序。
+     * 当前这里使用 0、1、2... 的递增帧序号，不是微秒时间戳，也不直接传给 RTSP 播放端。
+     */
     mpp_frame_set_pts(enc->input.frame, enc->runtime.pts++);
     /* 提交外部 DMA-BUF frame；该阶段不再统计 encoder_input_buffer_copy_us。 */
     stage_start_us = get_now_us();

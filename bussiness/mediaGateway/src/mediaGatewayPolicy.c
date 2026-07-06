@@ -154,12 +154,20 @@ void media_gateway_update_runtime_policies_if_due(MediaGatewayCtx *ctx)
 
     if (!ctx || !ctx->config.dynamic_fps.enabled)
     {
-        LOG_DEBUG("[DYNAMIC_FPS] ctx is null or dynamic_fps disabled, skipping policy update");
+        LOG_ERROR("[DYNAMIC_FPS] ctx is null or dynamic_fps disabled, skipping policy update");
         return;
     }
 
     cfg = &ctx->config.dynamic_fps;
     state = &ctx->dynamic_fps_state;
+    if (state->manual_override)
+    {
+        LOG_DEBUG("[DYNAMIC_FPS] manual override enabled, skipping AE policy update target=%d current=%d",
+                  state->target_fps,
+                  state->current_fps);
+        return;
+    }
+
     now_us = policy_now_us();
     /* 限制策略评估频率，避免每帧查询 ISP 和重复触发切换判断。 */
     if (state->last_evaluate_ts_us > 0 &&
