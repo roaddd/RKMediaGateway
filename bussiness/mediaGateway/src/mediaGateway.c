@@ -143,22 +143,102 @@ static int adaptive_effective_target_fps(MediaGatewayCtx *ctx)
 }
 
 /**
+ * @brief 比较两个非空字符串是否相等。
+ */
+static int media_gateway_string_equal(const char *left, const char *right)
+{
+    if (!left || !right)
+        return 0;
+    if (left[0] == '\0' || right[0] == '\0')
+        return 0;
+    return strcmp(left, right) == 0;
+}
+
+/**
+ * @brief 根据输出层上报的 sessionName/outputName 找到对应的码流下标。
+ *
+ * RTSP 反馈优先使用 session_name 匹配，因为主码流和子码流可能共用同一
+ * RTSP server，但 URL session 必须不同；output_name 作为辅助校验，便于
+ * 后续接入其他协议反馈时复用这条查找链路。
+ */
+static int media_gateway_find_feedback_stream_index(MediaGatewayCtx *ctx,
+                                                    const MediaOutputNetFeedbackInfo *feedback)
+{
+    MediaGatewayStreamConfig *stream = NULL;
+    MediaOutput *output = NULL;
+    int stream_idx = 0;
+    int output_idx = 0;
+    int mapped_stream_idx = -1;
+    int session_matched = 0;
+    int output_matched = 0;
+    int has_session_name = 0;
+
+    if (!ctx || !feedback)
+        return -1;
+    has_session_name = feedback->session_name && feedback->session_name[0] != '\0';
+
+    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count &&
+                         stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_idx)
+    {
+        stream = &ctx->config.video.streams[stream_idx];
+        if (!stream->enabled)
+            continue;
+        session_matched = media_gateway_string_equal(feedback->session_name,
+                                                     stream->rtsp.session_name);
+        if (session_matched)
+            return stream_idx;
+    }
+    if (feedback->output_type == MEDIA_OUTPUT_TYPE_RTSP && has_session_name)
+        return -1;
+
+    for (output_idx = 0; output_idx < ctx->output_count &&
+                         output_idx < MEDIA_GATEWAY_MAX_OUTPUTS;
+         ++output_idx)
+    {
+        output = &ctx->outputs[output_idx];
+        output_matched = media_gateway_string_equal(feedback->output_name,
+                                                    output->config.name);
+        if (!output_matched)
+            continue;
+        mapped_stream_idx = ctx->output_stream_index[output_idx];
+        if (mapped_stream_idx >= 0 && mapped_stream_idx < MEDIA_GATEWAY_MAX_STREAMS)
+            return mapped_stream_idx;
+    }
+
+    return -1;
+}
+
+/**
  * @brief 接收输出层上报的网络反馈。
- * RTSP output 将 RTCP RR 转换为统一反馈结构后调用本函数，gateway 只缓存指标。
+ * RTSP output 将 RTCP RR 转换为统一反馈结构后调用本函数，gateway 按码流缓存指标。
  */
 static void media_gateway_handle_output_network_feedback(const MediaOutputNetFeedbackInfo *feedback,
                                                          void *userdata)
 {
     MediaGatewayCtx *ctx = (MediaGatewayCtx *)userdata;
+    MediaAdaptNetworkState *network = NULL;
+    int stream_idx = -1;
 
     if (!ctx || !feedback || feedback->is_audio)
         return;
+    stream_idx = media_gateway_find_feedback_stream_index(ctx, feedback);
+    if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_WARN("[ADAPTIVE_CONTROL] ignore network feedback: output=%s session=%s client=%s",
+                 feedback->output_name ? feedback->output_name : "unknown",
+                 feedback->session_name ? feedback->session_name : "unknown",
+                 feedback->client_ip ? feedback->client_ip : "unknown");
+        return;
+    }
+
+    network = &ctx->adaptive_policy_state.stream_network[stream_idx];
     if (ctx->stats_lock_ready)
         pthread_mutex_lock(&ctx->stats_lock);
-    ctx->adaptive_policy_state.network.rtcp_fraction_lost = feedback->fraction_lost;
-    ctx->adaptive_policy_state.network.rtcp_jitter = feedback->jitter;
-    ctx->adaptive_policy_state.network.rtcp_rtt_ms = feedback->rtt_ms;
-    ctx->adaptive_policy_state.network.last_rtcp_feedback_ts_us = media_gateway_get_now_us();
+    network->rtcp_fraction_lost = feedback->fraction_lost;
+    network->rtcp_jitter = feedback->jitter;
+    network->rtcp_rtt_ms = feedback->rtt_ms;
+    network->last_rtcp_feedback_ts_us = media_gateway_get_now_us();
     if (ctx->stats_lock_ready)
         pthread_mutex_unlock(&ctx->stats_lock);
 }
@@ -2586,8 +2666,6 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     memset(&ctx->config, 0, sizeof(ctx->config));
     ctx->running = 0;
 }
-
-
 
 
 

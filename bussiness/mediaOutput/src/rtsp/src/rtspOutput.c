@@ -187,7 +187,9 @@ static void rtsp_output_handle_rtcp_report(const RtspRtcpReceiverReport *report,
     MediaOutputNetFeedbackInfo feedback = {0};
 
     (void)userdata;
-    if (!report) {
+    if (!report) 
+    {
+        LOG_ERROR("rtsp_output_handle_rtcp_report failed: report is NULL");
         return;
     }
     pthread_mutex_lock(&g_rtsp_feedback_lock);

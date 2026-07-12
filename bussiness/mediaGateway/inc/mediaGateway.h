@@ -347,7 +347,7 @@ typedef struct {
 
 typedef struct {
     int target_fps;               /* min(scene.max_fps, network.max_fps) 后的最终帧率。 */
-    int pacing_rate_bps;          /* 根据最终码率和网络状态计算出的 pacing rate。 */
+    int pacing_rate_bps[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路码流根据目标码率和网络状态计算出的 pacing rate。 */
     uint64_t last_decision_ts_us; /* 最近一次统一控制器决策时间。 */
     char reason[160];             /* 最近一次统一控制器决策原因。 */
 } MediaAdaptOutputState;
@@ -359,7 +359,8 @@ typedef struct {
 
 typedef struct {
     MediaAdaptSceneState scene;          /* 场景侧约束状态。 */
-    MediaAdaptNetworkState network;      /* 网络反馈和网络侧约束状态。 */
+    MediaAdaptNetworkState stream_network[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路码流独立的网络反馈和网络侧约束状态。 */
+    MediaAdaptNetworkState aggregate_network; /* 多路码流融合后的网络约束状态，用于统一 fps 决策和日志；单 sensor 下如需主/子码流不同帧率，应在编码/输出前增加按流抽帧。 */
     MediaAdaptOutputState output;        /* 联合控制最终输出状态。 */
     MediaAdaptEncodeParamsState encode_params; /* 每路编码器基准参数和目标参数。 */
 } MediaAdaptCtrlState;
