@@ -1,4 +1,4 @@
-﻿#ifndef __MPP_ENCODER_H__
+#ifndef __MPP_ENCODER_H__
 #define __MPP_ENCODER_H__
 
 #include <stddef.h>
@@ -6,6 +6,7 @@
 
 #include "rk_mpi.h"
 #include "rk_venc_rc.h"
+#include "mediaControlMessage.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,8 +78,8 @@ typedef struct {
 } MppEncoderQpValues;
 
 typedef struct {
-    MppEncoderQpValues base;    /* 初始化时的 QP 基线，用于低光 FIXQP profile 退出后恢复。 */
-    MppEncoderQpValues current; /* 当前下发到 MPP 的 QP profile。 */
+    MppEncoderQpValues base;    /* 初始化时的 QP 基线，用于低光 FIXQP 参数退出后恢复。 */
+    MppEncoderQpValues current; /* 当前下发到 MPP 的 QP 参数。 */
 } MppEncoderQpState;
 
 typedef struct {
@@ -94,7 +95,7 @@ typedef struct {
     MppEncoderMppObjects mpp;    /* MPP 上下文、接口表和配置对象。 */
     MppEncoderInputFrame input;  /* 输入帧 buffer、MppFrame 和几何信息。 */
     MppEncoderRcState rc;        /* 码控模式、目标码率、帧率和 GOP。 */
-    MppEncoderQpState qp;        /* FIXQP/码控 QP 基线和当前 profile。 */
+    MppEncoderQpState qp;        /* FIXQP/码控 QP 基线和当前参数。 */
     MppEncoderRuntimeState runtime; /* 编码运行时状态，例如递增 PTS。 */
     MppEncoderOutputCache output;   /* 编码输出缓存。 */
 } MppEncoderCtx;
@@ -181,7 +182,14 @@ int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate);
 int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps);
 
 /*
- * 运行时更新 FIXQP 相关 QP profile。
+ * 运行时应用完整视频编码档位。
+ * 用于动态帧率切换时同步更新 fps、码率、GOP、RC 和 QP 参数。
+ * H.264 profile/level 属于编码器能力边界，应在初始化时按最高档位配置。
+ */
+int mpp_encoder_apply_video_encode_params(MppEncoderCtx *enc, const MediaVideoEncodeParams *params);
+
+/*
+ * 运行时更新 FIXQP 相关 QP 参数。
  * qp_delta 以初始化时的 QP 配置为基线，负数降低 QP 提升画质，0 恢复基线。
  * 该接口主要用于低照度策略在 FIXQP 模式下的兼容联动。
  */

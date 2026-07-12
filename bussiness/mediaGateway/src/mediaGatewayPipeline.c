@@ -682,6 +682,7 @@ static void video_worker_publish_command_result(MediaGatewayPipeline *pipeline,
     result.status = status;
     result.data = (void *)data;
     result.data_size = data_size;
+    /* 将结果发送到主循环的统一结果队列 */
     push_ret = thread_message_queue_push_copy(pipeline->result_queue, &result);
     if (push_ret != 0)
     {
@@ -730,7 +731,64 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
          * 流配置由所属编码线程更新，避免 gateway 主循环与编码线程并发
          * 读写同一路 stream 配置。
          */
-        pipeline->ctx->config.streams[stream_idx].fps = request->target_fps;
+        pipeline->ctx->config.video.streams[stream_idx].fps = request->target_fps;
+        ret = mpp_encoder_request_idr(&pipeline->ctx->encoders[stream_idx]);
+    }
+    video_worker_publish_command_result(pipeline,
+                                        stream_idx,
+                                        command,
+                                        ret,
+                                        &result,
+                                        sizeof(result));
+}
+
+/**
+ * @brief 在编码线程中执行完整视频编码运行参数命令。
+ * 该命令用于联合控制输出，避免只改 fps 而遗漏码率、GOP、RC 和 QP。
+ */
+static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *pipeline,
+                                                   int stream_idx,
+                                                   const ThreadMessage *command)
+{
+    const MediaSetVideoEncodeParamsRequest *request = NULL;
+    MediaSetVideoEncodeParamsResult result = {0};
+    MediaGatewayStreamConfig *stream = NULL;
+    int ret = -1;
+
+    if (!pipeline || !command ||
+        command->data_size != sizeof(MediaSetVideoEncodeParamsRequest) ||
+        !command->data)
+    {
+        LOG_ERROR("video_worker_execute_set_video_encode_params failed: pipeline=%p command=%p stream=%d data=%p data_size=%zu expected=%zu",
+                  (void *)pipeline,
+                  (const void *)command,
+                  stream_idx,
+                  command ? command->data : NULL,
+                  command ? command->data_size : 0,
+                  sizeof(MediaSetVideoEncodeParamsRequest));
+        if (pipeline && command)
+            video_worker_publish_command_result(pipeline, stream_idx, command, -1, NULL, 0);
+        return;
+    }
+
+    request = (const MediaSetVideoEncodeParamsRequest *)command->data;
+    result.requested_params = request->params;
+    ret = mpp_encoder_apply_video_encode_params(&pipeline->ctx->encoders[stream_idx],
+                                                &request->params);
+    if (ret == 0)
+    {
+        result.applied_params = request->params;
+        stream = &pipeline->ctx->config.video.streams[stream_idx];
+        stream->fps = request->params.fps;
+        stream->bitrate = request->params.bitrate;
+        stream->gop = request->params.gop;
+        stream->rc_mode = request->params.rc_mode;
+        stream->qp_init = request->params.qp_init;
+        stream->qp_min = request->params.qp_min;
+        stream->qp_max = request->params.qp_max;
+        stream->qp_min_i = request->params.qp_min_i;
+        stream->qp_max_i = request->params.qp_max_i;
+        stream->qp_max_step = request->params.qp_max_step;
         ret = mpp_encoder_request_idr(&pipeline->ctx->encoders[stream_idx]);
     }
     video_worker_publish_command_result(pipeline,
@@ -760,9 +818,10 @@ static void video_worker_process_commands(MediaGatewayPipeline *pipeline,
         return;
     }
 
-    worker = &pipeline->video.workers[stream_idx];
+    worker = &pipeline->video.workers[stream_idx]; /* 编码线程运行期资源 */
     while (processed < VIDEO_COMMAND_QUEUE_CAPACITY)
     {
+        /* 从控制命令队列中尝试弹出一条命令 */
         pop_ret = thread_message_queue_try_pop(&worker->command_queue, &command);
         if (pop_ret < 0)
         {
@@ -779,7 +838,12 @@ static void video_worker_process_commands(MediaGatewayPipeline *pipeline,
         switch (command.type)
         {
         case MEDIA_CONTROL_MESSAGE_SET_FPS:
+            /* 改变帧率 */
             video_worker_execute_set_fps(pipeline, stream_idx, &command);
+            break;
+        case MEDIA_CONTROL_MESSAGE_SET_VIDEO_ENCODE_PARAMS:
+            /* 应用联合控制输出的完整编码运行参数。 */
+            video_worker_execute_set_video_encode_params(pipeline, stream_idx, &command);
             break;
         default:
             LOG_WARN("video worker ignored unknown command type=%u stream=%d",
@@ -822,7 +886,7 @@ static void *video_encode_thread_main(void *arg)
         return NULL;
     }
 
-    pipeline_set_thread_name("enc-", pipeline->ctx->config.streams[stream_idx].name, stream_idx);
+    pipeline_set_thread_name("enc-", pipeline->ctx->config.video.streams[stream_idx].name, stream_idx);
     free(thread_arg);
     while (pipeline->ctx->running)
     {
@@ -933,7 +997,9 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
         return -1;
     }
     pipeline->ret_lock_ready = 1;
-    for (i = 0; i < ctx->config.stream_count; ++i)
+
+    /* 初始化单路视频编码 worker 的输入缓存和控制命令队列 */
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
         if (!ctx->stream_enabled[i])
             continue;
@@ -943,9 +1009,11 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
             return -1;
         }
     }
-    if (ctx->config.audio.enabled && ctx->audio_capture_ready)
+
+    /* 初始化音频编码前的队列 */
+    if (ctx->config.audio.source.source.enabled && ctx->audio_capture_ready)
     {
-        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source_slots) != 0)
+        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.source.source_slots) != 0)
         {
             LOG_ERROR("pipeline init failed: audio queue");
             return -1;
@@ -1017,7 +1085,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
         return -1;
     }
     /* 为每个流创建编码线程，TODO：不能无限创建吧，RK的MPP硬件编解码是有限的 */
-    for (i = 0; i < pipeline->ctx->config.stream_count; ++i)
+    for (i = 0; i < pipeline->ctx->config.video.stream_count; ++i)
     {
         if (!pipeline->ctx->stream_enabled[i])
             continue;
@@ -1029,6 +1097,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
         }
         arg->pipeline = pipeline;
         arg->stream_idx = i;
+        /* 为每路流创建编码线程 */
         thread_ret = pthread_create(&pipeline->video.workers[i].thread,
                                     NULL,
                                     video_encode_thread_main,
@@ -1044,7 +1113,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
         }
         pipeline->video.workers[i].thread_started = 1;
     }
-    if (pipeline->ctx->config.audio.enabled && pipeline->ctx->audio_capture_ready)
+    if (pipeline->ctx->config.audio.source.source.enabled && pipeline->ctx->audio_capture_ready)
     {
         thread_ret = pthread_create(&pipeline->audio.thread,
                                     NULL,

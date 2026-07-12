@@ -72,7 +72,7 @@ static void log_isp_status(MediaGatewayCtx *ctx)
     IspControllerStatus status;
     const char *health_name = "unknown";
 
-    if (!ctx->config.isp.enabled)
+    if (!ctx->config.input.isp.enabled)
         return;
 
     if (isp_controller_query_status(&ctx->isp, &status) != 0)
@@ -188,11 +188,11 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     uint64_t total_bytes = 0;
     int i;
 
-    if (span_us < (uint64_t)ctx->config.runtime.stats_interval_sec * 1000000ULL)
+    if (span_us < (uint64_t)ctx->config.system.runtime.stats_interval_sec * 1000000ULL)
         return;
 
     span_sec = (double)span_us / 1000000.0;
-    for (i = 0; i < ctx->config.stream_count; ++i)
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
         total_frames += ctx->stats.streams[i].frames;
         total_bytes += ctx->stats.streams[i].bytes;
@@ -202,7 +202,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     LOG_INFO("[STAT] total_fps=%.2f total_bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
              fps, kbps, total_frames, total_bytes);
 
-    for (i = 0; i < ctx->config.stream_count; ++i)
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
         double sfps;
         double skbps;
@@ -212,13 +212,13 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
         skbps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].bytes * 8.0 / 1000.0 / span_sec) : 0.0;
         LOG_WARN("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  i,
-                 ctx->config.streams[i].name ? ctx->config.streams[i].name : "unknown",
+                 ctx->config.video.streams[i].name ? ctx->config.video.streams[i].name : "unknown",
                  sfps,
                  skbps,
                  ctx->stats.streams[i].frames,
                  ctx->stats.streams[i].bytes);
     }
-    if (ctx->config.audio.enabled)
+    if (ctx->config.audio.source.source.enabled)
     {
         double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio.frames / span_sec) : 0.0;
         double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio.bytes * 8.0 / 1000.0 / span_sec) : 0.0;

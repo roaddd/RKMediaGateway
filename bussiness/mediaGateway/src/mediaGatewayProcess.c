@@ -177,23 +177,23 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
         return -1;
     }
 
-    stream_cfg = &ctx->config.streams[stream_idx];
+    stream_cfg = &ctx->config.video.streams[stream_idx];
 
     {
         int source_idx = stream_cfg->source_index;
         int capture_width;
         int capture_height;
 
-        if (source_idx < 0 || source_idx >= ctx->config.capture_source_count)
+        if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count)
         {
             LOG_ERROR("prepare_stream_encode_input failed: invalid source=%d stream=%d source_count=%d",
                       source_idx,
                       stream_idx,
-                      ctx->config.capture_source_count);
+                      ctx->config.input.capture_source_count);
             return -1;
         }
-        capture_width = ctx->config.capture_sources[source_idx].width;
-        capture_height = ctx->config.capture_sources[source_idx].height;
+        capture_width = ctx->config.input.capture_sources[source_idx].width;
+        capture_height = ctx->config.input.capture_sources[source_idx].height;
 
         if (stream_cfg->width == capture_width && stream_cfg->height == capture_height)
         {
@@ -278,9 +278,9 @@ static void apply_capture_layout_encoder_options(MediaGatewayCtx *ctx, int strea
     if (!ctx || !opt || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         return;
 
-    stream_cfg = &ctx->config.streams[stream_idx];
+    stream_cfg = &ctx->config.video.streams[stream_idx];
     source_idx = stream_cfg->source_index;
-    if (source_idx < 0 || source_idx >= ctx->config.capture_source_count || !ctx->capture_ready[source_idx])
+    if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count || !ctx->capture_ready[source_idx])
         return;
 
     capture_format = &ctx->captures[source_idx].format;
@@ -324,7 +324,7 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
         return -1;
     }
 
-    stream_cfg = &ctx->config.streams[stream_idx];
+    stream_cfg = &ctx->config.video.streams[stream_idx];
     build_encoder_options(stream_cfg, &options);
     apply_capture_layout_encoder_options(ctx, stream_idx, &options);
     if (ctx->encoder_ready[stream_idx])
@@ -395,7 +395,7 @@ static int ensure_stream_input(MediaGatewayCtx *ctx,
                                size_t *encode_input_len)
 {
     ScalePath scale_path = SCALE_PATH_ISP_DIRECT;
-    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.video.streams[stream_idx];
 
     if (prepare_stream_encode_input(ctx,
                                     stream_idx,
@@ -440,7 +440,7 @@ static int can_encode_stream_dmabuf_direct(const MediaGatewayCtx *ctx,
     if (!ctx || !frame || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         return 0;
 
-    stream_cfg = &ctx->config.streams[stream_idx];
+    stream_cfg = &ctx->config.video.streams[stream_idx];
     encoder = &ctx->encoders[stream_idx];
     if (!frame->capture_buffer || !frame->capture_buffer->capture)
     {
@@ -516,7 +516,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                uint64_t *encode_done_ts_us,
                                MppEncoderTiming *encoder_timing)
 {
-    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.streams[stream_idx];
+    const MediaGatewayStreamConfig *stream_cfg = &ctx->config.video.streams[stream_idx];
     int dmabuf_fd = frame->capture_buffer ? v4l2_capture_buffer_dmabuf_fd(frame->capture_buffer) : -1;
     size_t dmabuf_size = frame->capture_buffer ? v4l2_capture_buffer_size(frame->capture_buffer) : 0;
     const char *dmabuf_direct_reason = NULL;
@@ -647,7 +647,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
                                                        ? (encode_start_ts_us - frame->dqbuf_ts_us)
                                                        : 0;
     packet.path_metrics.encode_us = encoder_timing ? encoder_timing->encode_frame_total_us : 0;
-    packet.path_metrics.stream_name = ctx->config.streams[stream_idx].name;
+    packet.path_metrics.stream_name = ctx->config.video.streams[stream_idx].name;
     /* 打印本包路径延时的条件：1.配置开启了统计选项；2.采样间隔帧数大于0；3.当前采集帧号是采样间隔帧数的倍数 */
     packet.path_metrics.sample = ctx->bench.enable &&
                                  ctx->bench.sample_every > 0 &&
@@ -698,11 +698,11 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
                   audio_len);
         return -1;
     }
-    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count)
+    if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count)
     {
         LOG_ERROR("enqueue_audio_packet failed: invalid stream=%d stream_count=%d",
                   stream_idx,
-                  ctx->config.stream_count);
+                  ctx->config.video.stream_count);
         return -1;
     }
     /* 从media_buffer_pool中获取buffer */
@@ -777,11 +777,11 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
         return -1;
     }
     /* 确定音频数据绑定的流索引,因为音频需要跟某一路视频时间线绑定 */
-    stream_idx = ctx->config.audio.bind_stream_index;
-    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count || !ctx->stream_enabled[stream_idx])
+    stream_idx = ctx->config.audio.source.source.bind_stream_index;
+    if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;
 
-    if (ctx->config.audio.codec == MEDIA_CODEC_AAC)
+    if (ctx->config.audio.source.source.codec == MEDIA_CODEC_AAC)
     {
         if (aac_encoder_encode_s16le(&ctx->aac_encoder,
                                      (const int16_t *)frame->data,
@@ -883,7 +883,7 @@ static void maybe_record_stream_file(MediaGatewayCtx *ctx,
     written = fwrite(h264_data, 1, h264_len, ctx->record_fp);
     if (written != h264_len)
         LOG_WARN("local record write short: %zu/%zu", written, h264_len);
-    if ((frame_id % (uint64_t)ctx->config.record.flush_interval_frames) == 0)
+    if ((frame_id % (uint64_t)ctx->config.system.record.flush_interval_frames) == 0)
         fflush(ctx->record_fp);
 }
 

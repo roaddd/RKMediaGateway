@@ -38,6 +38,7 @@ typedef struct {
     int audio_sample_rate;      /* RTSP 音频采样率。 */
     int audio_channels;         /* RTSP 音频声道数。 */
     int aac_profile;            /* AAC object type，2 表示 AAC-LC。 */
+    struct NetFeedbackCbInfo *feedback_holder; /* RTCP/协议网络反馈回调入口，由业务层注入。 */
 } MediaOutputRtspConfig;
 
 /**
@@ -107,7 +108,32 @@ typedef struct {
     int queue_capacity;                       /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
     int reconnect_interval_ms;                /* 连接失败后的重试间隔，单位毫秒。 */
     int drop_until_keyframe_after_reconnect;  /* 重连后是否丢弃非关键帧，直到关键帧恢复发送。 */
+    struct NetFeedbackCbInfo *feedback_holder; /* 输出层通用网络反馈回调入口。 */
 } MediaOutputChannelConfig;
+
+/* 输出协议上报给业务层的网络反馈快照。 */
+typedef struct {
+    MediaOutputType output_type; /* 输出协议类型，例如 RTSP/RTMP/GB28181。 */
+    const char *output_name;     /* 输出通道名称。 */
+    const char *session_name;    /* 协议会话名称，RTSP 中对应 URL session。 */
+    const char *client_ip;       /* 反馈来源客户端 IP。 */
+    int is_audio;                /* 0 表示视频反馈，1 表示音频反馈。 */
+    uint8_t fraction_lost;       /* RTCP RR fraction lost，0~255 对应 0~100%。 */
+    int32_t cumulative_lost;     /* RTCP RR 累计丢包数。 */
+    uint32_t jitter;             /* RTCP RR 抖动，单位为对应 RTP 时钟 tick。 */
+    uint32_t rtt_ms;             /* RTCP 推算 RTT，单位毫秒。 */
+    uint64_t rr_count;           /* 累计 RR 数量。 */
+} MediaOutputNetFeedbackInfo;
+
+/* 输出协议网络反馈回调。输出层只上报指标，不直接参与编码自适应决策。 */
+typedef void (*NetFeedbackCb)(const MediaOutputNetFeedbackInfo *feedback,
+                                                   void *userdata);
+
+/* 回调和业务私有上下文打包对象，便于协议 output 在创建时透传。 */
+typedef struct NetFeedbackCbInfo {
+    NetFeedbackCb callback; /* 业务层反馈处理函数。 */
+    void *userdata;                              /* 业务层私有上下文。 */
+} NetFeedbackCbInfo;
 
 /**
  * @description: 输出通道运行统计快照。

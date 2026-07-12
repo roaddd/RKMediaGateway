@@ -1,4 +1,4 @@
-/**
+﻿/**
  * @file mediaGatewayDebug.c
  * @brief MediaGateway shell 调试命令实现。
  */
@@ -45,10 +45,10 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     shell_command_reply_append(reply, &offset, "cmd=getStatus\n");
     shell_command_reply_append(reply, &offset, "running=%d\n", ctx->running);
     shell_command_reply_append(reply, &offset, "isp_ready=%d\n", ctx->isp_ready);
-    shell_command_reply_append(reply, &offset, "capture_source_count=%d\n", ctx->config.capture_source_count);
-    shell_command_reply_append(reply, &offset, "stream_count=%d\n", ctx->config.stream_count);
+    shell_command_reply_append(reply, &offset, "capture_source_count=%d\n", ctx->config.input.capture_source_count);
+    shell_command_reply_append(reply, &offset, "stream_count=%d\n", ctx->config.video.stream_count);
     shell_command_reply_append(reply, &offset, "output_count=%d\n", ctx->output_count);
-    shell_command_reply_append(reply, &offset, "audio_enabled=%d\n", ctx->config.audio.enabled);
+    shell_command_reply_append(reply, &offset, "audio_enabled=%d\n", ctx->config.audio.source.source.enabled);
     shell_command_reply_append(reply, &offset, "audio_capture_ready=%d\n", ctx->audio_capture_ready);
     shell_command_reply_append(reply, &offset, "audio_encoder_ready=%d\n", ctx->audio_encoder_ready);
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
@@ -75,7 +75,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
 static int gateway_shell_get_fps(void *user_data, const char *input, char *output)
 {
     MediaGatewayCtx *ctx = NULL;
-    MediaGatewayDynamicFpsState *state = NULL;
+    MediaLightFpsState *state = NULL;
     char *reply = NULL;
     size_t offset = 0;
 
@@ -89,12 +89,12 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
     }
 
     ctx = (MediaGatewayCtx *)user_data;
-    state = &ctx->dynamic_fps_state;
+    state = &ctx->light_fps_state;
     reply = output;
     reply[0] = '\0';
 
     shell_command_reply_append(reply, &offset, "cmd=getFps\n");
-    shell_command_reply_append(reply, &offset, "dynamic_fps_enabled=%d\n", ctx->config.dynamic_fps.enabled);
+    shell_command_reply_append(reply, &offset, "light_fps_enabled=%d\n", ctx->config.policy.light_fps.enabled);
     shell_command_reply_append(reply, &offset, "manual_override=%d\n", state->manual_override);
     shell_command_reply_append(reply, &offset, "current_fps=%d\n", state->current_fps);
     shell_command_reply_append(reply, &offset, "target_fps=%d\n", state->target_fps);
@@ -118,7 +118,7 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
 static int gateway_shell_set_fps(void *user_data, const char *input, char *output)
 {
     MediaGatewayCtx *ctx = NULL;
-    MediaGatewayDynamicFpsState *state = NULL;
+    MediaLightFpsState *state = NULL;
     char *reply = NULL;
     char *end = NULL;
     size_t offset = 0;
@@ -134,7 +134,7 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
     }
 
     ctx = (MediaGatewayCtx *)user_data;
-    state = &ctx->dynamic_fps_state;
+    state = &ctx->light_fps_state;
     reply = output;
     reply[0] = '\0';
     shell_command_reply_append(reply, &offset, "cmd=setFps\n");
@@ -209,13 +209,13 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
         shell_command_reply_append(reply, &offset, "error=capture source 0 not ready\n");
         return -1;
     }
-    if (!ctx->config.dynamic_fps.enabled)
+    if (!ctx->config.policy.light_fps.enabled)
     {
-        LOG_ERROR("gateway_shell_set_fps failed: dynamic_fps disabled, async fps transition is not driven target=%d",
+        LOG_ERROR("gateway_shell_set_fps failed: light_fps disabled, async fps transition is not driven target=%d",
                   target_fps);
         shell_command_reply_append(reply, &offset, "ret=-1\n");
-        shell_command_reply_append(reply, &offset, "error=dynamic_fps disabled\n");
-        shell_command_reply_append(reply, &offset, "hint=enable dynamic_fps or extend transition driver for manual mode\n");
+        shell_command_reply_append(reply, &offset, "error=light_fps disabled\n");
+        shell_command_reply_append(reply, &offset, "hint=enable light_fps or extend transition driver for manual mode\n");
         return -1;
     }
 
@@ -270,7 +270,7 @@ static int gateway_shell_get_isp(void *user_data, const char *input, char *outpu
     reply = output;
     reply[0] = '\0';
     shell_command_reply_append(reply, &offset, "cmd=getIsp\n");
-    shell_command_reply_append(reply, &offset, "isp_config_enabled=%d\n", ctx->config.isp.enabled);
+    shell_command_reply_append(reply, &offset, "isp_config_enabled=%d\n", ctx->config.input.isp.enabled);
     shell_command_reply_append(reply, &offset, "isp_ready=%d\n", ctx->isp_ready);
 
     if (!ctx->isp_ready && !ctx->isp.initialized && !ctx->isp.status_lock_ready)
@@ -342,3 +342,7 @@ int media_gateway_debug_register_shell_commands(MediaGatewayCtx *ctx)
 
     return 0;
 }
+
+
+
+

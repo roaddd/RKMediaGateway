@@ -8,6 +8,7 @@
 #include "mppEncoder.h"
 #include "v4l2Capture.h"
 #include "mediaOutput.h"
+#include "mediaControlMessage.h"
 #include "audioCapture.h"
 #include "g711Encoder.h"
 #include "aacEncoder.h"
@@ -25,7 +26,7 @@ typedef struct {
     int normal_fps;                  /* 普通场景目标帧率。 */
     int low_light_fps;               /* 低照度场景目标帧率，OV13850 可用 15。 */
     int bright_fps;                  /* 亮光/低延迟场景目标帧率，OV13850 可用 60。 */
-} DynamicFrameRateTargets;
+} MediaGatewayLightFpsTargets;
 
 typedef struct {
     int min_switch_interval_ms;      /* 两次目标帧率切换的最小间隔。 */
@@ -33,7 +34,7 @@ typedef struct {
     int bright_confirm_ms;           /* 亮光场景候选持续多久后允许切换。 */
     int low_light_confirm_ms;        /* 低照场景候选持续多久后允许切换。 */
     int ae_scene_confirm_ms;         /* AE 三态候选默认确认时间。 */
-} DynamicFrameRateTiming;
+} MediaGatewayLightFpsTiming;
 
 typedef struct {
     float bright_max_exposure_us;    /* 亮光进入 60fps 的最大 AE 曝光时间，单位微秒。 */
@@ -42,14 +43,55 @@ typedef struct {
     float low_light_min_exposure_ratio; /* 低照进入 15fps 的曝光/当前帧周期比例阈值。 */
     float low_light_min_analog_gain; /* 低照进入 15fps 的最小模拟增益。 */
     float low_light_max_mean_luma;   /* 低照进入 15fps 的最大平均亮度。 */
-} DynamicFrameRateAeConfig;
+} MediaGatewayLightFpsAeConfig;
 
 typedef struct {
-    int enabled;                     /* 是否启用动态帧率策略。 */
-    DynamicFrameRateTargets targets; /* 目标帧率集合。 */
-    DynamicFrameRateTiming timing;   /* 评估、确认和切换节流参数。 */
-    DynamicFrameRateAeConfig ae;     /* AE 曝光/增益/亮度三态判定阈值。 */
-} DynamicFrameRateConfig;
+    int enabled;                     /* 是否启用亮度/AE 感知帧率策略。 */
+    MediaGatewayLightFpsTargets targets; /* 目标帧率集合。 */
+    MediaGatewayLightFpsTiming timing;   /* 评估、确认和切换节流参数。 */
+    MediaGatewayLightFpsAeConfig ae;     /* AE 曝光/增益/亮度三态判定阈值。 */
+} MediaGatewayLightFpsPolicyConfig;
+
+typedef enum {
+    MEDIA_GATEWAY_SCENE_NORMAL = 0,     /* 常规光照场景。 */
+    MEDIA_GATEWAY_SCENE_LOW_LIGHT = 1,  /* 低照场景。 */
+    MEDIA_GATEWAY_SCENE_BRIGHT = 2      /* 亮光/低延迟场景。 */
+} MediaGatewaySceneState;
+
+typedef enum {
+    MEDIA_GATEWAY_NETWORK_GOOD = 0,      /* 网络良好。 */
+    MEDIA_GATEWAY_NETWORK_NORMAL = 1,    /* 网络一般。 */
+    MEDIA_GATEWAY_NETWORK_BAD = 2,       /* 网络较差。 */
+    MEDIA_GATEWAY_NETWORK_VERY_BAD = 3   /* 网络很差。 */
+} MediaGatewayNetworkState;
+
+typedef struct {
+    int good_max_fps;                 /* GOOD 网络状态允许的最高帧率。 */
+    int normal_max_fps;               /* NORMAL 网络状态允许的最高帧率。 */
+    int bad_max_fps;                  /* BAD 网络状态允许的最高帧率。 */
+    int very_bad_max_fps;             /* VERY_BAD 网络状态允许的最高帧率。 */
+    int normal_queue_depth;           /* 输出队列达到该深度时进入 NORMAL 网络状态。 */
+    int bad_queue_depth;              /* 输出队列达到该深度时进入 BAD 网络状态。 */
+    int very_bad_queue_depth;         /* 输出队列达到该深度时进入 VERY_BAD 网络状态。 */
+    int normal_bitrate_percent;       /* NORMAL 网络状态码率系数，百分比。 */
+    int bad_bitrate_percent;          /* BAD 网络状态码率系数，百分比。 */
+    int very_bad_bitrate_percent;     /* VERY_BAD 网络状态码率系数，百分比。 */
+    int good_pacing_percent;          /* GOOD 网络状态 pacing 系数，百分比。 */
+    int normal_pacing_percent;        /* NORMAL 网络状态 pacing 系数，百分比。 */
+    int bad_pacing_percent;           /* BAD 网络状态 pacing 系数，百分比。 */
+    int very_bad_pacing_percent;      /* VERY_BAD 网络状态 pacing 系数，百分比。 */
+} MediaGatewayNetworkAdaptiveConfig;
+
+typedef struct {
+    int enabled;                      /* 是否启用 RTCP/队列反馈驱动的网络自适应编码参数控制。 */
+    int base_fps;                     /* 码率按帧率缩放时使用的基准帧率。 */
+    int min_bitrate;                  /* 自适应控制允许的最低目标码率，bit/s。 */
+    int max_bitrate;                  /* 自适应控制允许的最高目标码率，bit/s。 */
+    int good_keyframe_interval_ms;    /* GOOD/NORMAL 网络状态关键帧时间间隔。 */
+    int bad_keyframe_interval_ms;     /* BAD 网络状态关键帧时间间隔。 */
+    int very_bad_keyframe_interval_ms;/* VERY_BAD 网络状态关键帧时间间隔。 */
+    MediaGatewayNetworkAdaptiveConfig network; /* 网络状态分级和约束配置。 */
+} MediaGatewayNetworkEncodePolicyConfig;
 
 typedef struct {
     int enabled;                     /* 该采集源是否启用。 */
@@ -172,22 +214,47 @@ typedef struct {
 } MediaGatewayLogConfig;
 
 typedef struct {
-    MediaGatewayOutputSwitchConfig output; /* 顶层输出开关配置；多码流配置以 streams[i] 为准。 */
-    MediaGatewayEncodeDefaultConfig encode; /* 顶层编码默认值；多码流配置以 streams[i] 为准。 */
     MediaGatewayRuntimeConfig runtime; /* 网关运行期公共配置。 */
     MediaGatewayRecordConfig record;  /* 本地录像配置。 */
     MediaGatewayBenchConfig bench;    /* 性能埋点配置。 */
     MediaGatewayLogConfig log;        /* 日志配置。 */
-    DynamicFrameRateConfig dynamic_fps; /* 动态帧率策略配置。 */
+} MediaGatewaySystemConfig;
+
+typedef struct {
     int capture_source_count;        /* 采集源数量。 */
     CaptureSourceConfig capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 采集源配置。 */
     IspSourceConfig isp;             /* RKAIQ/ISP 初始化与生命周期配置。 */
-    AudioSourceConfig audio;         /* 音频采集与编码配置。 */
+} MediaGatewayInputConfig;
+
+typedef struct {
+    MediaGatewayEncodeDefaultConfig encode; /* 顶层编码默认值；多码流配置以 streams[i] 为准。 */
     int stream_count;                /* 流配置数量，<=0 表示不初始化视频流。 */
     MediaGatewayStreamConfig streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 多路码流配置。 */
+} MediaGatewayVideoConfig;
+
+typedef struct {
+    AudioSourceConfig source;        /* 音频采集与编码配置。 */
+} MediaGatewayAudioConfig;
+
+typedef struct {
+    MediaGatewayOutputSwitchConfig switches; /* 顶层输出开关配置；多码流配置以 streams[i] 为准。 */
     MediaOutputRtspConfig rtsp;      /* RTSP 协议专用配置块。 */
     MediaOutputRtmpConfig rtmp;      /* RTMP 协议专用配置块。 */
     MediaOutputGb28181Config gb28181;/* GB28181/SIP+RTP 协议专用配置块。 */
+} MediaGatewayOutputConfig;
+
+typedef struct {
+    MediaGatewayLightFpsPolicyConfig light_fps; /* 环境亮度调帧率策略配置，可独立开关。 */
+    MediaGatewayNetworkEncodePolicyConfig network_encode; /* RTCP/队列反馈调编码参数策略配置，可独立开关。 */
+} MediaGatewayPolicyConfig;
+
+typedef struct {
+    MediaGatewaySystemConfig system; /* 运行期、日志、统计和录像配置。 */
+    MediaGatewayInputConfig input;   /* 视频采集源与 ISP 配置。 */
+    MediaGatewayVideoConfig video;   /* 视频编码默认值与多码流配置。 */
+    MediaGatewayAudioConfig audio;   /* 音频采集与编码配置。 */
+    MediaGatewayOutputConfig output; /* 输出协议开关与协议默认配置。 */
+    MediaGatewayPolicyConfig policy; /* 运行期自适应策略配置。 */
 } MediaGatewayConfig;
 
 typedef struct {
@@ -261,7 +328,41 @@ typedef struct {
     uint64_t pending_since_ts_us;                         /* AE 候选目标开始持续时间。 */
     int manual_override;                                  /* shell 手动固定帧率标志；置 1 时暂停 AE 自动动态帧率策略。 */
     char reason[128];                                     /* 最近一次策略决策原因。 */
-} MediaGatewayDynamicFpsState;
+} MediaLightFpsState;
+
+typedef struct {
+    MediaGatewaySceneState state; /* 最近一次场景状态判定。 */
+    int max_fps;                  /* 场景侧给出的帧率上限。 */
+} MediaAdaptSceneState;
+
+typedef struct {
+    MediaGatewayNetworkState state;     /* 最近一次网络状态判定。 */
+    int max_fps;                        /* 网络侧给出的帧率上限。 */
+    int max_output_queue_depth;         /* 最近一次评估看到的最大输出队列深度。 */
+    uint8_t rtcp_fraction_lost;         /* 最近一次 RTCP RR fraction lost。 */
+    uint32_t rtcp_jitter;               /* 最近一次 RTCP RR jitter。 */
+    uint32_t rtcp_rtt_ms;               /* 最近一次 RTCP RR RTT，单位毫秒。 */
+    uint64_t last_rtcp_feedback_ts_us;  /* 最近一次收到 RTCP 网络反馈的时间。 */
+} MediaAdaptNetworkState;
+
+typedef struct {
+    int target_fps;               /* min(scene.max_fps, network.max_fps) 后的最终帧率。 */
+    int pacing_rate_bps;          /* 根据最终码率和网络状态计算出的 pacing rate。 */
+    uint64_t last_decision_ts_us; /* 最近一次统一控制器决策时间。 */
+    char reason[160];             /* 最近一次统一控制器决策原因。 */
+} MediaAdaptOutputState;
+
+typedef struct {
+    MediaVideoEncodeParams base[MEDIA_GATEWAY_MAX_STREAMS];   /* 每路编码器自适应计算基准参数。 */
+    MediaVideoEncodeParams target[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路编码器最终目标参数。 */
+} MediaAdaptEncodeParamsState;
+
+typedef struct {
+    MediaAdaptSceneState scene;          /* 场景侧约束状态。 */
+    MediaAdaptNetworkState network;      /* 网络反馈和网络侧约束状态。 */
+    MediaAdaptOutputState output;        /* 联合控制最终输出状态。 */
+    MediaAdaptEncodeParamsState encode_params; /* 每路编码器基准参数和目标参数。 */
+} MediaAdaptCtrlState;
 
 typedef struct {
     V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
@@ -279,12 +380,14 @@ typedef struct {
     int output_stream_index[MEDIA_GATEWAY_MAX_OUTPUTS]; /* 每个输出通道绑定的 stream 下标。 */
     int output_count;                           /* 当前启用的输出通道数量。 */
     MediaGatewayConfig config;                 /* 配置参数 */
+    NetFeedbackCbInfo network_feedback_holder; /* 输出层网络反馈回调入口。 */
     int rtsp_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 RTSP 输出索引。 */
     int gb28181_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 GB28181 输出索引。 */
     int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
-    int low_light_bitrate_active;                 /* 当前低照度编码联动策略是否已应用；用于进入/退出时恢复码率或 QP profile。 */
+    int low_light_bitrate_active;                 /* 当前低照度编码联动策略是否已应用；用于进入/退出时恢复码率或 QP 参数。 */
     uint64_t last_isp_policy_ts_us;               /* 上次运行 ISP/低照度策略的时间戳，避免策略跟随日志周期。 */
-    MediaGatewayDynamicFpsState dynamic_fps_state; /* 动态帧率策略运行状态。 */
+    MediaLightFpsState light_fps_state; /* 亮度/AE 感知帧率策略运行状态。 */
+    MediaAdaptCtrlState adaptive_policy_state; /* 场景约束、网络约束和融合输出运行状态。 */
     int running;                               /* 主循环是否正在运行。 */
     FILE *record_fp;                           /* 本地录像文件句柄。 */
     pthread_mutex_t stats_lock;                /* 保护吞吐、benchmark 和本地录像写入。 */
@@ -331,3 +434,7 @@ void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSna
 #endif
 
 #endif
+
+
+
+

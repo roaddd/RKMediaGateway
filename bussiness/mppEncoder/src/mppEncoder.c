@@ -767,6 +767,98 @@ int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps)
     return 0;
 }
 
+/*
+ * 运行时应用完整视频编码档位。
+ * 动态 setFps 会调用该接口一次性同步 fps、码率、GOP、RC 和 QP 参数，
+ * 避免编码器进入“60fps 但仍使用 30fps 码率/GOP”的中间状态。
+ */
+int mpp_encoder_apply_video_encode_params(MppEncoderCtx *enc, const MediaVideoEncodeParams *params)
+{
+    MPP_RET ret;
+    int rc_mode;
+
+    /* 运行参数必须包含可执行的 fps/bitrate/gop，缺失时不能下发到 MPP。 */
+    if (!enc || !params || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg ||
+        params->fps <= 0 || params->bitrate <= 0 || params->gop <= 0)
+    {
+        LOG_ERROR("mpp_encoder_apply_video_encode_params failed: enc=%p params=%p fps=%d bitrate=%d gop=%d",
+                  (void *)enc,
+                  (const void *)params,
+                  params ? params->fps : -1,
+                  params ? params->bitrate : -1,
+                  params ? params->gop : -1);
+        return -1;
+    }
+
+    /* rc_mode 非法时继承当前编码器模式，避免配置文件缺项导致 MPP 拒绝参数。 */
+    rc_mode = params->rc_mode;
+    if (rc_mode < 0 || rc_mode >= MPP_ENCODER_RC_MODE_BUTT)
+        rc_mode = enc->rc.rc_mode;
+
+    /*
+     * 所有 RC 相关参数先写入同一个 cfg，再通过一次 MPP_ENC_SET_CFG 生效，
+     * 让运行期切换尽量保持原子性。
+     */
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:mode", rc_mode);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:gop", params->gop);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_num", params->fps);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_in_denorm", 1);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_num", params->fps);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:fps_out_denorm", 1);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_target", params->bitrate);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_max", params->bitrate * 17 / 16);
+    mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:bps_min", params->bitrate * 15 / 16);
+
+    /* QP 字段允许为 0 表示“不覆盖”，便于部分档位只调整 fps/码率/GOP。 */
+    if (params->qp_init > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_init", params->qp_init);
+    if (params->qp_min > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min", params->qp_min);
+    if (params->qp_max > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max", params->qp_max);
+    if (params->qp_min_i > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_min_i", params->qp_min_i);
+    if (params->qp_max_i > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_i", params->qp_max_i);
+    if (params->qp_max_step > 0)
+        mpp_enc_cfg_set_s32(enc->mpp.cfg, "rc:qp_max_step", params->qp_max_step);
+
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_SET_CFG, enc->mpp.cfg);
+    if (ret != MPP_OK)
+    {
+        mpp_log_error("mpp_encoder_apply_video_encode_params MPP_ENC_SET_CFG failed", ret);
+        return -1;
+    }
+
+    /* 只有 MPP 接受新配置后才更新本地缓存，保证日志和运行态配置一致。 */
+    LOG_WARN("mpp encoder params updated: fps %d->%d bitrate %d->%d gop %d->%d rc %d->%d",
+             enc->rc.fps,
+             params->fps,
+             enc->rc.bitrate,
+             params->bitrate,
+             enc->rc.gop,
+             params->gop,
+             enc->rc.rc_mode,
+             rc_mode);
+    enc->rc.fps = params->fps;
+    enc->rc.bitrate = params->bitrate;
+    enc->rc.gop = params->gop;
+    enc->rc.rc_mode = (MppEncoderRcMode)rc_mode;
+    if (params->qp_init > 0)
+        enc->qp.current.qp_init = params->qp_init;
+    if (params->qp_min > 0)
+        enc->qp.current.qp_min = params->qp_min;
+    if (params->qp_max > 0)
+        enc->qp.current.qp_max = params->qp_max;
+    if (params->qp_min_i > 0)
+        enc->qp.current.qp_min_i = params->qp_min_i;
+    if (params->qp_max_i > 0)
+        enc->qp.current.qp_max_i = params->qp_max_i;
+    if (params->qp_max_step > 0)
+        enc->qp.current.qp_max_step = params->qp_max_step;
+    return 0;
+}
+
 int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta) {
     int target_qp_init;
     int target_qp_min;
@@ -776,7 +868,7 @@ int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta) {
     MPP_RET ret;
 
     /*
-     * FIXQP 模式下码率目标不会主导输出大小，低光画质补偿应改 QP profile。
+     * FIXQP 模式下码率目标不会主导输出大小，低光画质补偿应改 QP 参数。
      * 这里始终以初始化参数为基线计算，退出低光时传 qp_delta=0 即可恢复原配置。
      */
     if (!enc || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg) {
@@ -823,7 +915,7 @@ int mpp_encoder_set_qp_delta(MppEncoderCtx *enc, int qp_delta) {
         return -1;
     }
 
-    LOG_INFO("mpp encoder qp profile updated: delta=%d qp_init=%d qp_min=%d qp_max=%d qp_min_i=%d qp_max_i=%d",
+    LOG_INFO("mpp encoder qp params updated: delta=%d qp_init=%d qp_min=%d qp_max=%d qp_min_i=%d qp_max_i=%d",
              qp_delta,
              target_qp_init,
              target_qp_min,

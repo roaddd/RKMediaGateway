@@ -18,6 +18,7 @@
 #define DEFAULT_RTSP_PORT 8554
 #define DEFAULT_RTSP_USER "admin"
 #define DEFAULT_RTSP_PASSWORD "123456"
+#define MAX_RTSP_FEEDBACK_OUTPUTS 16
 
 typedef struct {
     int in_use;                    /* 共享 RTSP 服务是否已被启用。 */
@@ -46,6 +47,8 @@ typedef struct {
 static RtspSharedServer g_rtsp_shared_server;
 static pthread_mutex_t g_rtsp_shared_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_rtsp_shared_ref_count = 0;
+static pthread_mutex_t g_rtsp_feedback_lock = PTHREAD_MUTEX_INITIALIZER;
+static RtspOutputImpl *g_rtsp_feedback_outputs[MAX_RTSP_FEEDBACK_OUTPUTS];
 
 /* 单调时钟微秒时间戳，用于时延统计，避免系统时间跳变带来的误差。 */
 static uint64_t now_us(void) {
@@ -112,6 +115,104 @@ static int string_equals(const char *a, const char *b) {
         return 0;
     }
     return strcmp(a, b) == 0;
+}
+
+/*
+ * 判断 RTSP server 上报的 session 名称是否属于当前 output。
+ * simple-rtsp-server 内部可能保存带 mp4Dir 前缀的 filename，因此这里同时支持精确匹配和后缀匹配。
+ */
+static int rtsp_session_name_matches(const char *reported_name, const char *configured_name) {
+    size_t reported_len = 0;
+    size_t configured_len = 0;
+
+    if (!reported_name || !configured_name) {
+        return 0;
+    }
+    if (strcmp(reported_name, configured_name) == 0) {
+        return 1;
+    }
+    reported_len = strlen(reported_name);
+    configured_len = strlen(configured_name);
+    return reported_len >= configured_len &&
+           strcmp(reported_name + reported_len - configured_len, configured_name) == 0;
+}
+
+/*
+ * 将当前 RTSP output 注册为 RTCP RR 反馈接收目标。
+ * 回调来源是 simple-rtsp-server 的库级通知，output 层负责按 session 再分发到业务层回调。
+ */
+static void rtsp_output_register_feedback_target(RtspOutputImpl *impl) {
+    int i = 0;
+
+    if (!impl || !impl->config.feedback_holder || !impl->config.feedback_holder->callback) {
+        return;
+    }
+    pthread_mutex_lock(&g_rtsp_feedback_lock);
+    for (i = 0; i < MAX_RTSP_FEEDBACK_OUTPUTS; ++i) {
+        if (g_rtsp_feedback_outputs[i] == impl) {
+            pthread_mutex_unlock(&g_rtsp_feedback_lock);
+            return;
+        }
+    }
+    for (i = 0; i < MAX_RTSP_FEEDBACK_OUTPUTS; ++i) {
+        if (!g_rtsp_feedback_outputs[i]) {
+            g_rtsp_feedback_outputs[i] = impl;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_rtsp_feedback_lock);
+}
+
+/* 从 RTCP RR 反馈目标表中移除当前 output，避免 session 删除后仍收到异步反馈。 */
+static void rtsp_output_unregister_feedback_target(RtspOutputImpl *impl) {
+    int i = 0;
+
+    pthread_mutex_lock(&g_rtsp_feedback_lock);
+    for (i = 0; i < MAX_RTSP_FEEDBACK_OUTPUTS; ++i) {
+        if (g_rtsp_feedback_outputs[i] == impl) {
+            g_rtsp_feedback_outputs[i] = NULL;
+        }
+    }
+    pthread_mutex_unlock(&g_rtsp_feedback_lock);
+}
+
+/*
+ * RTSP 库级 RTCP RR 回调入口。
+ * 本函数不做自适应决策，只把 RTCP 指标转换为 MediaOutputNetFeedbackInfo，
+ * 再通过 output 创建时注入的回调交给 MediaGateway 统一控制器。
+ */
+static void rtsp_output_handle_rtcp_report(const RtspRtcpReceiverReport *report, void *userdata) {
+    int i = 0;
+    RtspOutputImpl *impl = NULL;
+    MediaOutputNetFeedbackInfo feedback = {0};
+
+    (void)userdata;
+    if (!report) {
+        return;
+    }
+    pthread_mutex_lock(&g_rtsp_feedback_lock);
+    for (i = 0; i < MAX_RTSP_FEEDBACK_OUTPUTS; ++i) {
+        impl = g_rtsp_feedback_outputs[i];
+        if (!impl || !impl->config.feedback_holder || !impl->config.feedback_holder->callback) {
+            continue;
+        }
+        if (!rtsp_session_name_matches(report->session_name, impl->config.session_name)) {
+            continue;
+        }
+        memset(&feedback, 0, sizeof(feedback));
+        feedback.output_type = MEDIA_OUTPUT_TYPE_RTSP;
+        feedback.output_name = impl->config.name;
+        feedback.session_name = impl->config.session_name;
+        feedback.client_ip = report->client_ip;
+        feedback.is_audio = report->is_audio;
+        feedback.fraction_lost = report->fraction_lost;
+        feedback.cumulative_lost = report->cumulative_lost;
+        feedback.jitter = report->jitter;
+        feedback.rtt_ms = report->rtt_ms;
+        feedback.rr_count = report->rr_count;
+        impl->config.feedback_holder->callback(&feedback, impl->config.feedback_holder->userdata);
+    }
+    pthread_mutex_unlock(&g_rtsp_feedback_lock);
 }
 
 /* 发送一帧编码音频到 RTSP server，并保留媒体 PTS。 */
@@ -286,6 +387,7 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
             pthread_mutex_unlock(&g_rtsp_shared_lock);
             return -1;
         }
+        rtspSetRtcpReportCallback(rtsp_output_handle_rtcp_report, NULL);
         g_rtsp_shared_server.module_ready = 1;
         g_rtsp_shared_server.in_use = 1;
         /* 启动rtsp服务线程 */
@@ -332,6 +434,7 @@ static void shared_rtsp_server_release(void) {
             pthread_join(g_rtsp_shared_server.server_thread, NULL);
         }
         if (g_rtsp_shared_server.module_ready) {
+            rtspSetRtcpReportCallback(NULL, NULL);
             rtspModuleDel();
         }
         memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
@@ -391,6 +494,7 @@ static int rtsp_output_start(MediaOutput *output) {
     atomic_store(&impl->awaiting_first_keyframe_after_external_idr, 0);
     atomic_store(&impl->new_client_detect_ts_us, 0);
     atomic_store(&impl->external_idr_request_ts_us, 0);
+    rtsp_output_register_feedback_target(impl);
 
     printf("[INFO] RTSP output ready: rtsp://%s:%d/%s\n",
            impl->config.server_ip,
@@ -442,6 +546,7 @@ static void rtsp_output_stop(MediaOutput *output) {
         return;
     }
     if (impl->session) {
+        rtsp_output_unregister_feedback_target(impl);
         rtspDelSession(impl->session);
         impl->session = NULL;
     }
@@ -508,6 +613,7 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     output_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 32;
     output_config.reconnect_interval_ms = 1000;
     output_config.drop_until_keyframe_after_reconnect = 0;
+    output_config.feedback_holder = impl->config.feedback_holder;
 
     if (media_output_init(output, &output_config, &vtable, impl) != 0) {
         LOG_ERROR("media_output_setup_rtsp failed: media_output_init name=%s session=%s",

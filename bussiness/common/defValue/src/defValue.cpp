@@ -1,4 +1,4 @@
-#include "defValue.h"
+﻿#include "defValue.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -146,7 +146,7 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "GOP").c_str(), 30);
     set_value_int((p + "RC_MODE").c_str(), MPP_ENC_RC_MODE_CBR);
     set_value_int((p + "H264_PROFILE").c_str(), 100);
-    set_value_int((p + "H264_LEVEL").c_str(), 40);
+    set_value_int((p + "H264_LEVEL").c_str(), is_main ? 42 : 40);
     set_value_int((p + "H264_CABAC_EN").c_str(), 1);
     set_value_int((p + "QP_INIT").c_str(), 30);
     set_value_int((p + "QP_MIN").c_str(), 22);
@@ -154,6 +154,41 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "QP_MIN_I").c_str(), 20);
     set_value_int((p + "QP_MAX_I").c_str(), 40);
     set_value_int((p + "QP_MAX_STEP").c_str(), 8);
+
+    /*
+     * 为动态帧率准备三组完整编码档位。setFps 运行期会按目标 fps 选择对应
+     * profile，而不是只修改编码器 fps。
+     */
+    set_value_int((p + "DYNAMIC_LOW_FPS").c_str(), 15);
+    set_value_int((p + "DYNAMIC_LOW_BITRATE").c_str(), bitrate / 2);
+    set_value_int((p + "DYNAMIC_LOW_GOP").c_str(), 15);
+    set_value_int((p + "DYNAMIC_LOW_RC_MODE").c_str(), MPP_ENC_RC_MODE_CBR);
+    set_value_int((p + "DYNAMIC_LOW_QP_INIT").c_str(), 30);
+    set_value_int((p + "DYNAMIC_LOW_QP_MIN").c_str(), 22);
+    set_value_int((p + "DYNAMIC_LOW_QP_MAX").c_str(), 44);
+    set_value_int((p + "DYNAMIC_LOW_QP_MIN_I").c_str(), 20);
+    set_value_int((p + "DYNAMIC_LOW_QP_MAX_I").c_str(), 40);
+    set_value_int((p + "DYNAMIC_LOW_QP_MAX_STEP").c_str(), 8);
+    set_value_int((p + "DYNAMIC_NORMAL_FPS").c_str(), fps);
+    set_value_int((p + "DYNAMIC_NORMAL_BITRATE").c_str(), bitrate);
+    set_value_int((p + "DYNAMIC_NORMAL_GOP").c_str(), fps);
+    set_value_int((p + "DYNAMIC_NORMAL_RC_MODE").c_str(), MPP_ENC_RC_MODE_CBR);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_INIT").c_str(), 30);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_MIN").c_str(), 22);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_MAX").c_str(), 44);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_MIN_I").c_str(), 20);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_MAX_I").c_str(), 40);
+    set_value_int((p + "DYNAMIC_NORMAL_QP_MAX_STEP").c_str(), 8);
+    set_value_int((p + "DYNAMIC_BRIGHT_FPS").c_str(), 60);
+    set_value_int((p + "DYNAMIC_BRIGHT_BITRATE").c_str(), bitrate * 2);
+    set_value_int((p + "DYNAMIC_BRIGHT_GOP").c_str(), 60);
+    set_value_int((p + "DYNAMIC_BRIGHT_RC_MODE").c_str(), MPP_ENC_RC_MODE_CBR);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_INIT").c_str(), 30);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_MIN").c_str(), 22);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_MAX").c_str(), 44);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_MIN_I").c_str(), 20);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_MAX_I").c_str(), 40);
+    set_value_int((p + "DYNAMIC_BRIGHT_QP_MAX_STEP").c_str(), 8);
 
     set_value_int((p + "ENABLE_RTSP").c_str(), 1);
     set_value_int((p + "ENABLE_RTMP").c_str(), 0);
@@ -494,6 +529,41 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->qp_max_i = value_int((p + "QP_MAX_I").c_str());
     stream->qp_max_step = value_int((p + "QP_MAX_STEP").c_str());
 
+    /*
+     * 读取每路码流的动态编码档位。缺失或非法字段会在 mediaGateway 配置
+     * 归一化阶段补齐，保证运行期下发给 MPP 的 profile 是完整的。
+     */
+    stream->dynamic_profiles.low_light.fps = value_int((p + "DYNAMIC_LOW_FPS").c_str());
+    stream->dynamic_profiles.low_light.bitrate = value_int((p + "DYNAMIC_LOW_BITRATE").c_str());
+    stream->dynamic_profiles.low_light.gop = value_int((p + "DYNAMIC_LOW_GOP").c_str());
+    stream->dynamic_profiles.low_light.rc_mode = value_int((p + "DYNAMIC_LOW_RC_MODE").c_str());
+    stream->dynamic_profiles.low_light.qp_init = value_int((p + "DYNAMIC_LOW_QP_INIT").c_str());
+    stream->dynamic_profiles.low_light.qp_min = value_int((p + "DYNAMIC_LOW_QP_MIN").c_str());
+    stream->dynamic_profiles.low_light.qp_max = value_int((p + "DYNAMIC_LOW_QP_MAX").c_str());
+    stream->dynamic_profiles.low_light.qp_min_i = value_int((p + "DYNAMIC_LOW_QP_MIN_I").c_str());
+    stream->dynamic_profiles.low_light.qp_max_i = value_int((p + "DYNAMIC_LOW_QP_MAX_I").c_str());
+    stream->dynamic_profiles.low_light.qp_max_step = value_int((p + "DYNAMIC_LOW_QP_MAX_STEP").c_str());
+    stream->dynamic_profiles.normal.fps = value_int((p + "DYNAMIC_NORMAL_FPS").c_str());
+    stream->dynamic_profiles.normal.bitrate = value_int((p + "DYNAMIC_NORMAL_BITRATE").c_str());
+    stream->dynamic_profiles.normal.gop = value_int((p + "DYNAMIC_NORMAL_GOP").c_str());
+    stream->dynamic_profiles.normal.rc_mode = value_int((p + "DYNAMIC_NORMAL_RC_MODE").c_str());
+    stream->dynamic_profiles.normal.qp_init = value_int((p + "DYNAMIC_NORMAL_QP_INIT").c_str());
+    stream->dynamic_profiles.normal.qp_min = value_int((p + "DYNAMIC_NORMAL_QP_MIN").c_str());
+    stream->dynamic_profiles.normal.qp_max = value_int((p + "DYNAMIC_NORMAL_QP_MAX").c_str());
+    stream->dynamic_profiles.normal.qp_min_i = value_int((p + "DYNAMIC_NORMAL_QP_MIN_I").c_str());
+    stream->dynamic_profiles.normal.qp_max_i = value_int((p + "DYNAMIC_NORMAL_QP_MAX_I").c_str());
+    stream->dynamic_profiles.normal.qp_max_step = value_int((p + "DYNAMIC_NORMAL_QP_MAX_STEP").c_str());
+    stream->dynamic_profiles.bright.fps = value_int((p + "DYNAMIC_BRIGHT_FPS").c_str());
+    stream->dynamic_profiles.bright.bitrate = value_int((p + "DYNAMIC_BRIGHT_BITRATE").c_str());
+    stream->dynamic_profiles.bright.gop = value_int((p + "DYNAMIC_BRIGHT_GOP").c_str());
+    stream->dynamic_profiles.bright.rc_mode = value_int((p + "DYNAMIC_BRIGHT_RC_MODE").c_str());
+    stream->dynamic_profiles.bright.qp_init = value_int((p + "DYNAMIC_BRIGHT_QP_INIT").c_str());
+    stream->dynamic_profiles.bright.qp_min = value_int((p + "DYNAMIC_BRIGHT_QP_MIN").c_str());
+    stream->dynamic_profiles.bright.qp_max = value_int((p + "DYNAMIC_BRIGHT_QP_MAX").c_str());
+    stream->dynamic_profiles.bright.qp_min_i = value_int((p + "DYNAMIC_BRIGHT_QP_MIN_I").c_str());
+    stream->dynamic_profiles.bright.qp_max_i = value_int((p + "DYNAMIC_BRIGHT_QP_MAX_I").c_str());
+    stream->dynamic_profiles.bright.qp_max_step = value_int((p + "DYNAMIC_BRIGHT_QP_MAX_STEP").c_str());
+
     stream->enable_rtsp = value_int((p + "ENABLE_RTSP").c_str());
     stream->enable_rtmp = value_int((p + "ENABLE_RTMP").c_str());
     stream->enable_gb28181 = value_int((p + "ENABLE_GB28181").c_str());
@@ -561,103 +631,103 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     }
 
     *config = MediaGatewayConfig();
-    config->output.enable_rtsp = value_int("GATEWAY_ENABLE_RTSP");
-    config->output.enable_rtmp = value_int("GATEWAY_ENABLE_RTMP");
-    config->output.enable_gb28181 = value_int("GATEWAY_ENABLE_GB28181");
-    config->encode.fps = value_int("GATEWAY_FPS");
-    config->encode.bitrate = value_int("GATEWAY_BITRATE");
-    config->encode.gop = value_int("GATEWAY_GOP");
-    config->encode.rc_mode = value_int("GATEWAY_RC_MODE");
-    config->encode.h264_profile = value_int("GATEWAY_H264_PROFILE");
-    config->encode.h264_level = value_int("GATEWAY_H264_LEVEL");
-    config->encode.h264_cabac_en = value_int("GATEWAY_H264_CABAC_EN");
-    config->encode.qp_init = value_int("GATEWAY_QP_INIT");
-    config->encode.qp_min = value_int("GATEWAY_QP_MIN");
-    config->encode.qp_max = value_int("GATEWAY_QP_MAX");
-    config->encode.qp_min_i = value_int("GATEWAY_QP_MIN_I");
-    config->encode.qp_max_i = value_int("GATEWAY_QP_MAX_I");
-    config->encode.qp_max_step = value_int("GATEWAY_QP_MAX_STEP");
-    config->runtime.low_latency_mode = value_int("GATEWAY_LOW_LATENCY_MODE");
-    config->runtime.stats_interval_sec = value_int("GATEWAY_STATS_INTERVAL_SEC");
-    config->runtime.capture_retry_ms = value_int("GATEWAY_CAPTURE_RETRY_MS");
-    config->runtime.max_consecutive_failures = value_int("GATEWAY_MAX_CONSECUTIVE_FAILURES");
-    config->record.file_path = value_string("GATEWAY_RECORD_FILE_PATH");
-    config->record.flush_interval_frames = value_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES");
-    config->runtime.config_file_path = value_string("GATEWAY_CONFIG_FILE_PATH");
-    config->bench.enabled = value_int("GATEWAY_BENCH_ENABLE");
-    config->bench.sample_every = value_int("GATEWAY_BENCH_SAMPLE_EVERY");
-    config->bench.print_interval_sec = value_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC");
-    config->log.level = value_int("LOG_LEVEL");
-    config->dynamic_fps.enabled = value_int("DYNAMIC_FPS_ENABLE");
-    config->dynamic_fps.targets.normal_fps = value_int("DYNAMIC_FPS_NORMAL_FPS");
-    config->dynamic_fps.targets.low_light_fps = value_int("DYNAMIC_FPS_LOW_LIGHT_FPS");
-    config->dynamic_fps.targets.bright_fps = value_int("DYNAMIC_FPS_BRIGHT_FPS");
-    config->dynamic_fps.timing.min_switch_interval_ms = value_int("DYNAMIC_FPS_MIN_SWITCH_INTERVAL_MS");
-    config->dynamic_fps.timing.evaluate_interval_ms = value_int("DYNAMIC_FPS_EVALUATE_INTERVAL_MS");
-    config->dynamic_fps.timing.bright_confirm_ms = value_int("DYNAMIC_FPS_BRIGHT_CONFIRM_MS");
-    config->dynamic_fps.timing.low_light_confirm_ms = value_int("DYNAMIC_FPS_LOW_LIGHT_CONFIRM_MS");
-    config->dynamic_fps.timing.ae_scene_confirm_ms = value_int("DYNAMIC_FPS_AE_SCENE_CONFIRM_MS");
-    config->dynamic_fps.ae.bright_max_exposure_us = value_float("DYNAMIC_FPS_BRIGHT_MAX_EXPOSURE_US");
-    config->dynamic_fps.ae.bright_max_analog_gain = value_float("DYNAMIC_FPS_BRIGHT_MAX_ANALOG_GAIN");
-    config->dynamic_fps.ae.bright_min_mean_luma = value_float("DYNAMIC_FPS_BRIGHT_MIN_MEAN_LUMA");
-    config->dynamic_fps.ae.low_light_min_exposure_ratio = value_float("DYNAMIC_FPS_LOW_LIGHT_MIN_EXPOSURE_RATIO");
-    config->dynamic_fps.ae.low_light_min_analog_gain = value_float("DYNAMIC_FPS_LOW_LIGHT_MIN_ANALOG_GAIN");
-    config->dynamic_fps.ae.low_light_max_mean_luma = value_float("DYNAMIC_FPS_LOW_LIGHT_MAX_MEAN_LUMA");
-    config->capture_source_count = value_int("GATEWAY_CAPTURE_SOURCE_COUNT");
-    config->stream_count = value_int("GATEWAY_STREAM_COUNT");
+    config->output.switches.enable_rtsp = value_int("GATEWAY_ENABLE_RTSP");
+    config->output.switches.enable_rtmp = value_int("GATEWAY_ENABLE_RTMP");
+    config->output.switches.enable_gb28181 = value_int("GATEWAY_ENABLE_GB28181");
+    config->video.encode.fps = value_int("GATEWAY_FPS");
+    config->video.encode.bitrate = value_int("GATEWAY_BITRATE");
+    config->video.encode.gop = value_int("GATEWAY_GOP");
+    config->video.encode.rc_mode = value_int("GATEWAY_RC_MODE");
+    config->video.encode.h264_profile = value_int("GATEWAY_H264_PROFILE");
+    config->video.encode.h264_level = value_int("GATEWAY_H264_LEVEL");
+    config->video.encode.h264_cabac_en = value_int("GATEWAY_H264_CABAC_EN");
+    config->video.encode.qp_init = value_int("GATEWAY_QP_INIT");
+    config->video.encode.qp_min = value_int("GATEWAY_QP_MIN");
+    config->video.encode.qp_max = value_int("GATEWAY_QP_MAX");
+    config->video.encode.qp_min_i = value_int("GATEWAY_QP_MIN_I");
+    config->video.encode.qp_max_i = value_int("GATEWAY_QP_MAX_I");
+    config->video.encode.qp_max_step = value_int("GATEWAY_QP_MAX_STEP");
+    config->system.runtime.low_latency_mode = value_int("GATEWAY_LOW_LATENCY_MODE");
+    config->system.runtime.stats_interval_sec = value_int("GATEWAY_STATS_INTERVAL_SEC");
+    config->system.runtime.capture_retry_ms = value_int("GATEWAY_CAPTURE_RETRY_MS");
+    config->system.runtime.max_consecutive_failures = value_int("GATEWAY_MAX_CONSECUTIVE_FAILURES");
+    config->system.record.file_path = value_string("GATEWAY_RECORD_FILE_PATH");
+    config->system.record.flush_interval_frames = value_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES");
+    config->system.runtime.config_file_path = value_string("GATEWAY_CONFIG_FILE_PATH");
+    config->system.bench.enabled = value_int("GATEWAY_BENCH_ENABLE");
+    config->system.bench.sample_every = value_int("GATEWAY_BENCH_SAMPLE_EVERY");
+    config->system.bench.print_interval_sec = value_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC");
+    config->system.log.level = value_int("LOG_LEVEL");
+    config->policy.light_fps.enabled = value_int("DYNAMIC_FPS_ENABLE");
+    config->policy.light_fps.targets.normal_fps = value_int("DYNAMIC_FPS_NORMAL_FPS");
+    config->policy.light_fps.targets.low_light_fps = value_int("DYNAMIC_FPS_LOW_LIGHT_FPS");
+    config->policy.light_fps.targets.bright_fps = value_int("DYNAMIC_FPS_BRIGHT_FPS");
+    config->policy.light_fps.timing.min_switch_interval_ms = value_int("DYNAMIC_FPS_MIN_SWITCH_INTERVAL_MS");
+    config->policy.light_fps.timing.evaluate_interval_ms = value_int("DYNAMIC_FPS_EVALUATE_INTERVAL_MS");
+    config->policy.light_fps.timing.bright_confirm_ms = value_int("DYNAMIC_FPS_BRIGHT_CONFIRM_MS");
+    config->policy.light_fps.timing.low_light_confirm_ms = value_int("DYNAMIC_FPS_LOW_LIGHT_CONFIRM_MS");
+    config->policy.light_fps.timing.ae_scene_confirm_ms = value_int("DYNAMIC_FPS_AE_SCENE_CONFIRM_MS");
+    config->policy.light_fps.ae.bright_max_exposure_us = value_float("DYNAMIC_FPS_BRIGHT_MAX_EXPOSURE_US");
+    config->policy.light_fps.ae.bright_max_analog_gain = value_float("DYNAMIC_FPS_BRIGHT_MAX_ANALOG_GAIN");
+    config->policy.light_fps.ae.bright_min_mean_luma = value_float("DYNAMIC_FPS_BRIGHT_MIN_MEAN_LUMA");
+    config->policy.light_fps.ae.low_light_min_exposure_ratio = value_float("DYNAMIC_FPS_LOW_LIGHT_MIN_EXPOSURE_RATIO");
+    config->policy.light_fps.ae.low_light_min_analog_gain = value_float("DYNAMIC_FPS_LOW_LIGHT_MIN_ANALOG_GAIN");
+    config->policy.light_fps.ae.low_light_max_mean_luma = value_float("DYNAMIC_FPS_LOW_LIGHT_MAX_MEAN_LUMA");
+    config->input.capture_source_count = value_int("GATEWAY_CAPTURE_SOURCE_COUNT");
+    config->video.stream_count = value_int("GATEWAY_STREAM_COUNT");
 
-    fill_capture_source(&config->capture_sources[0], "CAPTURE_MAIN_");
-    fill_capture_source(&config->capture_sources[1], "CAPTURE_SUB_");
-    fill_isp_source(&config->isp);
-    fill_audio_source(&config->audio);
-    fill_stream(&config->streams[0], "STREAM_MAIN_");
-    fill_stream(&config->streams[1], "STREAM_SUB_");
+    fill_capture_source(&config->input.capture_sources[0], "CAPTURE_MAIN_");
+    fill_capture_source(&config->input.capture_sources[1], "CAPTURE_SUB_");
+    fill_isp_source(&config->input.isp);
+    fill_audio_source(&config->audio.source.source);
+    fill_stream(&config->video.streams[0], "STREAM_MAIN_");
+    fill_stream(&config->video.streams[1], "STREAM_SUB_");
 
-    config->rtsp.name = value_string("RTSP_NAME");
-    config->rtsp.session_name = value_string("RTSP_SESSION_NAME");
-    config->rtsp.server_ip = value_string("RTSP_SERVER_IP");
-    config->rtsp.server_port = value_int("RTSP_SERVER_PORT");
-    config->rtsp.auth_enable = value_int("RTSP_AUTH_ENABLE");
-    config->rtsp.user = value_string("RTSP_USER");
-    config->rtsp.password = value_string("RTSP_PASSWORD");
-    config->rtsp.queue_capacity = value_int("RTSP_QUEUE_CAPACITY");
+    config->output.rtsp.name = value_string("RTSP_NAME");
+    config->output.rtsp.session_name = value_string("RTSP_SESSION_NAME");
+    config->output.rtsp.server_ip = value_string("RTSP_SERVER_IP");
+    config->output.rtsp.server_port = value_int("RTSP_SERVER_PORT");
+    config->output.rtsp.auth_enable = value_int("RTSP_AUTH_ENABLE");
+    config->output.rtsp.user = value_string("RTSP_USER");
+    config->output.rtsp.password = value_string("RTSP_PASSWORD");
+    config->output.rtsp.queue_capacity = value_int("RTSP_QUEUE_CAPACITY");
 
-    config->rtmp.name = value_string("RTMP_NAME");
-    config->rtmp.publish_url = value_string("RTMP_PUBLISH_URL");
-    config->rtmp.queue_capacity = value_int("RTMP_QUEUE_CAPACITY");
-    config->rtmp.reconnect_interval_ms = value_int("RTMP_RECONNECT_INTERVAL_MS");
-    config->rtmp.connect_timeout_ms = value_int("RTMP_CONNECT_TIMEOUT_MS");
-    config->rtmp.audio_enabled = value_int("RTMP_AUDIO_ENABLED");
-    config->rtmp.video_width = value_int("RTMP_VIDEO_WIDTH");
-    config->rtmp.video_height = value_int("RTMP_VIDEO_HEIGHT");
-    config->rtmp.video_fps = value_int("RTMP_VIDEO_FPS");
-    config->rtmp.video_bitrate = value_int("RTMP_VIDEO_BITRATE");
-    config->rtmp.video_codec_name = value_string("RTMP_VIDEO_CODEC_NAME");
-    config->rtmp.encoder_name = value_string("RTMP_ENCODER_NAME");
+    config->output.rtmp.name = value_string("RTMP_NAME");
+    config->output.rtmp.publish_url = value_string("RTMP_PUBLISH_URL");
+    config->output.rtmp.queue_capacity = value_int("RTMP_QUEUE_CAPACITY");
+    config->output.rtmp.reconnect_interval_ms = value_int("RTMP_RECONNECT_INTERVAL_MS");
+    config->output.rtmp.connect_timeout_ms = value_int("RTMP_CONNECT_TIMEOUT_MS");
+    config->output.rtmp.audio_enabled = value_int("RTMP_AUDIO_ENABLED");
+    config->output.rtmp.video_width = value_int("RTMP_VIDEO_WIDTH");
+    config->output.rtmp.video_height = value_int("RTMP_VIDEO_HEIGHT");
+    config->output.rtmp.video_fps = value_int("RTMP_VIDEO_FPS");
+    config->output.rtmp.video_bitrate = value_int("RTMP_VIDEO_BITRATE");
+    config->output.rtmp.video_codec_name = value_string("RTMP_VIDEO_CODEC_NAME");
+    config->output.rtmp.encoder_name = value_string("RTMP_ENCODER_NAME");
 
-    config->gb28181.name = value_string("GB28181_NAME");
-    config->gb28181.server_ip = value_string("GB28181_SERVER_IP");
-    config->gb28181.server_port = value_int("GB28181_SERVER_PORT");
-    config->gb28181.server_domain = value_string("GB28181_SERVER_DOMAIN");
-    config->gb28181.server_id = value_string("GB28181_SERVER_ID");
-    config->gb28181.device_id = value_string("GB28181_DEVICE_ID");
-    config->gb28181.device_domain = value_string("GB28181_DEVICE_DOMAIN");
-    config->gb28181.device_password = value_string("GB28181_DEVICE_PASSWORD");
-    config->gb28181.bind_ip = value_string("GB28181_BIND_IP");
-    config->gb28181.local_sip_port = value_int("GB28181_LOCAL_SIP_PORT");
-    config->gb28181.sip_contact_ip = value_string("GB28181_CONTACT_IP");
-    config->gb28181.media_ip = value_string("GB28181_MEDIA_IP");
-    config->gb28181.media_port = value_int("GB28181_MEDIA_PORT");
-    config->gb28181.register_expires = value_int("GB28181_REGISTER_EXPIRES");
-    config->gb28181.keepalive_interval_sec = value_int("GB28181_KEEPALIVE_INTERVAL");
-    config->gb28181.register_retry_interval_sec = value_int("GB28181_REGISTER_RETRY_INTERVAL");
-    config->gb28181.device_name = value_string("GB28181_DEVICE_NAME");
-    config->gb28181.manufacturer = value_string("GB28181_MANUFACTURER");
-    config->gb28181.model = value_string("GB28181_MODEL");
-    config->gb28181.firmware = value_string("GB28181_FIRMWARE");
-    config->gb28181.channel_id = value_string("GB28181_CHANNEL_ID");
-    config->gb28181.user_agent = value_string("GB28181_USER_AGENT");
-    config->gb28181.queue_capacity = value_int("GB28181_QUEUE_CAPACITY");
+    config->output.gb28181.name = value_string("GB28181_NAME");
+    config->output.gb28181.server_ip = value_string("GB28181_SERVER_IP");
+    config->output.gb28181.server_port = value_int("GB28181_SERVER_PORT");
+    config->output.gb28181.server_domain = value_string("GB28181_SERVER_DOMAIN");
+    config->output.gb28181.server_id = value_string("GB28181_SERVER_ID");
+    config->output.gb28181.device_id = value_string("GB28181_DEVICE_ID");
+    config->output.gb28181.device_domain = value_string("GB28181_DEVICE_DOMAIN");
+    config->output.gb28181.device_password = value_string("GB28181_DEVICE_PASSWORD");
+    config->output.gb28181.bind_ip = value_string("GB28181_BIND_IP");
+    config->output.gb28181.local_sip_port = value_int("GB28181_LOCAL_SIP_PORT");
+    config->output.gb28181.sip_contact_ip = value_string("GB28181_CONTACT_IP");
+    config->output.gb28181.media_ip = value_string("GB28181_MEDIA_IP");
+    config->output.gb28181.media_port = value_int("GB28181_MEDIA_PORT");
+    config->output.gb28181.register_expires = value_int("GB28181_REGISTER_EXPIRES");
+    config->output.gb28181.keepalive_interval_sec = value_int("GB28181_KEEPALIVE_INTERVAL");
+    config->output.gb28181.register_retry_interval_sec = value_int("GB28181_REGISTER_RETRY_INTERVAL");
+    config->output.gb28181.device_name = value_string("GB28181_DEVICE_NAME");
+    config->output.gb28181.manufacturer = value_string("GB28181_MANUFACTURER");
+    config->output.gb28181.model = value_string("GB28181_MODEL");
+    config->output.gb28181.firmware = value_string("GB28181_FIRMWARE");
+    config->output.gb28181.channel_id = value_string("GB28181_CHANNEL_ID");
+    config->output.gb28181.user_agent = value_string("GB28181_USER_AGENT");
+    config->output.gb28181.queue_capacity = value_int("GB28181_QUEUE_CAPACITY");
 }
 
 int def_value_loaded(void) {
@@ -667,3 +737,4 @@ int def_value_loaded(void) {
 const char *def_value_source_path(void) {
     return g_source_path.c_str();
 }
+

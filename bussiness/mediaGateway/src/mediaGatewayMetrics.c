@@ -32,7 +32,7 @@ void media_gateway_metrics_log_frame_trace(MediaGatewayCtx *ctx,
 
     if (!ctx || !frame || !packet)
         return;
-    if (stream_idx < 0 || stream_idx >= ctx->config.stream_count ||
+    if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count ||
         (frame->frame_id % FRAME_TRACE_SAMPLE_INTERVAL) != 0)
     {
         return;
@@ -51,7 +51,7 @@ void media_gateway_metrics_log_frame_trace(MediaGatewayCtx *ctx,
              " dqbuf_to_encode_start_us=%" PRIu64
              " encode_us=%" PRIu64
              " key=%d h264_len=%zu",
-             ctx->config.streams[stream_idx].name ? ctx->config.streams[stream_idx].name : "unknown",
+             ctx->config.video.streams[stream_idx].name ? ctx->config.video.streams[stream_idx].name : "unknown",
              frame->frame_id,
              camera_to_output_queued_us,
              frame->metrics.camera_buffer_wait_us,
@@ -125,8 +125,8 @@ static void media_gateway_bench_log_stream(MediaGatewayCtx *ctx, int stream_idx)
     double sample_count;
     const char *stream_name;
 
-    stream_name = (stream_idx < ctx->config.stream_count && ctx->config.streams[stream_idx].name)
-                      ? ctx->config.streams[stream_idx].name
+    stream_name = (stream_idx < ctx->config.video.stream_count && ctx->config.video.streams[stream_idx].name)
+                      ? ctx->config.video.streams[stream_idx].name
                       : "unknown";
     if (window->sample_count <= 0)
     {
@@ -214,7 +214,7 @@ void media_gateway_bench_log_and_reset_if_due(MediaGatewayCtx *ctx)
     if (span_us < (uint64_t)ctx->bench.print_interval_sec * 1000000ULL)
         return;
 
-    for (i = 0; i < ctx->config.stream_count; ++i)
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
         if (!ctx->stream_enabled[i])
             continue;

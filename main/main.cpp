@@ -20,7 +20,7 @@ int main(int argc, char **argv)
 
     def_value_init(config_path);
     def_value_get_media_gateway_config(&config);
-    log_set_level((LogLevel)config.log.level);
+    log_set_level((LogLevel)config.system.log.level);
     if (def_value_loaded())
     {
         LOG_INFO("loaded config file: %s", def_value_source_path());

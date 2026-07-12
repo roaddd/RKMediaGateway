@@ -1,4 +1,4 @@
-/*** 
+﻿/*** 
  * @Author: huangkelong
  * @Date: 2026-04-27 23:38:26
  * @LastEditTime: 2026-05-06 23:11:36
@@ -31,31 +31,31 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              def_value_source_path(),
              def_value_loaded());
     LOG_INFO("[MAIN_CFG] parsed stream_count=%d bench(enable=%d sample_every=%d print_interval_sec=%d) log_level=%d",
-             config->stream_count,
-             config->bench.enabled,
-             config->bench.sample_every,
-             config->bench.print_interval_sec,
-             config->log.level);
-    LOG_INFO("[MAIN_CFG] parsed dynamic_fps enable=%d normal=%d low_light=%d bright=%d min_switch_ms=%d eval_ms=%d",
-             config->dynamic_fps.enabled,
-             config->dynamic_fps.targets.normal_fps,
-             config->dynamic_fps.targets.low_light_fps,
-             config->dynamic_fps.targets.bright_fps,
-             config->dynamic_fps.timing.min_switch_interval_ms,
-             config->dynamic_fps.timing.evaluate_interval_ms);
+             config->video.stream_count,
+             config->system.bench.enabled,
+             config->system.bench.sample_every,
+             config->system.bench.print_interval_sec,
+             config->system.log.level);
+    LOG_INFO("[MAIN_CFG] parsed light_fps enable=%d normal=%d low_light=%d bright=%d min_switch_ms=%d eval_ms=%d",
+             config->policy.light_fps.enabled,
+             config->policy.light_fps.targets.normal_fps,
+             config->policy.light_fps.targets.low_light_fps,
+             config->policy.light_fps.targets.bright_fps,
+             config->policy.light_fps.timing.min_switch_interval_ms,
+             config->policy.light_fps.timing.evaluate_interval_ms);
     LOG_INFO("[MAIN_CFG] parsed audio enabled=%d device=%s rate=%d channels=%d period_frames=%d codec=%s bind_stream=%d",
-             config->audio.enabled,
-             config->audio.device_name ? config->audio.device_name : "unknown",
-             config->audio.sample_rate,
-             config->audio.channels,
-             config->audio.period_frames,
-             config->audio.codec == MEDIA_CODEC_AAC ? "aac" :
-             (config->audio.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a"),
-             config->audio.bind_stream_index);
+             config->audio.source.enabled,
+             config->audio.source.device_name ? config->audio.source.device_name : "unknown",
+             config->audio.source.sample_rate,
+             config->audio.source.channels,
+             config->audio.source.period_frames,
+             config->audio.source.codec == MEDIA_CODEC_AAC ? "aac" :
+             (config->audio.source.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a"),
+             config->audio.source.bind_stream_index);
 
-    for (int i = 0; i < config->stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    for (int i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        const MediaGatewayStreamConfig *s = &config->streams[i];
+        const MediaGatewayStreamConfig *s = &config->video.streams[i];
         LOG_INFO("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d",
                  i,
                  s->name ? s->name : "unknown",
@@ -83,7 +83,7 @@ int main(int argc, char **argv)
 
     def_value_init(config_path);
     def_value_get_media_gateway_config(&config);
-    log_set_level((LogLevel)config.log.level);
+    log_set_level((LogLevel)config.system.log.level);
     if (def_value_loaded())
     {
         LOG_INFO("loaded config file: %s", def_value_source_path());
@@ -126,3 +126,6 @@ int main(int argc, char **argv)
         shell_command_server_deinit();
     return ret;
 }
+
+
+
