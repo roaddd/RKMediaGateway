@@ -13,6 +13,80 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+/**
+ * @brief 返回场景状态名称，便于 shell 输出阅读。
+ */
+static const char *gateway_debug_scene_name(MediaGatewaySceneState state)
+{
+    switch (state)
+    {
+    case MEDIA_GATEWAY_SCENE_LOW_LIGHT:
+        return "LOW_LIGHT";
+    case MEDIA_GATEWAY_SCENE_BRIGHT:
+        return "BRIGHT";
+    case MEDIA_GATEWAY_SCENE_NORMAL:
+    default:
+        return "NORMAL";
+    }
+}
+
+/**
+ * @brief 返回网络状态名称，便于 shell 输出阅读。
+ */
+static const char *gateway_debug_network_name(MediaGatewayNetworkState state)
+{
+    switch (state)
+    {
+    case MEDIA_GATEWAY_NETWORK_NORMAL:
+        return "NORMAL";
+    case MEDIA_GATEWAY_NETWORK_BAD:
+        return "BAD";
+    case MEDIA_GATEWAY_NETWORK_VERY_BAD:
+        return "VERY_BAD";
+    case MEDIA_GATEWAY_NETWORK_GOOD:
+    default:
+        return "GOOD";
+    }
+}
+
+/**
+ * @brief 解析 shell 输入里的 0/1/on/off/enable/disable 开关值。
+ */
+static int gateway_debug_parse_enable_value(const char *value, int *enabled)
+{
+    if (!value || !enabled)
+        return -1;
+    if (strcmp(value, "1") == 0 ||
+        strcmp(value, "on") == 0 ||
+        strcmp(value, "enable") == 0 ||
+        strcmp(value, "enabled") == 0)
+    {
+        *enabled = 1;
+        return 0;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcmp(value, "off") == 0 ||
+        strcmp(value, "disable") == 0 ||
+        strcmp(value, "disabled") == 0)
+    {
+        *enabled = 0;
+        return 0;
+    }
+    return -1;
+}
+
+/**
+ * @brief 获取 debug 命令使用的单调时钟，单位微秒。
+ */
+static uint64_t gateway_debug_now_us(void)
+{
+    struct timespec ts = {0};
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
 
 /**
  * @description: 处理 getStatus 调试命令，输出 gateway 主状态。
@@ -309,7 +383,300 @@ static int gateway_shell_get_isp(void *user_data, const char *input, char *outpu
 }
 
 /**
- * @description: ?? gateway ?? shell ???
+ * @description: 处理 getAdapt 调试命令，输出亮度策略、网络策略和融合输出状态。
+ *
+ * 该命令用于确认 RTCP/队列反馈是否进入对应码流、每路编码参数目标值是否生成、
+ * aggregate_network 是否按多路码流取到最保守的全局 fps 约束。
+ */
+static int gateway_shell_get_adapt(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaAdaptCtrlState state = {0};
+    MediaLightFpsState light_state = {0};
+    MediaVideoEncodeParams *params = NULL;
+    char *reply = NULL;
+    size_t offset = 0;
+    int stream_idx = 0;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_adapt failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    if (ctx->stats_lock_ready)
+        pthread_mutex_lock(&ctx->stats_lock);
+    state = ctx->adaptive_policy_state;
+    light_state = ctx->light_fps_state;
+    if (ctx->stats_lock_ready)
+        pthread_mutex_unlock(&ctx->stats_lock);
+
+    shell_command_reply_append(reply, &offset, "cmd=getAdapt\n");
+    shell_command_reply_append(reply, &offset, "light_fps_enabled=%d\n", ctx->config.policy.light_fps.enabled);
+    shell_command_reply_append(reply, &offset, "network_encode_enabled=%d\n", ctx->config.policy.network_encode.enabled);
+    shell_command_reply_append(reply, &offset, "manual_override=%d\n", light_state.manual_override);
+    shell_command_reply_append(reply, &offset, "light_current_fps=%d\n", light_state.current_fps);
+    shell_command_reply_append(reply, &offset, "light_target_fps=%d\n", light_state.target_fps);
+    shell_command_reply_append(reply, &offset, "scene_state=%s\n", gateway_debug_scene_name(state.scene.state));
+    shell_command_reply_append(reply, &offset, "scene_max_fps=%d\n", state.scene.max_fps);
+    shell_command_reply_append(reply, &offset, "aggregate_network_state=%s\n", gateway_debug_network_name(state.aggregate_network.state));
+    shell_command_reply_append(reply, &offset, "aggregate_network_max_fps=%d\n", state.aggregate_network.max_fps);
+    shell_command_reply_append(reply, &offset, "aggregate_network_queue_depth=%d\n", state.aggregate_network.max_output_queue_depth);
+    shell_command_reply_append(reply, &offset, "aggregate_network_loss=%u\n", state.aggregate_network.rtcp_fraction_lost);
+    shell_command_reply_append(reply, &offset, "aggregate_network_rtt_ms=%u\n", state.aggregate_network.rtcp_rtt_ms);
+    shell_command_reply_append(reply, &offset, "aggregate_network_jitter=%u\n", state.aggregate_network.rtcp_jitter);
+    shell_command_reply_append(reply, &offset, "output_target_fps=%d\n", state.output.target_fps);
+    shell_command_reply_append(reply, &offset, "output_last_decision_ms=%" PRIu64 "\n", state.output.last_decision_ts_us / 1000ULL);
+    shell_command_reply_append(reply, &offset, "output_reason=%s\n", state.output.reason);
+
+    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count &&
+                         stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_idx)
+    {
+        params = &state.encode_params.target[stream_idx];
+        shell_command_reply_append(reply, &offset, "stream%d_enabled=%d\n", stream_idx, ctx->config.video.streams[stream_idx].enabled);
+        shell_command_reply_append(reply, &offset, "stream%d_network_state=%s\n", stream_idx, gateway_debug_network_name(state.stream_network[stream_idx].state));
+        shell_command_reply_append(reply, &offset, "stream%d_network_max_fps=%d\n", stream_idx, state.stream_network[stream_idx].max_fps);
+        shell_command_reply_append(reply, &offset, "stream%d_queue_depth=%d\n", stream_idx, state.stream_network[stream_idx].max_output_queue_depth);
+        shell_command_reply_append(reply, &offset, "stream%d_rtcp_loss=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_fraction_lost);
+        shell_command_reply_append(reply, &offset, "stream%d_rtcp_rtt_ms=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_rtt_ms);
+        shell_command_reply_append(reply, &offset, "stream%d_rtcp_jitter=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter);
+        shell_command_reply_append(reply, &offset, "stream%d_rtcp_last_ms=%" PRIu64 "\n", stream_idx, state.stream_network[stream_idx].last_rtcp_feedback_ts_us / 1000ULL);
+        shell_command_reply_append(reply, &offset, "stream%d_target_fps=%d\n", stream_idx, params->fps);
+        shell_command_reply_append(reply, &offset, "stream%d_target_bitrate=%d\n", stream_idx, params->bitrate);
+        shell_command_reply_append(reply, &offset, "stream%d_target_gop=%d\n", stream_idx, params->gop);
+        shell_command_reply_append(reply, &offset, "stream%d_pacing_rate_bps=%d\n", stream_idx, state.output.pacing_rate_bps[stream_idx]);
+    }
+
+    return 0;
+}
+
+/**
+ * @description: 处理 setAdaptPolicy 调试命令，运行期打开或关闭亮度/网络两个子策略。
+ *
+ * 用法：
+ * setAdaptPolicy light 0/1      开关环境亮度调帧率策略。
+ * setAdaptPolicy network 0/1    开关 RTCP/队列反馈调编码参数策略。
+ */
+static int gateway_shell_set_adapt_policy(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    char policy[32] = {0};
+    char value[32] = {0};
+    char *reply = NULL;
+    size_t offset = 0;
+    int enabled = 0;
+    int parsed = 0;
+
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_set_adapt_policy failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    shell_command_reply_append(reply, &offset, "cmd=setAdaptPolicy\n");
+
+    parsed = input ? sscanf(input, "%31s %31s", policy, value) : 0;
+    if (parsed != 2 || gateway_debug_parse_enable_value(value, &enabled) != 0)
+    {
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=invalid input\n");
+        shell_command_reply_append(reply, &offset, "usage=setAdaptPolicy <light|network> <0|1|on|off>\n");
+        return -1;
+    }
+
+    if (strcmp(policy, "light") == 0 || strcmp(policy, "light_fps") == 0 || strcmp(policy, "scene") == 0)
+    {
+        ctx->config.policy.light_fps.enabled = enabled;
+        shell_command_reply_append(reply, &offset, "ret=0\n");
+        shell_command_reply_append(reply, &offset, "light_fps_enabled=%d\n", ctx->config.policy.light_fps.enabled);
+        shell_command_reply_append(reply, &offset, "network_encode_enabled=%d\n", ctx->config.policy.network_encode.enabled);
+        LOG_WARN("[ADAPTIVE_CONTROL] shell set light_fps enabled=%d", enabled);
+        return 0;
+    }
+    if (strcmp(policy, "network") == 0 || strcmp(policy, "network_encode") == 0 || strcmp(policy, "rtcp") == 0)
+    {
+        ctx->config.policy.network_encode.enabled = enabled;
+        shell_command_reply_append(reply, &offset, "ret=0\n");
+        shell_command_reply_append(reply, &offset, "light_fps_enabled=%d\n", ctx->config.policy.light_fps.enabled);
+        shell_command_reply_append(reply, &offset, "network_encode_enabled=%d\n", ctx->config.policy.network_encode.enabled);
+        LOG_WARN("[ADAPTIVE_CONTROL] shell set network_encode enabled=%d", enabled);
+        return 0;
+    }
+
+    shell_command_reply_append(reply, &offset, "ret=-1\n");
+    shell_command_reply_append(reply, &offset, "error=unknown policy %s\n", policy);
+    shell_command_reply_append(reply, &offset, "supported=light,network\n");
+    return -1;
+}
+
+/**
+ * @description: 处理 injectRtcp 调试命令，向指定码流注入模拟 RTCP 网络反馈。
+ *
+ * 用法：
+ * injectRtcp <stream_idx> <fraction_lost> <rtt_ms> <jitter>
+ */
+static int gateway_shell_inject_rtcp(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaAdaptNetworkState *network = NULL;
+    char *reply = NULL;
+    size_t offset = 0;
+    int parsed = 0;
+    int stream_idx = 0;
+    int fraction_lost = 0;
+    int rtt_ms = 0;
+    int jitter = 0;
+
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_inject_rtcp failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    shell_command_reply_append(reply, &offset, "cmd=injectRtcp\n");
+
+    parsed = input ? sscanf(input, "%d %d %d %d", &stream_idx, &fraction_lost, &rtt_ms, &jitter) : 0;
+    if (parsed != 4 ||
+        stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS ||
+        fraction_lost < 0 || fraction_lost > 255 ||
+        rtt_ms < 0 ||
+        jitter < 0)
+    {
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=invalid input\n");
+        shell_command_reply_append(reply, &offset, "usage=injectRtcp <stream_idx> <fraction_lost 0-255> <rtt_ms> <jitter>\n");
+        return -1;
+    }
+
+    network = &ctx->adaptive_policy_state.stream_network[stream_idx];
+    if (ctx->stats_lock_ready)
+        pthread_mutex_lock(&ctx->stats_lock);
+    network->rtcp_fraction_lost = (uint8_t)fraction_lost;
+    network->rtcp_rtt_ms = (uint32_t)rtt_ms;
+    network->rtcp_jitter = (uint32_t)jitter;
+    network->last_rtcp_feedback_ts_us = gateway_debug_now_us();
+    if (ctx->stats_lock_ready)
+        pthread_mutex_unlock(&ctx->stats_lock);
+
+    shell_command_reply_append(reply, &offset, "ret=0\n");
+    shell_command_reply_append(reply, &offset, "stream_idx=%d\n", stream_idx);
+    shell_command_reply_append(reply, &offset, "rtcp_fraction_lost=%d\n", fraction_lost);
+    shell_command_reply_append(reply, &offset, "rtcp_rtt_ms=%d\n", rtt_ms);
+    shell_command_reply_append(reply, &offset, "rtcp_jitter=%d\n", jitter);
+    shell_command_reply_append(reply, &offset, "note=policy will consume injected values on next evaluation tick\n");
+    LOG_WARN("[ADAPTIVE_CONTROL] shell inject rtcp stream=%d loss=%d rtt=%d jitter=%d",
+             stream_idx,
+             fraction_lost,
+             rtt_ms,
+             jitter);
+    return 0;
+}
+
+/**
+ * @description: 处理 clearRtcp 调试命令，清空指定码流或全部码流的 RTCP 指标。
+ *
+ * 用法：
+ * clearRtcp <stream_idx|all>
+ */
+static int gateway_shell_clear_rtcp(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaAdaptNetworkState *network = NULL;
+    char target[32] = {0};
+    char *end = NULL;
+    char *reply = NULL;
+    size_t offset = 0;
+    long stream_value = 0;
+    int stream_idx = 0;
+    int begin_stream = 0;
+    int end_stream = 0;
+
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_clear_rtcp failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    shell_command_reply_append(reply, &offset, "cmd=clearRtcp\n");
+
+    if (!input || sscanf(input, "%31s", target) != 1)
+    {
+        shell_command_reply_append(reply, &offset, "ret=-1\n");
+        shell_command_reply_append(reply, &offset, "error=missing input\n");
+        shell_command_reply_append(reply, &offset, "usage=clearRtcp <stream_idx|all>\n");
+        return -1;
+    }
+
+    if (strcmp(target, "all") == 0)
+    {
+        begin_stream = 0;
+        end_stream = ctx->config.video.stream_count;
+    }
+    else
+    {
+        errno = 0;
+        stream_value = strtol(target, &end, 10);
+        if (errno != 0 || end == target || (end && end[0] != '\0') ||
+            stream_value < 0 || stream_value >= ctx->config.video.stream_count ||
+            stream_value >= MEDIA_GATEWAY_MAX_STREAMS)
+        {
+            shell_command_reply_append(reply, &offset, "ret=-1\n");
+            shell_command_reply_append(reply, &offset, "error=invalid stream index\n");
+            shell_command_reply_append(reply, &offset, "usage=clearRtcp <stream_idx|all>\n");
+            return -1;
+        }
+        begin_stream = (int)stream_value;
+        end_stream = begin_stream + 1;
+    }
+
+    if (ctx->stats_lock_ready)
+        pthread_mutex_lock(&ctx->stats_lock);
+    for (stream_idx = begin_stream; stream_idx < end_stream && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        network = &ctx->adaptive_policy_state.stream_network[stream_idx];
+        network->rtcp_fraction_lost = 0;
+        network->rtcp_rtt_ms = 0;
+        network->rtcp_jitter = 0;
+        network->last_rtcp_feedback_ts_us = 0;
+    }
+    if (ctx->stats_lock_ready)
+        pthread_mutex_unlock(&ctx->stats_lock);
+
+    shell_command_reply_append(reply, &offset, "ret=0\n");
+    shell_command_reply_append(reply, &offset, "begin_stream=%d\n", begin_stream);
+    shell_command_reply_append(reply, &offset, "end_stream=%d\n", end_stream);
+    shell_command_reply_append(reply, &offset, "note=policy will return to queue-depth-only network judgement on next evaluation tick\n");
+    LOG_WARN("[ADAPTIVE_CONTROL] shell clear rtcp target=%s begin=%d end=%d",
+             target,
+             begin_stream,
+             end_stream);
+    return 0;
+}
+
+/**
+ * @description: 注册 gateway 相关 shell 调试命令。
  */
 int media_gateway_debug_register_shell_commands(MediaGatewayCtx *ctx)
 {
@@ -337,6 +704,26 @@ int media_gateway_debug_register_shell_commands(MediaGatewayCtx *ctx)
     if (regShellCmd("getIsp", gateway_shell_get_isp, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd getIsp");
+        return -1;
+    }
+    if (regShellCmd("getAdapt", gateway_shell_get_adapt, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd getAdapt");
+        return -1;
+    }
+    if (regShellCmd("setAdaptPolicy", gateway_shell_set_adapt_policy, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd setAdaptPolicy");
+        return -1;
+    }
+    if (regShellCmd("injectRtcp", gateway_shell_inject_rtcp, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd injectRtcp");
+        return -1;
+    }
+    if (regShellCmd("clearRtcp", gateway_shell_clear_rtcp, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_shell_commands failed: regShellCmd clearRtcp");
         return -1;
     }
 

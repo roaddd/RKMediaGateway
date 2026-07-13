@@ -536,6 +536,36 @@ static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     return 0;
 }
 
+/* 设置 RTSP session 的视频 RTP 包级 pacing 码率。 */
+static int rtsp_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps) {
+    RtspOutputImpl *impl = NULL;
+    int normalized_rate_bps = 0;
+
+    if (!output) {
+        LOG_ERROR("rtsp_output_set_video_pacing_rate failed: output is NULL");
+        return -1;
+    }
+    impl = (RtspOutputImpl *)output->impl;
+    normalized_rate_bps = pacing_rate_bps > 0 ? pacing_rate_bps : 0;
+    if (!impl || !impl->session) {
+        /*
+         * session 未创建时不能缓存为已应用；返回失败让通用层保留旧值，
+         * 后续 output start 后 gateway 主循环会继续下发当前 pacing 目标。
+         */
+        return -1;
+    }
+    if (rtspSetSessionVideoPacingRate(impl->session, normalized_rate_bps) != 0) {
+        LOG_ERROR("rtsp_output_set_video_pacing_rate failed: session=%s rate=%d",
+                  impl->config.session_name ? impl->config.session_name : "unknown",
+                  normalized_rate_bps);
+        return -1;
+    }
+    LOG_WARN("[RTSP_PACER] session=%s video_pacing_rate_bps=%d",
+             impl->config.session_name ? impl->config.session_name : "unknown",
+             normalized_rate_bps);
+    return 0;
+}
+
 /* 当前实现无需主动断链，保留该钩子用于接口一致性。 */
 static void rtsp_output_disconnect(MediaOutput *output) {
     (void)output;
@@ -565,7 +595,8 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
         rtsp_output_connect,
         rtsp_output_send_packet,
         rtsp_output_disconnect,
-        rtsp_output_stop
+        rtsp_output_stop,
+        rtsp_output_set_video_pacing_rate
     };
     MediaOutputChannelConfig output_config;
     RtspOutputImpl *impl;

@@ -244,6 +244,42 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
 }
 
 /**
+ * @brief 将策略层生成的每路视频 RTP pacing 码率下发到输出层。
+ *
+ * mediaGateway 只负责计算每路 pacing_rate_bps；真正的 RTP 包级 pacer
+ * 在 RTSP server 内部执行。非 RTSP 输出当前没有 RTP 包级执行点，输出层会忽略。
+ */
+static void media_gateway_apply_output_pacing_rates(MediaGatewayCtx *ctx)
+{
+    int output_idx = 0;
+    int stream_idx = 0;
+    int pacing_rate_bps = 0;
+
+    if (!ctx)
+        return;
+
+    for (output_idx = 0; output_idx < ctx->output_count &&
+                         output_idx < MEDIA_GATEWAY_MAX_OUTPUTS;
+         ++output_idx)
+    {
+        stream_idx = ctx->output_stream_index[output_idx];
+        if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+            continue;
+        if (ctx->config.policy.network_encode.enabled)
+            pacing_rate_bps = ctx->adaptive_policy_state.output.pacing_rate_bps[stream_idx];
+        else
+            pacing_rate_bps = 0;
+        if (media_output_set_video_pacing_rate(&ctx->outputs[output_idx], pacing_rate_bps) != 0)
+        {
+            LOG_WARN("[ADAPTIVE_CONTROL] apply output pacing failed output=%s stream=%d rate=%d",
+                     ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown",
+                     stream_idx,
+                     pacing_rate_bps);
+        }
+    }
+}
+
+/**
  * @description: 返回非空字符串；输入为空时返回 fallback。
  */
 static const char *safe_str(const char *value, const char *fallback)
@@ -2488,6 +2524,7 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
 
     /* 策略只计算目标值，硬件变更通过命令队列异步交给资源所属线程执行。 */
     media_gateway_update_runtime_policies_if_due(ctx);
+    media_gateway_apply_output_pacing_rates(ctx);
     drive_runtime_video_control_transition(ctx, res);
 
     pthread_mutex_lock(&ctx->stats_lock);
@@ -2666,6 +2703,4 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     memset(&ctx->config, 0, sizeof(ctx->config));
     ctx->running = 0;
 }
-
-
 

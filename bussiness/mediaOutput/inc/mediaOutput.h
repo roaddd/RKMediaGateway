@@ -158,6 +158,7 @@ typedef struct {
     int (*send_packet)(MediaOutput *output, const MediaPacket *packet); /* 发送一个媒体包。 */
     void (*disconnect)(MediaOutput *output);                      /* 断开下游连接。 */
     void (*stop)(MediaOutput *output);                            /* 停止协议私有资源。 */
+    int (*set_video_pacing_rate)(MediaOutput *output, int pacing_rate_bps); /* 设置视频 RTP 包级 pacing 码率；不支持的协议可为空。 */
 } MediaOutputVTable;
 
 /**
@@ -188,6 +189,7 @@ struct MediaOutput {
     int stop_requested;                      /* 是否已请求发送线程退出。 */
     int connected;                           /* 当前输出通道是否已连接。 */
     int waiting_for_keyframe;                /* 重连后是否仍在等待关键帧恢复发送。 */
+    int video_pacing_rate_bps;               /* 当前已下发到协议层的视频 RTP pacing 码率，<=0 表示关闭。 */
 };
 
 /**
@@ -238,6 +240,14 @@ void media_output_deinit(MediaOutput *output);
  * @param stats 输出统计快照。
  */
 void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats);
+
+/**
+ * @description: 设置输出通道的视频 RTP 包级 pacing 码率。
+ * @param output 输出通道对象。
+ * @param pacing_rate_bps 目标码率，单位 bit/s；<=0 表示关闭 pacing。
+ * @return 0 成功；-1 参数非法或协议层设置失败。
+ */
+int media_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps);
 
 /**
  * @description: 协议实现内部使用的通用输出通道初始化函数。

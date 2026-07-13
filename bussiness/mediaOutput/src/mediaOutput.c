@@ -581,3 +581,39 @@ void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats)
     *stats = output->stats;
     pthread_mutex_unlock(&output->lock);
 }
+
+int media_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps)
+{
+    int normalized_rate_bps = 0;
+    int ret = 0;
+
+    if (!output)
+        return -1;
+    normalized_rate_bps = pacing_rate_bps > 0 ? pacing_rate_bps : 0;
+    if (output->video_pacing_rate_bps == normalized_rate_bps)
+        return 0;
+
+    if (output->vtable && output->vtable->set_video_pacing_rate)
+    {
+        ret = output->vtable->set_video_pacing_rate(output, normalized_rate_bps);
+        if (ret != 0)
+        {
+            LOG_ERROR("media_output_set_video_pacing_rate failed: name=%s rate=%d ret=%d",
+                      output->config.name ? output->config.name : "unknown",
+                      normalized_rate_bps,
+                      ret);
+            return -1;
+        }
+    }
+    else if (normalized_rate_bps > 0)
+    {
+        /*
+         * 非 RTSP 输出当前没有 RTP 包级 pacing 执行点。返回成功但不记录为已应用，
+         * 避免上层把 RTMP/GB28181 误判为已经启用 RTP pacer。
+         */
+        return 0;
+    }
+
+    output->video_pacing_rate_bps = normalized_rate_bps;
+    return 0;
+}
