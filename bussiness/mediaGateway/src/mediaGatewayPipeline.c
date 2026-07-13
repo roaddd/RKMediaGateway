@@ -1011,9 +1011,9 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     }
 
     /* 初始化音频编码前的队列 */
-    if (ctx->config.audio.source.source.enabled && ctx->audio_capture_ready)
+    if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
     {
-        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.source.source_slots) != 0)
+        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.source_slots) != 0)
         {
             LOG_ERROR("pipeline init failed: audio queue");
             return -1;
@@ -1113,7 +1113,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
         }
         pipeline->video.workers[i].thread_started = 1;
     }
-    if (pipeline->ctx->config.audio.source.source.enabled && pipeline->ctx->audio_capture_ready)
+    if (pipeline->ctx->config.audio.source.enabled && pipeline->ctx->audio_capture_ready)
     {
         thread_ret = pthread_create(&pipeline->audio.thread,
                                     NULL,

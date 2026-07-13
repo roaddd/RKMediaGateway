@@ -598,66 +598,66 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
         dst->h264_level = DEFAULT_H264_LEVEL;
     dst->h264_cabac_en = dst->h264_cabac_en ? 1 : 0;
 
-    dst->output.rtsp.name = safe_str(dst->output.rtsp.name, (stream_idx == 0) ? "rtsp-main" : "rtsp-sub");
-    dst->output.rtsp.session_name = safe_str(dst->output.rtsp.session_name, (stream_idx == 0) ? "live_main" : "live_sub");
-    dst->output.rtsp.server_ip = safe_str(dst->output.rtsp.server_ip, "0.0.0.0");
-    if (dst->output.rtsp.server_port <= 0)
-        dst->output.rtsp.server_port = 8554;
-    dst->output.rtsp.user = safe_str(dst->output.rtsp.user, "admin");
-    dst->output.rtsp.password = safe_str(dst->output.rtsp.password, "123456");
-    if (dst->output.rtsp.queue_capacity <= 0)
-        dst->output.rtsp.queue_capacity = 32;
-    if (dst->output.rtsp.immediate_sps_pps_on_new_client != 0)
-        dst->output.rtsp.immediate_sps_pps_on_new_client = 1;
+    dst->rtsp.name = safe_str(dst->rtsp.name, (stream_idx == 0) ? "rtsp-main" : "rtsp-sub");
+    dst->rtsp.session_name = safe_str(dst->rtsp.session_name, (stream_idx == 0) ? "live_main" : "live_sub");
+    dst->rtsp.server_ip = safe_str(dst->rtsp.server_ip, "0.0.0.0");
+    if (dst->rtsp.server_port <= 0)
+        dst->rtsp.server_port = 8554;
+    dst->rtsp.user = safe_str(dst->rtsp.user, "admin");
+    dst->rtsp.password = safe_str(dst->rtsp.password, "123456");
+    if (dst->rtsp.queue_capacity <= 0)
+        dst->rtsp.queue_capacity = 32;
+    if (dst->rtsp.immediate_sps_pps_on_new_client != 0)
+        dst->rtsp.immediate_sps_pps_on_new_client = 1;
 
-    dst->output.rtmp.name = safe_str(dst->output.rtmp.name, (stream_idx == 0) ? "rtmp-main" : "rtmp-sub");
-    dst->output.rtmp.video_codec_name = safe_str(dst->output.rtmp.video_codec_name, "H264");
-    dst->output.rtmp.encoder_name = safe_str(dst->output.rtmp.encoder_name, "RKMediaGateway");
-    if (dst->output.rtmp.queue_capacity <= 0)
-        dst->output.rtmp.queue_capacity = 64;
-    if (dst->output.rtmp.reconnect_interval_ms <= 0)
-        dst->output.rtmp.reconnect_interval_ms = 1000;
-    if (dst->output.rtmp.connect_timeout_ms <= 0)
-        dst->output.rtmp.connect_timeout_ms = 3000;
-    if (dst->output.rtmp.video_width <= 0)
-        dst->output.rtmp.video_width = dst->width;
-    if (dst->output.rtmp.video_height <= 0)
-        dst->output.rtmp.video_height = dst->height;
-    if (dst->output.rtmp.video_fps <= 0)
-        dst->output.rtmp.video_fps = dst->fps;
-    if (dst->output.rtmp.video_bitrate <= 0)
-        dst->output.rtmp.video_bitrate = dst->bitrate;
+    dst->rtmp.name = safe_str(dst->rtmp.name, (stream_idx == 0) ? "rtmp-main" : "rtmp-sub");
+    dst->rtmp.video_codec_name = safe_str(dst->rtmp.video_codec_name, "H264");
+    dst->rtmp.encoder_name = safe_str(dst->rtmp.encoder_name, "RKMediaGateway");
+    if (dst->rtmp.queue_capacity <= 0)
+        dst->rtmp.queue_capacity = 64;
+    if (dst->rtmp.reconnect_interval_ms <= 0)
+        dst->rtmp.reconnect_interval_ms = 1000;
+    if (dst->rtmp.connect_timeout_ms <= 0)
+        dst->rtmp.connect_timeout_ms = 3000;
+    if (dst->rtmp.video_width <= 0)
+        dst->rtmp.video_width = dst->width;
+    if (dst->rtmp.video_height <= 0)
+        dst->rtmp.video_height = dst->height;
+    if (dst->rtmp.video_fps <= 0)
+        dst->rtmp.video_fps = dst->fps;
+    if (dst->rtmp.video_bitrate <= 0)
+        dst->rtmp.video_bitrate = dst->bitrate;
 
-    dst->output.gb28181.name = safe_str(dst->output.gb28181.name, (stream_idx == 0) ? "gb28181-main" : "gb28181-sub");
-    dst->output.gb28181.server_ip = safe_str(dst->output.gb28181.server_ip, "192.168.1.1");
-    if (dst->output.gb28181.server_port <= 0)
-        dst->output.gb28181.server_port = 5060;
-    dst->output.gb28181.server_domain = safe_str(dst->output.gb28181.server_domain, "3402000000");
-    dst->output.gb28181.server_id = safe_str(dst->output.gb28181.server_id, "34020000002000000001");
-    dst->output.gb28181.device_id = safe_str(dst->output.gb28181.device_id, "34020000001320000001");
-    dst->output.gb28181.device_domain = safe_str(dst->output.gb28181.device_domain, dst->output.gb28181.server_domain);
-    dst->output.gb28181.device_password = safe_str(dst->output.gb28181.device_password, "12345678");
-    dst->output.gb28181.bind_ip = safe_str(dst->output.gb28181.bind_ip, "0.0.0.0");
-    if (dst->output.gb28181.local_sip_port <= 0)
-        dst->output.gb28181.local_sip_port = 5060;
-    dst->output.gb28181.sip_contact_ip = safe_str(dst->output.gb28181.sip_contact_ip, "127.0.0.1");
-    dst->output.gb28181.media_ip = safe_str(dst->output.gb28181.media_ip, dst->output.gb28181.sip_contact_ip);
-    if (dst->output.gb28181.media_port <= 0)
-        dst->output.gb28181.media_port = 30000;
-    if (dst->output.gb28181.register_expires <= 0)
-        dst->output.gb28181.register_expires = 3600;
-    if (dst->output.gb28181.keepalive_interval_sec <= 0)
-        dst->output.gb28181.keepalive_interval_sec = 60;
-    if (dst->output.gb28181.register_retry_interval_sec <= 0)
-        dst->output.gb28181.register_retry_interval_sec = 5;
-    dst->output.gb28181.device_name = safe_str(dst->output.gb28181.device_name, "RK3568 Camera");
-    dst->output.gb28181.manufacturer = safe_str(dst->output.gb28181.manufacturer, "Topeet");
-    dst->output.gb28181.model = safe_str(dst->output.gb28181.model, "RKMediaGateway");
-    dst->output.gb28181.firmware = safe_str(dst->output.gb28181.firmware, "1.0.0");
-    dst->output.gb28181.channel_id = safe_str(dst->output.gb28181.channel_id, dst->output.gb28181.device_id);
-    dst->output.gb28181.user_agent = safe_str(dst->output.gb28181.user_agent, "RKMediaGateway-GB28181/1.0");
-    if (dst->output.gb28181.queue_capacity <= 0)
-        dst->output.gb28181.queue_capacity = 64;
+    dst->gb28181.name = safe_str(dst->gb28181.name, (stream_idx == 0) ? "gb28181-main" : "gb28181-sub");
+    dst->gb28181.server_ip = safe_str(dst->gb28181.server_ip, "192.168.1.1");
+    if (dst->gb28181.server_port <= 0)
+        dst->gb28181.server_port = 5060;
+    dst->gb28181.server_domain = safe_str(dst->gb28181.server_domain, "3402000000");
+    dst->gb28181.server_id = safe_str(dst->gb28181.server_id, "34020000002000000001");
+    dst->gb28181.device_id = safe_str(dst->gb28181.device_id, "34020000001320000001");
+    dst->gb28181.device_domain = safe_str(dst->gb28181.device_domain, dst->gb28181.server_domain);
+    dst->gb28181.device_password = safe_str(dst->gb28181.device_password, "12345678");
+    dst->gb28181.bind_ip = safe_str(dst->gb28181.bind_ip, "0.0.0.0");
+    if (dst->gb28181.local_sip_port <= 0)
+        dst->gb28181.local_sip_port = 5060;
+    dst->gb28181.sip_contact_ip = safe_str(dst->gb28181.sip_contact_ip, "127.0.0.1");
+    dst->gb28181.media_ip = safe_str(dst->gb28181.media_ip, dst->gb28181.sip_contact_ip);
+    if (dst->gb28181.media_port <= 0)
+        dst->gb28181.media_port = 30000;
+    if (dst->gb28181.register_expires <= 0)
+        dst->gb28181.register_expires = 3600;
+    if (dst->gb28181.keepalive_interval_sec <= 0)
+        dst->gb28181.keepalive_interval_sec = 60;
+    if (dst->gb28181.register_retry_interval_sec <= 0)
+        dst->gb28181.register_retry_interval_sec = 5;
+    dst->gb28181.device_name = safe_str(dst->gb28181.device_name, "RK3568 Camera");
+    dst->gb28181.manufacturer = safe_str(dst->gb28181.manufacturer, "Topeet");
+    dst->gb28181.model = safe_str(dst->gb28181.model, "RKMediaGateway");
+    dst->gb28181.firmware = safe_str(dst->gb28181.firmware, "1.0.0");
+    dst->gb28181.channel_id = safe_str(dst->gb28181.channel_id, dst->gb28181.device_id);
+    dst->gb28181.user_agent = safe_str(dst->gb28181.user_agent, "RKMediaGateway-GB28181/1.0");
+    if (dst->gb28181.queue_capacity <= 0)
+        dst->gb28181.queue_capacity = 64;
 }
 
 /**
@@ -1102,12 +1102,12 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
         output_config.protocol.rtsp = s->rtsp;
         output_config.protocol.rtsp.feedback_holder = &ctx->network_feedback_holder;
-        if (ctx->config.audio.source.source.enabled && ctx->config.audio.source.source.bind_stream_index == stream_idx)
+        if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
         {
-            output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.source.codec;
-            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.source.sample_rate;
-            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.source.channels;
-            output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.source.aac_profile;
+            output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.codec;
+            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.sample_rate;
+            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.channels;
+            output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.aac_profile;
         }
         else
         {
@@ -1480,33 +1480,33 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
     G711EncoderConfig g711_config = {0};
     AacEncoderConfig aac_config = {0};
 
-    if (ctx->config.audio.source.source.enabled)
+    if (ctx->config.audio.source.enabled)
     {
-        audio_capture_config.device_name = ctx->config.audio.source.source.device_name;
-        audio_capture_config.sample_rate = ctx->config.audio.source.source.sample_rate;
-        audio_capture_config.channels = ctx->config.audio.source.source.channels;
-        audio_capture_config.format = ctx->config.audio.source.source.format;
-        audio_capture_config.period_frames = ctx->config.audio.source.source.period_frames;
-        audio_capture_config.buffer_periods = ctx->config.audio.source.source.buffer_periods;
+        audio_capture_config.device_name = ctx->config.audio.source.device_name;
+        audio_capture_config.sample_rate = ctx->config.audio.source.sample_rate;
+        audio_capture_config.channels = ctx->config.audio.source.channels;
+        audio_capture_config.format = ctx->config.audio.source.format;
+        audio_capture_config.period_frames = ctx->config.audio.source.period_frames;
+        audio_capture_config.buffer_periods = ctx->config.audio.source.buffer_periods;
         if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0)
         {
             LOG_ERROR("init audio capture failed: device=%s rate=%d channels=%d",
-                      ctx->config.audio.source.source.device_name ? ctx->config.audio.source.source.device_name : "unknown",
-                      ctx->config.audio.source.source.sample_rate,
-                      ctx->config.audio.source.source.channels);
+                      ctx->config.audio.source.device_name ? ctx->config.audio.source.device_name : "unknown",
+                      ctx->config.audio.source.sample_rate,
+                      ctx->config.audio.source.channels);
             return -1;
         }
         ctx->audio_capture_ready = 1;
-        ctx->config.audio.source.source.sample_rate = ctx->audio_capture.config.sample_rate;
-        ctx->config.audio.source.source.period_frames = ctx->audio_capture.config.period_frames;
+        ctx->config.audio.source.sample_rate = ctx->audio_capture.config.sample_rate;
+        ctx->config.audio.source.period_frames = ctx->audio_capture.config.period_frames;
 
-        if (ctx->config.audio.source.source.codec == MEDIA_CODEC_AAC)
+        if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
         {
             memset(&aac_config, 0, sizeof(aac_config));
             aac_config.sample_rate = ctx->audio_capture.config.sample_rate;
             aac_config.channels = ctx->audio_capture.config.channels;
-            aac_config.bitrate = ctx->config.audio.source.source.aac_bitrate;
-            aac_config.profile = ctx->config.audio.source.source.aac_profile;
+            aac_config.bitrate = ctx->config.audio.source.aac_bitrate;
+            aac_config.profile = ctx->config.audio.source.aac_profile;
             aac_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
             if (aac_encoder_init(&ctx->aac_encoder, &aac_config) != 0)
             {
@@ -1517,7 +1517,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         else
         {
             memset(&g711_config, 0, sizeof(g711_config));
-            g711_config.mode = ctx->config.audio.source.source.g711_mode;
+            g711_config.mode = ctx->config.audio.source.g711_mode;
             g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
             g711_config.channels = ctx->audio_capture.config.channels;
             g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
@@ -1690,13 +1690,13 @@ static int start_run_frame_sources(MediaGatewayCtx *ctx, MediaGatewayRunResource
  */
 static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
 {
-    if (ctx->config.audio.source.source.enabled && ctx->audio_capture_ready)
+    if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
     {
         if (audio_frame_source_init(&res->audio_source,
                                     &ctx->audio_capture,
-                                    ctx->config.audio.source.source.source_slots,
-                                    ctx->config.audio.source.source.retry_ms,
-                                    ctx->config.audio.source.source.max_consecutive_failures) != 0)
+                                    ctx->config.audio.source.source_slots,
+                                    ctx->config.audio.source.retry_ms,
+                                    ctx->config.audio.source.max_consecutive_failures) != 0)
         {
             LOG_ERROR("media_gateway_run failed: init audio frame source");
             return -1;
@@ -1777,7 +1777,7 @@ static int drain_audio_source_once(MediaGatewayCtx *ctx,
     if (!res->audio_source_started)
         return 0;
 
-    while (audio_drain_count < ctx->config.audio.source.source.source_slots)
+    while (audio_drain_count < ctx->config.audio.source.source_slots)
     {
         audio_slot_index = -1;
         /* 从音频采集线程队列里面获取最旧帧 */
@@ -2660,7 +2660,7 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     }
     if (ctx->audio_encoder_ready)
     {
-        if (ctx->config.audio.source.source.codec == MEDIA_CODEC_AAC)
+        if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
             aac_encoder_deinit(&ctx->aac_encoder);
         else
             g711_encoder_deinit(&ctx->audio_encoder);

@@ -218,7 +218,7 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
                  ctx->stats.streams[i].frames,
                  ctx->stats.streams[i].bytes);
     }
-    if (ctx->config.audio.source.source.enabled)
+    if (ctx->config.audio.source.enabled)
     {
         double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio.frames / span_sec) : 0.0;
         double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio.bytes * 8.0 / 1000.0 / span_sec) : 0.0;

@@ -122,7 +122,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     shell_command_reply_append(reply, &offset, "capture_source_count=%d\n", ctx->config.input.capture_source_count);
     shell_command_reply_append(reply, &offset, "stream_count=%d\n", ctx->config.video.stream_count);
     shell_command_reply_append(reply, &offset, "output_count=%d\n", ctx->output_count);
-    shell_command_reply_append(reply, &offset, "audio_enabled=%d\n", ctx->config.audio.source.source.enabled);
+    shell_command_reply_append(reply, &offset, "audio_enabled=%d\n", ctx->config.audio.source.enabled);
     shell_command_reply_append(reply, &offset, "audio_capture_ready=%d\n", ctx->audio_capture_ready);
     shell_command_reply_append(reply, &offset, "audio_encoder_ready=%d\n", ctx->audio_encoder_ready);
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)

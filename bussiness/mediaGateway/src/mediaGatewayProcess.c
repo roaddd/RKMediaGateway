@@ -777,11 +777,11 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
         return -1;
     }
     /* 确定音频数据绑定的流索引,因为音频需要跟某一路视频时间线绑定 */
-    stream_idx = ctx->config.audio.source.source.bind_stream_index;
+    stream_idx = ctx->config.audio.source.bind_stream_index;
     if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;
 
-    if (ctx->config.audio.source.source.codec == MEDIA_CODEC_AAC)
+    if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
     {
         if (aac_encoder_encode_s16le(&ctx->aac_encoder,
                                      (const int16_t *)frame->data,
