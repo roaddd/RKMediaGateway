@@ -141,6 +141,12 @@ typedef struct {
 } IspSourceConfig;
 
 typedef struct {
+    MediaVideoEncodeParams low_light; /* 低照场景使用的完整编码参数档位。 */
+    MediaVideoEncodeParams normal;    /* 常规场景使用的完整编码参数档位。 */
+    MediaVideoEncodeParams bright;    /* 亮光/低延迟场景使用的完整编码参数档位。 */
+} MediaGatewayDynamicProfiles;
+
+typedef struct {
     int enabled;                     /* 该码流是否启用。 */
     const char *name;                /* 码流名称，建议 main/sub。 */
     int source_index;                /* 绑定的采集源下标。 */
@@ -159,6 +165,7 @@ typedef struct {
     int qp_min_i;                    /* 该码流 I 帧最小 QP。 */
     int qp_max_i;                    /* 该码流 I 帧最大 QP。 */
     int qp_max_step;                 /* 该码流相邻帧最大 QP 变化步长。 */
+    MediaGatewayDynamicProfiles dynamic_profiles; /* 每路码流按场景切换的完整编码参数档位。 */
 
     int enable_rtsp;                 /* 该码流是否启用 RTSP 输出。 */
     int enable_rtmp;                 /* 该码流是否启用 RTMP 输出。 */
