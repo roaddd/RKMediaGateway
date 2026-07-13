@@ -679,7 +679,7 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     fill_capture_source(&config->input.capture_sources[0], "CAPTURE_MAIN_");
     fill_capture_source(&config->input.capture_sources[1], "CAPTURE_SUB_");
     fill_isp_source(&config->input.isp);
-    fill_audio_source(&config->audio.source.source);
+    fill_audio_source(&config->audio.source);
     fill_stream(&config->video.streams[0], "STREAM_MAIN_");
     fill_stream(&config->video.streams[1], "STREAM_SUB_");
 
