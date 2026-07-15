@@ -98,6 +98,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
 {
     MediaGatewayCtx *ctx = NULL;
     MediaGatewayStatsSnapshot stats_snapshot = {0};
+    MediaOutputStats output_stats = {0};
     char *reply = NULL;
     size_t offset = 0;
     int i = 0;
@@ -135,6 +136,21 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
         shell_command_reply_append(reply, &offset, "encoder%d_ready=%d\n", i, ctx->encoder_ready[i]);
         shell_command_reply_append(reply, &offset, "stream%d_fps=%.2f\n", i, stats_snapshot.streams[i].fps);
         shell_command_reply_append(reply, &offset, "stream%d_bytes=%" PRIu64 "\n", i, stats_snapshot.streams[i].bytes);
+    }
+    for (i = 0; i < ctx->output_count && i < MEDIA_GATEWAY_MAX_OUTPUTS; ++i)
+    {
+        /*
+         * 输出通道队列直接决定直播端到端延迟。
+         * 这里分别打印视频和音频队列深度，避免只看总深度时无法判断是哪一路积压。
+         */
+        memset(&output_stats, 0, sizeof(output_stats));
+        media_output_get_stats(&ctx->outputs[i], &output_stats);
+        shell_command_reply_append(reply, &offset, "output%d_name=%s\n", i, ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown");
+        shell_command_reply_append(reply, &offset, "output%d_stream=%d\n", i, ctx->output_stream_index[i]);
+        shell_command_reply_append(reply, &offset, "output%d_queue_depth=%d\n", i, output_stats.queue_depth);
+        shell_command_reply_append(reply, &offset, "output%d_video_queue_depth=%d\n", i, output_stats.video_queue_depth);
+        shell_command_reply_append(reply, &offset, "output%d_audio_queue_depth=%d\n", i, output_stats.audio_queue_depth);
+        shell_command_reply_append(reply, &offset, "output%d_dropped_frames=%" PRIu64 "\n", i, output_stats.dropped_frames);
     }
 
     return 0;
@@ -394,9 +410,14 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
     MediaAdaptCtrlState state = {0};
     MediaLightFpsState light_state = {0};
     MediaVideoEncodeParams *params = NULL;
+    MediaOutputStats output_stats = {0};
     char *reply = NULL;
     size_t offset = 0;
     int stream_idx = 0;
+    int output_idx = 0;
+    int output_stream_idx = 0;
+    int max_video_queue_depth = 0;
+    int max_audio_queue_depth = 0;
 
     (void)input;
     if (!user_data || !output)
@@ -439,11 +460,32 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
                          stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
          ++stream_idx)
     {
+        max_video_queue_depth = 0;
+        max_audio_queue_depth = 0;
+        /*
+         * 一个码流可能同时输出到 RTSP/RTMP/GB28181 等多个通道。
+         * 调试时按当前码流聚合所有输出通道的最大音视频队列深度，方便定位延迟来源。
+         */
+        for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+        {
+            output_stream_idx = ctx->output_stream_index[output_idx];
+            if (output_stream_idx != stream_idx)
+                continue;
+            memset(&output_stats, 0, sizeof(output_stats));
+            media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
+            if (output_stats.video_queue_depth > max_video_queue_depth)
+                max_video_queue_depth = output_stats.video_queue_depth;
+            if (output_stats.audio_queue_depth > max_audio_queue_depth)
+                max_audio_queue_depth = output_stats.audio_queue_depth;
+        }
+
         params = &state.encode_params.target[stream_idx];
         shell_command_reply_append(reply, &offset, "stream%d_enabled=%d\n", stream_idx, ctx->config.video.streams[stream_idx].enabled);
         shell_command_reply_append(reply, &offset, "stream%d_network_state=%s\n", stream_idx, gateway_debug_network_name(state.stream_network[stream_idx].state));
         shell_command_reply_append(reply, &offset, "stream%d_network_max_fps=%d\n", stream_idx, state.stream_network[stream_idx].max_fps);
         shell_command_reply_append(reply, &offset, "stream%d_queue_depth=%d\n", stream_idx, state.stream_network[stream_idx].max_output_queue_depth);
+        shell_command_reply_append(reply, &offset, "stream%d_video_queue_depth=%d\n", stream_idx, max_video_queue_depth);
+        shell_command_reply_append(reply, &offset, "stream%d_audio_queue_depth=%d\n", stream_idx, max_audio_queue_depth);
         shell_command_reply_append(reply, &offset, "stream%d_rtcp_loss=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_fraction_lost);
         shell_command_reply_append(reply, &offset, "stream%d_rtcp_rtt_ms=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_rtt_ms);
         shell_command_reply_append(reply, &offset, "stream%d_rtcp_jitter=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter);

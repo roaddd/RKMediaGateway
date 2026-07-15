@@ -37,13 +37,14 @@ static void reset_throughput_window(MediaGatewayCtx *ctx)
  */
 static void log_output_stats(MediaGatewayCtx *ctx)
 {
-    int i;
+    MediaOutputStats stats = {0};
+    int i = 0;
 
     for (i = 0; i < ctx->output_count; ++i)
     {
-        MediaOutputStats stats;
+        memset(&stats, 0, sizeof(stats));
         media_output_get_stats(&ctx->outputs[i], &stats);
-        LOG_INFO("[OUTPUT] idx=%d stream=%d name=%s type=%d connected=%d queue=%d sent=%" PRIu64
+        LOG_INFO("[OUTPUT] idx=%d stream=%d name=%s type=%d connected=%d queue=%d video_queue=%d audio_queue=%d sent=%" PRIu64
                  " bytes=%" PRIu64 " dropped=%" PRIu64 " send_failures=%" PRIu64
                  " reconnects=%" PRIu64 " wait_key=%d",
                  i,
@@ -52,6 +53,8 @@ static void log_output_stats(MediaGatewayCtx *ctx)
                  ctx->outputs[i].type,
                  stats.connected,
                  stats.queue_depth,
+                 stats.video_queue_depth,
+                 stats.audio_queue_depth,
                  stats.sent_frames,
                  stats.sent_bytes,
                  stats.dropped_frames,

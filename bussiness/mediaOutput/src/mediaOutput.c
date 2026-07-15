@@ -81,7 +81,15 @@ static int output_queue_total_depth(const MediaOutput *output)
  */
 static void output_update_queue_depth_locked(MediaOutput *output)
 {
+    if (!output)
+        return;
+    /*
+     * 同时保存总队列深度和音视频分队列深度。
+     * 总深度继续用于原有网络策略判断，分队列深度用于调试定位延迟来源。
+     */
     output->stats.queue_depth = output_queue_total_depth(output);
+    output->stats.video_queue_depth = output->video_queue.size;
+    output->stats.audio_queue_depth = output->audio_queue.size;
 }
 
 /**

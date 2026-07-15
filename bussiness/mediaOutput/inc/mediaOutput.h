@@ -145,6 +145,8 @@ typedef struct {
     uint64_t reconnect_count;   /* 成功连接或重连次数。 */
     uint64_t send_failures;     /* 协议发送失败次数。 */
     int queue_depth;            /* 当前音频队列和视频队列深度之和。 */
+    int video_queue_depth;      /* 当前视频输出队列元素个数。 */
+    int audio_queue_depth;      /* 当前音频输出队列元素个数。 */
     int connected;              /* 当前输出通道是否已连接。 */
     int waiting_for_keyframe;   /* 当前是否处于等待关键帧恢复发送的状态。 */
 } MediaOutputStats;
