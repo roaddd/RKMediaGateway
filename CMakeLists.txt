@@ -28,7 +28,7 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/common)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/defValue/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/util/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/shellCommand/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/common/debugCommand/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/mpp/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtspServer/inc)
 include_directories(${PROJECT_SOURCE_DIR}/thirdparty/rtmp/inc)
@@ -84,7 +84,7 @@ file(GLOB ISP_CONTROLLER_SRC ${PROJECT_SOURCE_DIR}/bussiness/ispController/src/*
 file(GLOB DEF_VALUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/defValue/src/*.cpp)
 file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
 file(GLOB THREAD_MESSAGE_QUEUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/src/*.c)
-file(GLOB SHELL_COMMAND_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/shellCommand/src/*.c)
+file(GLOB debug_command_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/debugCommand/src/*.c)
 file(GLOB SYSTEM_DEBUG_SRC ${PROJECT_SOURCE_DIR}/bussiness/systemDebug/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
@@ -286,7 +286,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
-        ${SHELL_COMMAND_SRC}
+        ${debug_command_SRC}
         ${SYSTEM_DEBUG_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
@@ -340,7 +340,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${ISP_CONTROLLER_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
-        ${SHELL_COMMAND_SRC}
+        ${debug_command_SRC}
         ${SYSTEM_DEBUG_SRC}
         ${DUAL_OUTPUT_SRC}
     )
@@ -389,7 +389,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${DEF_VALUE_SRC}
         ${UTIL_SRC}
         ${THREAD_MESSAGE_QUEUE_SRC}
-        ${SHELL_COMMAND_SRC}
+        ${debug_command_SRC}
         ${SYSTEM_DEBUG_SRC}
         ${MEDIA_OUTPUT_SRC}
         ${MEDIA_GATEWAY_SRC}

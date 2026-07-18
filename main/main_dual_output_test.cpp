@@ -1,6 +1,6 @@
 extern "C" {
 #include "mediaGateway.h"
-#include "shellCommandServer.h"
+#include "debugCommandServer.h"
 #include "systemDebug.h"
 }
 
@@ -38,26 +38,26 @@ int main() {
     config.output.rtmp.queue_capacity = 64;
     config.output.rtmp.audio_enabled = 0;
 
-    if (shell_command_server_init(NULL) == 0) {
+    if (debug_command_server_init(NULL) == 0) {
         shell_ready = 1;
         system_debug_init();
     }
 
     if (media_gateway_init(&gateway, &config) < 0) {
         if (shell_ready) {
-            shell_command_server_deinit();
+            debug_command_server_deinit();
         }
         return -1;
     }
 
     {
         if (shell_ready) {
-            shell_command_server_start();
+            debug_command_server_start();
         }
         int ret = media_gateway_run(&gateway);
         media_gateway_deinit(&gateway);
         if (shell_ready) {
-            shell_command_server_deinit();
+            debug_command_server_deinit();
         }
         return ret;
     }
