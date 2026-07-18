@@ -453,6 +453,7 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
     debug_command_reply_append(reply, &offset, "aggregate_network_loss=%u\n", state.aggregate_network.rtcp_fraction_lost);
     debug_command_reply_append(reply, &offset, "aggregate_network_rtt_ms=%u\n", state.aggregate_network.rtcp_rtt_ms);
     debug_command_reply_append(reply, &offset, "aggregate_network_jitter=%u\n", state.aggregate_network.rtcp_jitter);
+    debug_command_reply_append(reply, &offset, "aggregate_network_jitter_ms=%u\n", state.aggregate_network.rtcp_jitter_ms);
     debug_command_reply_append(reply, &offset, "output_target_fps=%d\n", state.output.target_fps);
     debug_command_reply_append(reply, &offset, "output_last_decision_ms=%" PRIu64 "\n", state.output.last_decision_ts_us / 1000ULL);
     debug_command_reply_append(reply, &offset, "output_reason=%s\n", state.output.reason);
@@ -490,6 +491,7 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_loss=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_fraction_lost);
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_rtt_ms=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_rtt_ms);
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_jitter=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter);
+        debug_command_reply_append(reply, &offset, "stream%d_rtcp_jitter_ms=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter_ms);
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_last_ms=%" PRIu64 "\n", stream_idx, state.stream_network[stream_idx].last_rtcp_feedback_ts_us / 1000ULL);
         debug_command_reply_append(reply, &offset, "stream%d_target_fps=%d\n", stream_idx, params->fps);
         debug_command_reply_append(reply, &offset, "stream%d_target_bitrate=%d\n", stream_idx, params->bitrate);
@@ -716,7 +718,10 @@ static int gateway_shell_clear_rtcp(void *user_data, const char *input, char *ou
         network->rtcp_fraction_lost = 0;
         network->rtcp_rtt_ms = 0;
         network->rtcp_jitter = 0;
+        network->rtcp_jitter_ms = 0;
         network->last_rtcp_feedback_ts_us = 0;
+        network->pending_state = MEDIA_GATEWAY_NETWORK_GOOD;
+        network->pending_state_count = 0;
     }
     if (ctx->stats_lock_ready)
         pthread_mutex_unlock(&ctx->stats_lock);

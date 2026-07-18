@@ -69,13 +69,14 @@ typedef struct {
     int max_fps;                      /* 当前网络等级允许的最高帧率。 */
     int bitrate_percent;              /* 当前网络等级码率系数，百分比。 */
     int pacing_percent;               /* 当前网络等级 RTP pacing 系数，百分比。 */
+    int min_pacing_rate_bps;          /* 当前网络等级 RTP pacing 最小发送速率，单位 bit/s。 */
     int keyframe_interval_ms;         /* 当前网络等级关键帧时间间隔，单位毫秒。 */
 } MediaGatewayNetworkLevelConfig;
 
 typedef struct {
     uint8_t min_fraction_lost;        /* 进入当前网络等级的最小 RTCP fraction lost，0 表示不按丢包判定。 */
     uint32_t min_rtt_ms;              /* 进入当前网络等级的最小 RTT，单位毫秒，0 表示不按 RTT 判定。 */
-    uint32_t min_jitter;              /* 进入当前网络等级的最小 RTCP jitter，当前为 RTP timestamp tick，0 表示不按 jitter 判定。 */
+    uint32_t min_jitter_ms;           /* 进入当前网络等级的最小 RTCP jitter，单位毫秒，0 表示不按 jitter 判定。 */
     int min_queue_depth;              /* 进入当前网络等级的最小输出队列深度，0 表示不按队列深度判定。 */
 } MediaGatewayNetworkDetectLevelConfig;
 
@@ -100,6 +101,10 @@ typedef struct {
 typedef struct {
     int enabled;                      /* 是否启用 RTCP/队列反馈驱动的网络自适应编码参数控制。 */
     int pacing_enabled;               /* 是否启用 RTCP/队列反馈生成的 RTP pacing 下发，可独立关闭用于定位卡顿来源。 */
+    int pacing_update_interval_ms;    /* pacing 下发最小间隔，避免频繁重置 RTSP pacer 节奏。 */
+    int pacing_update_change_percent; /* pacing rate 变化超过该百分比时允许提前下发。 */
+    int network_downgrade_confirm_count; /* 网络状态降级需要连续命中的次数。 */
+    int network_upgrade_confirm_count;   /* 网络状态升级需要连续命中的次数。 */
     int base_fps;                     /* 码率按帧率缩放时使用的基准帧率。 */
     int min_bitrate;                  /* 自适应控制允许的最低目标码率，bit/s。 */
     int max_bitrate;                  /* 自适应控制允许的最高目标码率，bit/s。 */
@@ -360,16 +365,26 @@ typedef struct {
     int max_fps;                        /* 网络侧给出的帧率上限。 */
     int max_output_queue_depth;         /* 最近一次评估看到的最大输出队列深度。 */
     uint8_t rtcp_fraction_lost;         /* 最近一次 RTCP RR fraction lost。 */
-    uint32_t rtcp_jitter;               /* 最近一次 RTCP RR jitter。 */
+    uint32_t rtcp_jitter;               /* 最近一次 RTCP RR jitter，原始 RTP timestamp tick。 */
+    uint32_t rtcp_jitter_ms;            /* 最近一次 RTCP RR jitter 换算后的毫秒值，用于网络状态判定。 */
     uint32_t rtcp_rtt_ms;               /* 最近一次 RTCP RR RTT，单位毫秒。 */
     uint64_t last_rtcp_feedback_ts_us;  /* 最近一次收到 RTCP 网络反馈的时间。 */
+    MediaGatewayNetworkState pending_state; /* 防抖候选网络状态。 */
+    int pending_state_count;            /* 候选网络状态连续命中次数。 */
 } MediaAdaptNetworkState;
+
+typedef struct {
+    int enabled;                    /* 上次实际下发到输出通道的 pacer 开关。 */
+    int rate_bps;                   /* 上次实际下发到输出通道的 pacing rate。 */
+    uint64_t apply_ts_us;           /* 上次下发 pacing 配置的时间。 */
+} MediaAdaptPacingApplyState;
 
 typedef struct {
     int target_fps;               /* min(scene.max_fps, network.max_fps) 后的最终帧率。 */
     int pacing_rate_bps[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路码流根据目标码率和网络状态计算出的 pacing rate。 */
+    MediaAdaptPacingApplyState output_pacing[MEDIA_GATEWAY_MAX_OUTPUTS]; /* 每个输出通道的 pacing 下发节流状态。 */
     uint64_t last_decision_ts_us; /* 最近一次统一控制器决策时间。 */
-    char reason[160];             /* 最近一次统一控制器决策原因。 */
+    char reason[192];             /* 最近一次统一控制器决策原因。 */
 } MediaAdaptOutputState;
 
 typedef struct {

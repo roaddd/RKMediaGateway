@@ -335,7 +335,7 @@ static void *media_output_thread(void *arg)
             output->stats.sent_bytes += packet.buffer ? packet.buffer->size : 0;
             pthread_mutex_unlock(&output->lock);
         }
-
+        /* 发送完成后，释放对buffer的引用 */
         media_packet_reset(&packet);
     }
 

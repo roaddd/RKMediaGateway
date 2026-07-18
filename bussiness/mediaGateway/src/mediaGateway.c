@@ -25,6 +25,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -243,6 +244,77 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
 }
 
 /**
+ * @brief 判断本轮是否需要向指定输出通道下发 RTP pacer 配置。
+ *
+ * pacing 配置频繁下发会重置 RTSP server 内部 pacer 节奏，造成发送间隔抖动。
+ * 该函数用开关变化、最小下发间隔和 rate 变化百分比共同节流：
+ * 1. pacer 开关变化时立即下发；
+ * 2. rate 变化超过配置百分比时立即下发；
+ * 3. 其它变化至少等待 pacing_update_interval_ms 后再下发。
+ */
+static bool media_gateway_should_apply_video_pacer(MediaGatewayCtx *ctx,
+                                                   int output_idx,
+                                                   MediaOutputPacerMode pacer_mode,
+                                                   int pacing_rate_bps,
+                                                   uint64_t now_us)
+{
+    MediaAdaptOutputState *output = NULL;
+    MediaAdaptPacingApplyState *pacing_state = NULL;
+    int enabled = 0;
+    int last_enabled = 0;
+    int last_rate_bps = 0;
+    int change_percent = 0;
+    int interval_ms = 0;
+    int elapsed_due = 0;
+    int rate_delta = 0;
+    int rate_change_percent = 0;
+
+    if (!ctx)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] check video pacer apply failed: ctx is NULL");
+        return false;
+    }
+
+    if (output_idx < 0 || output_idx >= MEDIA_GATEWAY_MAX_OUTPUTS)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] check video pacer apply failed: invalid output_idx=%d", output_idx);
+        return false;
+    }
+
+    output = &ctx->adaptive_policy_state.output;
+    pacing_state = &output->output_pacing[output_idx];
+    enabled = (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED) ? 1 : 0;
+    last_enabled = pacing_state->enabled;
+    last_rate_bps = pacing_state->rate_bps;
+    change_percent = ctx->config.policy.network_encode.pacing_update_change_percent;
+    interval_ms = ctx->config.policy.network_encode.pacing_update_interval_ms;
+
+    if (pacing_state->apply_ts_us == 0)
+        return true;
+    if (last_enabled != enabled)
+        return true;
+    if (!enabled)
+        return false;
+
+    elapsed_due = now_us >= pacing_state->apply_ts_us &&
+                  now_us - pacing_state->apply_ts_us >=
+                      (uint64_t)interval_ms * 1000ULL;
+    rate_delta = pacing_rate_bps > last_rate_bps ?
+                 pacing_rate_bps - last_rate_bps :
+                 last_rate_bps - pacing_rate_bps;
+    if (last_rate_bps > 0)
+        rate_change_percent = rate_delta * 100 / last_rate_bps;
+    else if (rate_delta > 0)
+        rate_change_percent = 100;
+
+    if (rate_change_percent >= change_percent)
+        return true;
+    if (elapsed_due && rate_delta > 0)
+        return true;
+    return false;
+}
+
+/**
  * @brief 将策略层生成的每路视频 RTP pacing 码率下发到输出层。
  *
  * mediaGateway 只负责计算每路 pacing_rate_bps；真正的 RTP 包级 pacer
@@ -254,6 +326,7 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
     int stream_idx = 0;
     MediaOutputPacerMode pacer_mode = MEDIA_OUTPUT_PACER_DISABLED;
     int pacing_rate_bps = 0;
+    uint64_t now_us = 0;
 
     if (!ctx)
     {
@@ -261,6 +334,7 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
         return;
     }
 
+    now_us = media_gateway_get_now_us();
     if (ctx->config.policy.network_encode.enabled && ctx->config.policy.network_encode.pacing_enabled)
         pacer_mode = MEDIA_OUTPUT_PACER_ENABLED;
 
@@ -278,6 +352,15 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
         else
             pacing_rate_bps = 0;
 
+        if (!media_gateway_should_apply_video_pacer(ctx,
+                                                    output_idx,
+                                                    pacer_mode,
+                                                    pacing_rate_bps,
+                                                    now_us))
+        {
+            continue;
+        }
+
         /* 将 pacing 配置下发到输出层 */
         if (media_output_set_video_pacer(&ctx->outputs[output_idx], pacer_mode, pacing_rate_bps) != MEDIA_OK)
         {
@@ -286,7 +369,12 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
                      stream_idx,
                      pacer_mode == MEDIA_OUTPUT_PACER_ENABLED ? 1 : 0,
                      pacing_rate_bps);
+            continue;
         }
+        ctx->adaptive_policy_state.output.output_pacing[output_idx].enabled =
+            (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED) ? 1 : 0;
+        ctx->adaptive_policy_state.output.output_pacing[output_idx].rate_bps = pacing_rate_bps;
+        ctx->adaptive_policy_state.output.output_pacing[output_idx].apply_ts_us = now_us;
     }
 }
 
@@ -468,9 +556,18 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (!cfg || !light_fps)
         return;
 
+    /* TODO:下面的这些值都是怎么确定的呢？ */
     cfg->enabled = cfg->enabled ? 1 : 0;
     if (cfg->pacing_enabled <= 0)
         cfg->pacing_enabled = 1;
+    if (cfg->pacing_update_interval_ms <= 0)
+        cfg->pacing_update_interval_ms = 1000;
+    if (cfg->pacing_update_change_percent <= 0)
+        cfg->pacing_update_change_percent = 15;
+    if (cfg->network_downgrade_confirm_count <= 0)
+        cfg->network_downgrade_confirm_count = 2;
+    if (cfg->network_upgrade_confirm_count <= 0)
+        cfg->network_upgrade_confirm_count = 5;
     if (cfg->base_fps <= 0)
         cfg->base_fps = light_fps->targets.normal_fps > 0 ? light_fps->targets.normal_fps : DEFAULT_ENCODE_FPS;
     if (cfg->min_bitrate <= 0)
@@ -481,20 +578,24 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
         cfg->network.detector.normal.min_fraction_lost = 3;
     if (cfg->network.detector.normal.min_rtt_ms == 0)
         cfg->network.detector.normal.min_rtt_ms = 81;
-    if (cfg->network.detector.normal.min_jitter == 0)
-        cfg->network.detector.normal.min_jitter = 21;
+    if (cfg->network.detector.normal.min_jitter_ms == 0)
+        cfg->network.detector.normal.min_jitter_ms = 20;
     if (cfg->network.detector.normal.min_queue_depth <= 0)
         cfg->network.detector.normal.min_queue_depth = 4;
     if (cfg->network.detector.bad.min_fraction_lost == 0)
         cfg->network.detector.bad.min_fraction_lost = 9;
     if (cfg->network.detector.bad.min_rtt_ms == 0)
         cfg->network.detector.bad.min_rtt_ms = 151;
+    if (cfg->network.detector.bad.min_jitter_ms == 0)
+        cfg->network.detector.bad.min_jitter_ms = 80;
     if (cfg->network.detector.bad.min_queue_depth <= 0)
         cfg->network.detector.bad.min_queue_depth = 8;
     if (cfg->network.detector.very_bad.min_fraction_lost == 0)
         cfg->network.detector.very_bad.min_fraction_lost = 21;
     if (cfg->network.detector.very_bad.min_rtt_ms == 0)
         cfg->network.detector.very_bad.min_rtt_ms = 301;
+    if (cfg->network.detector.very_bad.min_jitter_ms == 0)
+        cfg->network.detector.very_bad.min_jitter_ms = 150;
     if (cfg->network.detector.very_bad.min_queue_depth <= 0)
         cfg->network.detector.very_bad.min_queue_depth = 16;
     if (cfg->network.action.good.max_fps <= 0)
@@ -502,7 +603,9 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (cfg->network.action.good.bitrate_percent <= 0)
         cfg->network.action.good.bitrate_percent = 100;
     if (cfg->network.action.good.pacing_percent <= 0)
-        cfg->network.action.good.pacing_percent = 160;
+        cfg->network.action.good.pacing_percent = 200;
+    if (cfg->network.action.good.min_pacing_rate_bps <= 0)
+        cfg->network.action.good.min_pacing_rate_bps = 4 * 1024 * 1024;
     if (cfg->network.action.good.keyframe_interval_ms <= 0)
         cfg->network.action.good.keyframe_interval_ms = 2000;
     if (cfg->network.action.normal.max_fps <= 0)
@@ -510,7 +613,9 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (cfg->network.action.normal.bitrate_percent <= 0)
         cfg->network.action.normal.bitrate_percent = 85;
     if (cfg->network.action.normal.pacing_percent <= 0)
-        cfg->network.action.normal.pacing_percent = 140;
+        cfg->network.action.normal.pacing_percent = 180;
+    if (cfg->network.action.normal.min_pacing_rate_bps <= 0)
+        cfg->network.action.normal.min_pacing_rate_bps = 4 * 1024 * 1024;
     if (cfg->network.action.normal.keyframe_interval_ms <= 0)
         cfg->network.action.normal.keyframe_interval_ms = cfg->network.action.good.keyframe_interval_ms;
     if (cfg->network.action.bad.max_fps <= 0)
@@ -518,7 +623,9 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (cfg->network.action.bad.bitrate_percent <= 0)
         cfg->network.action.bad.bitrate_percent = 65;
     if (cfg->network.action.bad.pacing_percent <= 0)
-        cfg->network.action.bad.pacing_percent = 120;
+        cfg->network.action.bad.pacing_percent = 160;
+    if (cfg->network.action.bad.min_pacing_rate_bps <= 0)
+        cfg->network.action.bad.min_pacing_rate_bps = 3 * 1024 * 1024;
     if (cfg->network.action.bad.keyframe_interval_ms <= 0)
         cfg->network.action.bad.keyframe_interval_ms = 1500;
     if (cfg->network.action.very_bad.max_fps <= 0)
@@ -526,7 +633,9 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (cfg->network.action.very_bad.bitrate_percent <= 0)
         cfg->network.action.very_bad.bitrate_percent = 45;
     if (cfg->network.action.very_bad.pacing_percent <= 0)
-        cfg->network.action.very_bad.pacing_percent = 100;
+        cfg->network.action.very_bad.pacing_percent = 150;
+    if (cfg->network.action.very_bad.min_pacing_rate_bps <= 0)
+        cfg->network.action.very_bad.min_pacing_rate_bps = 2 * 1024 * 1024;
     if (cfg->network.action.very_bad.keyframe_interval_ms <= 0)
         cfg->network.action.very_bad.keyframe_interval_ms = 1000;
 }
