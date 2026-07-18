@@ -8,6 +8,7 @@
 
 #include "mediaGatewayPipeline.h"
 
+#include "commonDef.h"
 #include "mediaControlMessage.h"
 #include "mediaGatewayProcess.h"
 
@@ -53,7 +54,7 @@ static void make_abs_timeout(struct timespec *ts, int timeout_ms)
         return;
     }
     ret = clock_gettime(CLOCK_REALTIME, ts);
-    if (ret != 0)
+    if (ret != MEDIA_OK)
     {
         LOG_ERROR("make_abs_timeout failed: clock_gettime errno=%d(%s)",
                   errno,
@@ -223,7 +224,7 @@ static int video_worker_init(VideoEncodeWorker *worker)
 
     queue_ret = thread_message_queue_init(&worker->command_queue,
                                           VIDEO_COMMAND_QUEUE_CAPACITY);
-    if (queue_ret != 0)
+    if (queue_ret != MEDIA_OK)
     {
         LOG_ERROR("video_worker_init failed: init command queue ret=%d", queue_ret);
         video_input_buffer_deinit(&worker->input);
@@ -298,7 +299,7 @@ int media_gateway_pipeline_submit_video_command(MediaGatewayPipeline *pipeline,
         return -1;
     }
     ret = thread_message_queue_push_copy(&worker->command_queue, command);
-    if (ret != 0)
+    if (ret != MEDIA_OK)
     {
         LOG_ERROR("media_gateway_pipeline_submit_video_command failed: stream=%d type=%u request=%" PRIu64 " ret=%d",
                   stream_idx,
@@ -684,7 +685,7 @@ static void video_worker_publish_command_result(MediaGatewayPipeline *pipeline,
     result.data_size = data_size;
     /* 将结果发送到主循环的统一结果队列 */
     push_ret = thread_message_queue_push_copy(pipeline->result_queue, &result);
-    if (push_ret != 0)
+    if (push_ret != MEDIA_OK)
     {
         LOG_ERROR("video worker publish command result failed stream=%d request=%" PRIu64 " ret=%d",
                   stream_idx,
@@ -716,7 +717,7 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
                   command ? command->data_size : 0,
                   sizeof(MediaSetFpsRequest));
         if (pipeline && command)
-            video_worker_publish_command_result(pipeline, stream_idx, command, -1, NULL, 0);
+            video_worker_publish_command_result(pipeline, stream_idx, command, MEDIA_ERR_INVALID_PARAM, NULL, 0);
         return;
     }
 
@@ -724,7 +725,7 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
     result.requested_fps = request->target_fps;
     ret = mpp_encoder_set_fps(&pipeline->ctx->encoders[stream_idx],
                               request->target_fps);
-    if (ret == 0)
+    if (ret == MEDIA_OK)
     {
         result.applied_fps = request->target_fps;
         /*
@@ -767,7 +768,7 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
                   command ? command->data_size : 0,
                   sizeof(MediaSetVideoEncodeParamsRequest));
         if (pipeline && command)
-            video_worker_publish_command_result(pipeline, stream_idx, command, -1, NULL, 0);
+            video_worker_publish_command_result(pipeline, stream_idx, command, MEDIA_ERR_INVALID_PARAM, NULL, 0);
         return;
     }
 
@@ -775,7 +776,7 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
     result.requested_params = request->params;
     ret = mpp_encoder_apply_video_encode_params(&pipeline->ctx->encoders[stream_idx],
                                                 &request->params);
-    if (ret == 0)
+    if (ret == MEDIA_OK)
     {
         result.applied_params = request->params;
         stream = &pipeline->ctx->config.video.streams[stream_idx];
@@ -825,7 +826,7 @@ static void video_worker_process_commands(MediaGatewayPipeline *pipeline,
         pop_ret = thread_message_queue_try_pop(&worker->command_queue, &command);
         if (pop_ret < 0)
         {
-            if (pop_ret != -3)
+            if (pop_ret != MEDIA_ERR_STOPPED)
             {
                 LOG_ERROR("video_worker_process_commands failed: pop command stream=%d ret=%d",
                           stream_idx,
@@ -849,7 +850,7 @@ static void video_worker_process_commands(MediaGatewayPipeline *pipeline,
             LOG_WARN("video worker ignored unknown command type=%u stream=%d",
                      command.type,
                      stream_idx);
-            video_worker_publish_command_result(pipeline, stream_idx, &command, -1, NULL, 0);
+            video_worker_publish_command_result(pipeline, stream_idx, &command, MEDIA_ERR_UNSUPPORTED, NULL, 0);
             break;
         }
         thread_message_release(&command);
@@ -905,7 +906,7 @@ static void *video_encode_thread_main(void *arg)
             pipeline_set_error(pipeline);
             break;
         }
-        if (ret == 0)
+        if (ret == MEDIA_OK)
             continue;
         video_worker_process_commands(pipeline, stream_idx);
         if (media_gateway_process_stream(pipeline->ctx, &pipeline->state, &frame, stream_idx) != 0)
@@ -954,7 +955,7 @@ static void *audio_encode_thread_main(void *arg)
             pipeline_set_error(pipeline);
             break;
         }
-        if (ret == 0)
+        if (ret == MEDIA_OK)
             continue;
         if (media_gateway_process_audio(pipeline->ctx, &frame) != 0)
         {

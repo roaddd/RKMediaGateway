@@ -1,14 +1,15 @@
 /**
- * @file shellCommandServer.c
+ * @file debugCommandServer.c
  * @brief 基于 Unix Domain Socket 的进程内 shell 命令服务实现。
  *
  * 本模块负责维护命令注册表、监听本地 Unix Domain Socket、接收客户端命令、
- * 查找对应处理函数并把文本结果返回给客户端。业务模块只需要调用 regShellCmd
+ * 查找对应处理函数并把文本结果返回给客户端。业务模块只需要调用 regDebugCmd
  * 注册命令，不需要关心 socket 收发细节。
  */
 
-#include "shellCommandServer.h"
+#include "debugCommandServer.h"
 
+#include "commonDef.h"
 #include "logger.h"
 
 #include <errno.h>
@@ -22,48 +23,48 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#define SHELL_COMMAND_MAX_COMMANDS 32
-#define SHELL_COMMAND_MAX_LINE 512
-#define SHELL_COMMAND_LISTEN_BACKLOG 4
+#define debug_command_MAX_COMMANDS 32
+#define debug_command_MAX_LINE 512
+#define debug_command_LISTEN_BACKLOG 4
 
 typedef struct {
     char name[64];                 /* 命令名称。 */
-    ShellCommandHandler handler;   /* 命令处理函数。 */
+    DebugCommandHandler handler;   /* 命令处理函数。 */
     void *user_data;               /* 传给命令处理函数的业务上下文。 */
-} ShellCommandEntry;
+} debugCommandEntry;
 
 typedef struct {
     pthread_t thread;                                 /* 服务线程句柄。 */
     pthread_mutex_t lock;                             /* 保护命令注册表和运行状态。 */
-    ShellCommandEntry commands[SHELL_COMMAND_MAX_COMMANDS]; /* 命令注册表。 */
+    debugCommandEntry commands[debug_command_MAX_COMMANDS]; /* 命令注册表。 */
     int command_count;                                /* 已注册命令数量。 */
     int listen_fd;                                    /* 监听 socket fd。 */
     int running;                                      /* 服务线程是否需要继续运行。 */
     int started;                                      /* 服务线程是否已经启动。 */
     int initialized;                                  /* 服务是否已经初始化。 */
     char socket_path[108];                            /* Unix Domain Socket 路径。 */
-} ShellCommandServer;
+} debugCommandServer;
 
-static ShellCommandServer g_shell_command_server = {0};
+static debugCommandServer g_debug_command_server = {0};
 
 /**
  * @brief ? shell ???????????????
  *
- * output ?????? SHELL_COMMAND_MAX_REPLY_SIZE?????????
+ * output ?????? debug_command_MAX_REPLY_SIZE?????????
  * offset ?????????????
  */
-void shell_command_reply_append(char *output,
+void debug_command_reply_append(char *output,
                                 size_t *offset,
                                 const char *fmt,
                                 ...)
 {
     va_list ap;
     int written = 0;
-    size_t reply_size = SHELL_COMMAND_MAX_REPLY_SIZE;
+    size_t reply_size = debug_command_MAX_REPLY_SIZE;
 
     if (!output || !offset || !fmt || *offset >= reply_size)
     {
-        LOG_ERROR("shell_command_reply_append failed: invalid argument output=%p offset=%p fmt=%p offset_value=%zu reply_size=%zu",
+        LOG_ERROR("debug_command_reply_append failed: invalid argument output=%p offset=%p fmt=%p offset_value=%zu reply_size=%zu",
                   (void *)output,
                   (void *)offset,
                   (const void *)fmt,
@@ -77,12 +78,12 @@ void shell_command_reply_append(char *output,
     va_end(ap);
     if (written < 0)
     {
-        LOG_ERROR("shell_command_reply_append failed: vsnprintf ret=%d", written);
+        LOG_ERROR("debug_command_reply_append failed: vsnprintf ret=%d", written);
         return;
     }
     if ((size_t)written >= reply_size - *offset)
     {
-        LOG_ERROR("shell_command_reply_append failed: reply buffer truncated written=%d remain=%zu",
+        LOG_ERROR("debug_command_reply_append failed: reply buffer truncated written=%d remain=%zu",
                   written,
                   reply_size - *offset);
         *offset = reply_size - 1;
@@ -96,34 +97,34 @@ void shell_command_reply_append(char *output,
  *
  * help 命令由 shell 命令服务内置实现，用于列出当前已经注册的命令名称。
  */
-static int shell_command_handle_help(char *reply, size_t reply_size)
+static int debug_command_handle_help(char *reply, size_t reply_size)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     size_t offset = 0;
     int i = 0;
 
     if (!reply || reply_size == 0)
     {
-        LOG_ERROR("shell_command_handle_help failed: invalid argument reply=%p reply_size=%zu",
+        LOG_ERROR("debug_command_handle_help failed: invalid argument reply=%p reply_size=%zu",
                   (void *)reply,
                   reply_size);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     reply[0] = '\0';
-    shell_command_reply_append(reply, &offset, "commands:\n");
+    debug_command_reply_append(reply, &offset, "commands:\n");
 
     pthread_mutex_lock(&server->lock);
     for (i = 0; i < server->command_count; ++i)
     {
-        shell_command_reply_append(reply,
+        debug_command_reply_append(reply,
                                    &offset,
                                    "  %s\n",
                                    server->commands[i].name);
     }
     pthread_mutex_unlock(&server->lock);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -204,8 +205,8 @@ static void split_command_line(char *line, char **command_name, char **input)
  */
 static int dispatch_command(char *line, char *reply, size_t reply_size)
 {
-    ShellCommandServer *server = NULL;
-    ShellCommandEntry entry = {0};
+    debugCommandServer *server = NULL;
+    debugCommandEntry entry = {0};
     char *command_name = NULL;
     char *input = "";
     int i = 0;
@@ -218,18 +219,18 @@ static int dispatch_command(char *line, char *reply, size_t reply_size)
                   (void *)line,
                   (void *)reply,
                   reply_size);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     reply[0] = '\0';
     split_command_line(line, &command_name, &input);
     if (!command_name)
-        return shell_command_handle_help(reply, reply_size);
+        return debug_command_handle_help(reply, reply_size);
 
     if (strcmp(command_name, "help") == 0)
-        return shell_command_handle_help(reply, reply_size);
+        return debug_command_handle_help(reply, reply_size);
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     pthread_mutex_lock(&server->lock);
     for (i = 0; i < server->command_count; ++i)
     {
@@ -249,11 +250,11 @@ static int dispatch_command(char *line, char *reply, size_t reply_size)
                  reply_size,
                  "error=unknown_command\ncommand=%s\ntry=help\n",
                  command_name);
-        return -1;
+        return MEDIA_ERR_NOT_FOUND;
     }
 
     ret = entry.handler(entry.user_data, input, reply);
-    if (ret != 0)
+    if (ret != MEDIA_OK)
     {
         LOG_ERROR("dispatch_command failed: handler command=%s ret=%d", command_name, ret);
     }
@@ -277,7 +278,7 @@ static int write_all(int fd, const char *data, size_t data_len)
                   fd,
                   (const void *)data,
                   data_len);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     while (offset < data_len)
@@ -293,7 +294,7 @@ static int write_all(int fd, const char *data, size_t data_len)
                       data_len,
                       errno,
                       strerror(errno));
-            return -1;
+            return MEDIA_ERR;
         }
         if (write_len == 0)
         {
@@ -301,12 +302,12 @@ static int write_all(int fd, const char *data, size_t data_len)
                       fd,
                       offset,
                       data_len);
-            return -1;
+            return MEDIA_ERR;
         }
         offset += (size_t)write_len;
     }
 
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -317,8 +318,8 @@ static int write_all(int fd, const char *data, size_t data_len)
  */
 static void handle_client(int client_fd)
 {
-    char line[SHELL_COMMAND_MAX_LINE] = {0};
-    char reply[SHELL_COMMAND_MAX_REPLY_SIZE] = {0};
+    char line[debug_command_MAX_LINE] = {0};
+    char reply[debug_command_MAX_REPLY_SIZE] = {0};
     ssize_t read_len = 0;
     size_t reply_len = 0;
     int dispatch_ret = 0;
@@ -342,7 +343,7 @@ static void handle_client(int client_fd)
     line[read_len] = '\0';
     trim_line_tail(line);
     dispatch_ret = dispatch_command(line, reply, sizeof(reply));
-    if (dispatch_ret != 0)
+    if (dispatch_ret != MEDIA_OK)
     {
         LOG_ERROR("handle_client failed: dispatch command ret=%d line=%s",
                   dispatch_ret,
@@ -353,7 +354,7 @@ static void handle_client(int client_fd)
     if (reply_len == 0)
         snprintf(reply, sizeof(reply), "ok\n");
     reply_len = strlen(reply);
-    if (write_all(client_fd, reply, reply_len) != 0)
+    if (write_all(client_fd, reply, reply_len) != MEDIA_OK)
     {
         LOG_ERROR("shell command write failed fd=%d errno=%d(%s)",
                   client_fd,
@@ -368,16 +369,16 @@ static void handle_client(int client_fd)
  * 服务线程使用 select 周期性等待监听 socket；收到连接后 accept，
  * 调用 handle_client 处理一条命令，然后关闭客户端连接。
  */
-static void *shell_command_thread(void *arg)
+static void *debug_command_thread(void *arg)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     fd_set readfds;
     struct timeval timeout = {0};
     int select_ret = 0;
     int client_fd = -1;
 
     (void)arg;
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
 
     while (server->running)
     {
@@ -422,20 +423,20 @@ static void *shell_command_thread(void *arg)
  * @brief 初始化 shell 命令服务。
  *
  * 初始化过程会创建 Unix Domain Socket、绑定监听路径并进入 listen 状态。
- * 若 socket_path 为空，则使用 SHELL_COMMAND_DEFAULT_SOCKET_PATH。
+ * 若 socket_path 为空，则使用 debug_command_DEFAULT_SOCKET_PATH。
  */
-int shell_command_server_init(const char *socket_path)
+int debug_command_server_init(const char *socket_path)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     struct sockaddr_un addr = {0};
     int mutex_ret = 0;
     int bind_ret = 0;
     int listen_ret = 0;
     int cleanup_ret = 0;
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     if (server->initialized)
-        return 0;
+        return MEDIA_OK;
 
     memset(server, 0, sizeof(*server));
     server->listen_fd = -1;
@@ -444,31 +445,31 @@ int shell_command_server_init(const char *socket_path)
              "%s",
              (socket_path && socket_path[0] != '\0') ?
                  socket_path :
-                 SHELL_COMMAND_DEFAULT_SOCKET_PATH);
+                 debug_command_DEFAULT_SOCKET_PATH);
 
     mutex_ret = pthread_mutex_init(&server->lock, NULL);
     if (mutex_ret != 0)
     {
-        LOG_ERROR("shell_command_server_init failed: pthread_mutex_init ret=%d(%s)",
+        LOG_ERROR("debug_command_server_init failed: pthread_mutex_init ret=%d(%s)",
                   mutex_ret,
                   strerror(mutex_ret));
-        return -1;
+        return MEDIA_ERR;
     }
 
     server->listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server->listen_fd < 0)
     {
-        LOG_ERROR("shell_command_server_init failed: socket errno=%d(%s)",
+        LOG_ERROR("debug_command_server_init failed: socket errno=%d(%s)",
                   errno,
                   strerror(errno));
         cleanup_ret = pthread_mutex_destroy(&server->lock);
         if (cleanup_ret != 0)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
                       cleanup_ret,
                       strerror(cleanup_ret));
         }
-        return -1;
+        return MEDIA_ERR;
     }
 
     unlink(server->socket_path);
@@ -479,14 +480,14 @@ int shell_command_server_init(const char *socket_path)
     bind_ret = bind(server->listen_fd, (struct sockaddr *)&addr, sizeof(addr));
     if (bind_ret != 0)
     {
-        LOG_ERROR("shell_command_server_init failed: bind path=%s errno=%d(%s)",
+        LOG_ERROR("debug_command_server_init failed: bind path=%s errno=%d(%s)",
                   server->socket_path,
                   errno,
                   strerror(errno));
         cleanup_ret = close(server->listen_fd);
         if (cleanup_ret != 0)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: close fd=%d errno=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: close fd=%d errno=%d(%s)",
                       server->listen_fd,
                       errno,
                       strerror(errno));
@@ -494,24 +495,24 @@ int shell_command_server_init(const char *socket_path)
         cleanup_ret = pthread_mutex_destroy(&server->lock);
         if (cleanup_ret != 0)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
                       cleanup_ret,
                       strerror(cleanup_ret));
         }
         server->listen_fd = -1;
-        return -1;
+        return MEDIA_ERR;
     }
 
-    listen_ret = listen(server->listen_fd, SHELL_COMMAND_LISTEN_BACKLOG);
+    listen_ret = listen(server->listen_fd, debug_command_LISTEN_BACKLOG);
     if (listen_ret != 0)
     {
-        LOG_ERROR("shell_command_server_init failed: listen errno=%d(%s)",
+        LOG_ERROR("debug_command_server_init failed: listen errno=%d(%s)",
                   errno,
                   strerror(errno));
         cleanup_ret = close(server->listen_fd);
         if (cleanup_ret != 0)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: close fd=%d errno=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: close fd=%d errno=%d(%s)",
                       server->listen_fd,
                       errno,
                       strerror(errno));
@@ -519,7 +520,7 @@ int shell_command_server_init(const char *socket_path)
         cleanup_ret = unlink(server->socket_path);
         if (cleanup_ret != 0 && errno != ENOENT)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: unlink path=%s errno=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: unlink path=%s errno=%d(%s)",
                       server->socket_path,
                       errno,
                       strerror(errno));
@@ -527,16 +528,16 @@ int shell_command_server_init(const char *socket_path)
         cleanup_ret = pthread_mutex_destroy(&server->lock);
         if (cleanup_ret != 0)
         {
-            LOG_ERROR("shell_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
+            LOG_ERROR("debug_command_server_init cleanup failed: pthread_mutex_destroy ret=%d(%s)",
                       cleanup_ret,
                       strerror(cleanup_ret));
         }
         server->listen_fd = -1;
-        return -1;
+        return MEDIA_ERR;
     }
 
     server->initialized = 1;
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -544,26 +545,26 @@ int shell_command_server_init(const char *socket_path)
  *
  * 如果同名命令已经存在，则更新其处理函数和 user_data；否则新增一条注册项。
  */
-int regShellCmd(const char *name,
-                ShellCommandHandler handler,
+int regDebugCmd(const char *name,
+                DebugCommandHandler handler,
                 void *user_data)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     int i = 0;
 
     if (!name || name[0] == '\0' || !handler)
     {
-        LOG_ERROR("regShellCmd failed: name=%p handler_valid=%d",
+        LOG_ERROR("regDebugCmd failed: name=%p handler_valid=%d",
                   (const void *)name,
                   handler ? 1 : 0);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     if (!server->initialized)
     {
-        LOG_ERROR("regShellCmd failed: server not initialized name=%s", name);
-        return -1;
+        LOG_ERROR("regDebugCmd failed: server not initialized name=%s", name);
+        return MEDIA_ERR_NOT_READY;
     }
 
     pthread_mutex_lock(&server->lock);
@@ -574,15 +575,15 @@ int regShellCmd(const char *name,
             server->commands[i].handler = handler;
             server->commands[i].user_data = user_data;
             pthread_mutex_unlock(&server->lock);
-            return 0;
+            return MEDIA_OK;
         }
     }
 
-    if (server->command_count >= SHELL_COMMAND_MAX_COMMANDS)
+    if (server->command_count >= debug_command_MAX_COMMANDS)
     {
         pthread_mutex_unlock(&server->lock);
-        LOG_ERROR("regShellCmd failed: command table full name=%s", name);
-        return -1;
+        LOG_ERROR("regDebugCmd failed: command table full name=%s", name);
+        return MEDIA_ERR_FULL;
     }
 
     snprintf(server->commands[server->command_count].name,
@@ -593,40 +594,40 @@ int regShellCmd(const char *name,
     server->commands[server->command_count].user_data = user_data;
     server->command_count++;
     pthread_mutex_unlock(&server->lock);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
  * @brief 启动 shell 命令服务线程。
  */
-int shell_command_server_start(void)
+int debug_command_server_start(void)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     int thread_ret = 0;
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     if (!server->initialized)
     {
-        LOG_ERROR("shell_command_server_start failed: server not initialized");
-        return -1;
+        LOG_ERROR("debug_command_server_start failed: server not initialized");
+        return MEDIA_ERR_NOT_READY;
     }
     if (server->started)
-        return 0;
+        return MEDIA_OK;
 
     server->running = 1;
-    thread_ret = pthread_create(&server->thread, NULL, shell_command_thread, NULL);
+    thread_ret = pthread_create(&server->thread, NULL, debug_command_thread, NULL);
     if (thread_ret != 0)
     {
         server->running = 0;
-        LOG_ERROR("shell_command_server_start failed: pthread_create ret=%d(%s)",
+        LOG_ERROR("debug_command_server_start failed: pthread_create ret=%d(%s)",
                   thread_ret,
                   strerror(thread_ret));
-        return -1;
+        return MEDIA_ERR;
     }
 
     server->started = 1;
     LOG_INFO("shell command server started path=%s", server->socket_path);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -634,12 +635,12 @@ int shell_command_server_start(void)
  *
  * 该函数会请求线程退出并等待 pthread_join 完成。
  */
-void shell_command_server_stop(void)
+void debug_command_server_stop(void)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     int join_ret = 0;
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     if (!server->initialized)
         return;
 
@@ -649,7 +650,7 @@ void shell_command_server_stop(void)
         join_ret = pthread_join(server->thread, NULL);
         if (join_ret != 0)
         {
-            LOG_ERROR("shell_command_server_stop failed: pthread_join ret=%d(%s)",
+            LOG_ERROR("debug_command_server_stop failed: pthread_join ret=%d(%s)",
                       join_ret,
                       strerror(join_ret));
             return;
@@ -664,24 +665,24 @@ void shell_command_server_stop(void)
  * 释放顺序为：停止服务线程、关闭监听 fd、删除 socket 文件、销毁互斥锁、
  * 清空全局服务状态。
  */
-void shell_command_server_deinit(void)
+void debug_command_server_deinit(void)
 {
-    ShellCommandServer *server = NULL;
+    debugCommandServer *server = NULL;
     int mutex_ret = 0;
     int close_ret = 0;
     int unlink_ret = 0;
 
-    server = &g_shell_command_server;
+    server = &g_debug_command_server;
     if (!server->initialized)
         return;
 
-    shell_command_server_stop();
+    debug_command_server_stop();
     if (server->listen_fd >= 0)
     {
         close_ret = close(server->listen_fd);
         if (close_ret != 0)
         {
-            LOG_ERROR("shell_command_server_deinit failed: close fd=%d errno=%d(%s)",
+            LOG_ERROR("debug_command_server_deinit failed: close fd=%d errno=%d(%s)",
                       server->listen_fd,
                       errno,
                       strerror(errno));
@@ -691,7 +692,7 @@ void shell_command_server_deinit(void)
     unlink_ret = unlink(server->socket_path);
     if (unlink_ret != 0 && errno != ENOENT)
     {
-        LOG_ERROR("shell_command_server_deinit failed: unlink path=%s errno=%d(%s)",
+        LOG_ERROR("debug_command_server_deinit failed: unlink path=%s errno=%d(%s)",
                   server->socket_path,
                   errno,
                   strerror(errno));
@@ -699,7 +700,7 @@ void shell_command_server_deinit(void)
     mutex_ret = pthread_mutex_destroy(&server->lock);
     if (mutex_ret != 0)
     {
-        LOG_ERROR("shell_command_server_deinit failed: pthread_mutex_destroy ret=%d(%s)",
+        LOG_ERROR("debug_command_server_deinit failed: pthread_mutex_destroy ret=%d(%s)",
                   mutex_ret,
                   strerror(mutex_ret));
     }

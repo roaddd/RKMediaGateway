@@ -1,15 +1,35 @@
-/*** 
- * @Author: huangkelong
- * @Date: 2026-07-12 10:06:16
- * @LastEditTime: 2026-07-12 10:06:22
- * @LastEditors: huangkelong
- * @Description: 全工程公共定义头文件
- * @FilePath: \Fork\RKMediaGateway\bussiness\common\commonDef.h
- * @可以输入预定的版权声明、个性签名、空行等
+/**
+ * @file commonDef.h
+ * @brief 全工程公共基础定义。
+ *
+ * 本文件放置跨模块共享的基础类型、公共错误码和轻量级约定。
+ * 业务模块需要表达函数执行状态时，应优先使用这里定义的 MEDIA_OK/MEDIA_ERR_*。
  */
 
 #ifndef __COMMON_DEF_H__
 #define __COMMON_DEF_H__
+
+/**
+ * @brief 全工程公共返回码。
+ *
+ * 约定所有只表示执行状态的 int 返回值使用该枚举：
+ * MEDIA_OK 表示成功，其他负数表示失败原因。
+ * 如果函数成功时需要返回业务数值，例如 GOP、队列深度、长度等，可以只在失败时返回这些错误码。
+ */
+typedef enum {
+    MEDIA_OK = 0,                 /* 执行成功。 */
+    MEDIA_ERR = -1,               /* 通用失败，无法归类到更具体错误。 */
+    MEDIA_ERR_INVALID_PARAM = -2, /* 输入参数非法，例如 NULL 指针或越界索引。 */
+    MEDIA_ERR_INVALID_CONFIG = -3,/* 配置非法，例如帧率、码率、GOP 时间间隔为 0。 */
+    MEDIA_ERR_NO_MEMORY = -4,     /* 内存申请失败。 */
+    MEDIA_ERR_NOT_READY = -5,     /* 模块尚未初始化或资源未就绪。 */
+    MEDIA_ERR_BUSY = -6,          /* 资源忙，当前无法执行操作。 */
+    MEDIA_ERR_TIMEOUT = -7,       /* 操作超时。 */
+    MEDIA_ERR_NOT_FOUND = -8,     /* 未找到指定对象。 */
+    MEDIA_ERR_UNSUPPORTED = -9,   /* 当前平台或模块不支持该操作。 */
+    MEDIA_ERR_FULL = -10,         /* 队列、缓存或表项已满。 */
+    MEDIA_ERR_STOPPED = -11       /* 模块或队列已停止。 */
+} MediaResult;
 
 #define DEFAULT_ENABLE_RTSP 1                         /* 默认启用 RTSP 输出。 */
 #define DEFAULT_ENCODE_FPS 30                         /* 默认编码帧率，同时用于采集、MPP 和 RTSP 流元数据。 */

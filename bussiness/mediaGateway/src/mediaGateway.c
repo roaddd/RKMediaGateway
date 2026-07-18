@@ -128,8 +128,7 @@ static int adaptive_effective_target_fps(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] get effective fps failed: ctx is NULL");
         return 0;
     }
-    runtime_policy_enabled = ctx->config.policy.light_fps.enabled ||
-                             ctx->config.policy.network_encode.enabled;
+    runtime_policy_enabled = ctx->config.policy.light_fps.enabled || ctx->config.policy.network_encode.enabled;
     if (!runtime_policy_enabled) /* 如果场景和网络反馈都没开启，则直接返回错误 */
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] get effective fps failed: runtime policies are disabled");
@@ -249,31 +248,43 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
  * mediaGateway 只负责计算每路 pacing_rate_bps；真正的 RTP 包级 pacer
  * 在 RTSP server 内部执行。非 RTSP 输出当前没有 RTP 包级执行点，输出层会忽略。
  */
-static void media_gateway_apply_output_pacing_rates(MediaGatewayCtx *ctx)
+static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx *ctx)
 {
     int output_idx = 0;
     int stream_idx = 0;
+    MediaOutputPacerMode pacer_mode = MEDIA_OUTPUT_PACER_DISABLED;
     int pacing_rate_bps = 0;
 
     if (!ctx)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] apply video pacer failed: ctx is NULL");
         return;
+    }
 
-    for (output_idx = 0; output_idx < ctx->output_count &&
-                         output_idx < MEDIA_GATEWAY_MAX_OUTPUTS;
-         ++output_idx)
+    if (ctx->config.policy.network_encode.enabled && ctx->config.policy.network_encode.pacing_enabled)
+        pacer_mode = MEDIA_OUTPUT_PACER_ENABLED;
+
+    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
     {
         stream_idx = ctx->output_stream_index[output_idx];
         if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+        {
+            LOG_ERROR("[ADAPTIVE_CONTROL] apply video pacer failed: invalid stream index %d", stream_idx);
             continue;
-        if (ctx->config.policy.network_encode.enabled)
+        }
+
+        if (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED)
             pacing_rate_bps = ctx->adaptive_policy_state.output.pacing_rate_bps[stream_idx];
         else
             pacing_rate_bps = 0;
-        if (media_output_set_video_pacing_rate(&ctx->outputs[output_idx], pacing_rate_bps) != 0)
+
+        /* 将 pacing 配置下发到输出层 */
+        if (media_output_set_video_pacer(&ctx->outputs[output_idx], pacer_mode, pacing_rate_bps) != MEDIA_OK)
         {
-            LOG_WARN("[ADAPTIVE_CONTROL] apply output pacing failed output=%s stream=%d rate=%d",
+            LOG_WARN("[ADAPTIVE_CONTROL] apply video pacer failed output=%s stream=%d enabled=%d rate=%d",
                      ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown",
                      stream_idx,
+                     pacer_mode == MEDIA_OUTPUT_PACER_ENABLED ? 1 : 0,
                      pacing_rate_bps);
         }
     }
@@ -458,46 +469,66 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
         return;
 
     cfg->enabled = cfg->enabled ? 1 : 0;
+    if (cfg->pacing_enabled <= 0)
+        cfg->pacing_enabled = 1;
     if (cfg->base_fps <= 0)
         cfg->base_fps = light_fps->targets.normal_fps > 0 ? light_fps->targets.normal_fps : DEFAULT_ENCODE_FPS;
     if (cfg->min_bitrate <= 0)
         cfg->min_bitrate = DEFAULT_ADAPTIVE_MIN_BITRATE;
     if (cfg->max_bitrate <= 0)
         cfg->max_bitrate = DEFAULT_ADAPTIVE_MAX_BITRATE;
-    if (cfg->good_keyframe_interval_ms <= 0)
-        cfg->good_keyframe_interval_ms = 2000;
-    if (cfg->bad_keyframe_interval_ms <= 0)
-        cfg->bad_keyframe_interval_ms = 1500;
-    if (cfg->very_bad_keyframe_interval_ms <= 0)
-        cfg->very_bad_keyframe_interval_ms = 1000;
-    if (cfg->network.good_max_fps <= 0)
-        cfg->network.good_max_fps = light_fps->targets.bright_fps;
-    if (cfg->network.normal_max_fps <= 0)
-        cfg->network.normal_max_fps = light_fps->targets.normal_fps;
-    if (cfg->network.bad_max_fps <= 0)
-        cfg->network.bad_max_fps = 20;
-    if (cfg->network.very_bad_max_fps <= 0)
-        cfg->network.very_bad_max_fps = light_fps->targets.low_light_fps;
-    if (cfg->network.normal_queue_depth <= 0)
-        cfg->network.normal_queue_depth = 4;
-    if (cfg->network.bad_queue_depth <= 0)
-        cfg->network.bad_queue_depth = 8;
-    if (cfg->network.very_bad_queue_depth <= 0)
-        cfg->network.very_bad_queue_depth = 16;
-    if (cfg->network.normal_bitrate_percent <= 0)
-        cfg->network.normal_bitrate_percent = 85;
-    if (cfg->network.bad_bitrate_percent <= 0)
-        cfg->network.bad_bitrate_percent = 65;
-    if (cfg->network.very_bad_bitrate_percent <= 0)
-        cfg->network.very_bad_bitrate_percent = 45;
-    if (cfg->network.good_pacing_percent <= 0)
-        cfg->network.good_pacing_percent = 160;
-    if (cfg->network.normal_pacing_percent <= 0)
-        cfg->network.normal_pacing_percent = 140;
-    if (cfg->network.bad_pacing_percent <= 0)
-        cfg->network.bad_pacing_percent = 120;
-    if (cfg->network.very_bad_pacing_percent <= 0)
-        cfg->network.very_bad_pacing_percent = 100;
+    if (cfg->network.detector.normal.min_fraction_lost == 0)
+        cfg->network.detector.normal.min_fraction_lost = 3;
+    if (cfg->network.detector.normal.min_rtt_ms == 0)
+        cfg->network.detector.normal.min_rtt_ms = 81;
+    if (cfg->network.detector.normal.min_jitter == 0)
+        cfg->network.detector.normal.min_jitter = 21;
+    if (cfg->network.detector.normal.min_queue_depth <= 0)
+        cfg->network.detector.normal.min_queue_depth = 4;
+    if (cfg->network.detector.bad.min_fraction_lost == 0)
+        cfg->network.detector.bad.min_fraction_lost = 9;
+    if (cfg->network.detector.bad.min_rtt_ms == 0)
+        cfg->network.detector.bad.min_rtt_ms = 151;
+    if (cfg->network.detector.bad.min_queue_depth <= 0)
+        cfg->network.detector.bad.min_queue_depth = 8;
+    if (cfg->network.detector.very_bad.min_fraction_lost == 0)
+        cfg->network.detector.very_bad.min_fraction_lost = 21;
+    if (cfg->network.detector.very_bad.min_rtt_ms == 0)
+        cfg->network.detector.very_bad.min_rtt_ms = 301;
+    if (cfg->network.detector.very_bad.min_queue_depth <= 0)
+        cfg->network.detector.very_bad.min_queue_depth = 16;
+    if (cfg->network.action.good.max_fps <= 0)
+        cfg->network.action.good.max_fps = light_fps->targets.bright_fps;
+    if (cfg->network.action.good.bitrate_percent <= 0)
+        cfg->network.action.good.bitrate_percent = 100;
+    if (cfg->network.action.good.pacing_percent <= 0)
+        cfg->network.action.good.pacing_percent = 160;
+    if (cfg->network.action.good.keyframe_interval_ms <= 0)
+        cfg->network.action.good.keyframe_interval_ms = 2000;
+    if (cfg->network.action.normal.max_fps <= 0)
+        cfg->network.action.normal.max_fps = light_fps->targets.normal_fps;
+    if (cfg->network.action.normal.bitrate_percent <= 0)
+        cfg->network.action.normal.bitrate_percent = 85;
+    if (cfg->network.action.normal.pacing_percent <= 0)
+        cfg->network.action.normal.pacing_percent = 140;
+    if (cfg->network.action.normal.keyframe_interval_ms <= 0)
+        cfg->network.action.normal.keyframe_interval_ms = cfg->network.action.good.keyframe_interval_ms;
+    if (cfg->network.action.bad.max_fps <= 0)
+        cfg->network.action.bad.max_fps = 20;
+    if (cfg->network.action.bad.bitrate_percent <= 0)
+        cfg->network.action.bad.bitrate_percent = 65;
+    if (cfg->network.action.bad.pacing_percent <= 0)
+        cfg->network.action.bad.pacing_percent = 120;
+    if (cfg->network.action.bad.keyframe_interval_ms <= 0)
+        cfg->network.action.bad.keyframe_interval_ms = 1500;
+    if (cfg->network.action.very_bad.max_fps <= 0)
+        cfg->network.action.very_bad.max_fps = light_fps->targets.low_light_fps;
+    if (cfg->network.action.very_bad.bitrate_percent <= 0)
+        cfg->network.action.very_bad.bitrate_percent = 45;
+    if (cfg->network.action.very_bad.pacing_percent <= 0)
+        cfg->network.action.very_bad.pacing_percent = 100;
+    if (cfg->network.action.very_bad.keyframe_interval_ms <= 0)
+        cfg->network.action.very_bad.keyframe_interval_ms = 1000;
 }
 
 /**
@@ -1642,7 +1673,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
     init_gateway_runtime_stats(ctx);
 
     /* 初始化调试命令 */
-    if (media_gateway_debug_register_shell_commands(ctx) != 0)
+    if (media_gateway_debug_register_debug_commands(ctx) != 0)
         LOG_WARN("warning: register shell commands failed");
     return 0;
 
@@ -2261,7 +2292,7 @@ static void drain_worker_results(MediaGatewayCtx *ctx,
         pop_ret = thread_message_queue_try_pop(&res->result_queue, &result);
         if (pop_ret < 0)
         {
-            if (pop_ret != -3)
+            if (pop_ret != MEDIA_ERR_STOPPED)
             {
                 LOG_ERROR("drain_worker_results failed: pop result ret=%d processed=%d",
                           pop_ret,
@@ -2365,8 +2396,8 @@ static void cancel_video_control_transition_for_target_change(MediaGatewayCtx *c
  * @param ctx gateway 上下文，提供融合后的控制目标和当前已提交状态。
  * @param res 当前 run 生命周期资源，保存命令队列、结果队列和事务状态。
  */
-static void drive_runtime_video_control_transition(MediaGatewayCtx *ctx,
-                                         MediaGatewayRunResources *res)
+static void media_gateway_apply_adaptive_video_source_and_encoder_controls(MediaGatewayCtx *ctx,
+                                                                           MediaGatewayRunResources *res)
 {
     MediaGatewayVideoControlTransition *transition = NULL;
     uint64_t now_us = 0;
@@ -2376,10 +2407,11 @@ static void drive_runtime_video_control_transition(MediaGatewayCtx *ctx,
     int need_sensor_fps = 0;
     int submit_ret = 0;
 
-    if (!ctx || !res ||
-        (!ctx->config.policy.light_fps.enabled &&
-         !ctx->config.policy.network_encode.enabled))
+    /* 如果场景和网络自适应都未启用，直接返回 */
+    if (!ctx || !res || (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled))
+    {
         return;
+    }
 
     transition = &res->video_control_transition;
     now_us = media_gateway_get_now_us();
@@ -2489,6 +2521,31 @@ static void drive_runtime_video_control_transition(MediaGatewayCtx *ctx,
 }
 
 /**
+ * @brief 执行一轮运行期自适应控制调度。
+ *
+ * 本函数把自适应控制拆成三个清晰阶段：
+ * 1. 刷新策略目标：根据亮度、RTCP 和输出队列刷新目标帧率、编码参数、pacing rate；
+ * 2. 下发输出控制：把最终 pacing 开关和码率应用到对应输出通道；
+ * 3. 下发视频控制：通过命令队列异步切换 Sensor 帧率和编码器运行参数。
+ *
+ * 策略阶段只计算目标值；涉及硬件或协议发送点的变更，都交给各自组件接口执行。
+ */
+static void media_gateway_run_adaptive_control_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
+{
+    if (!ctx || !res)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] run adaptive control failed: ctx=%p res=%p",
+                  (void *)ctx,
+                  (void *)res);
+        return;
+    }
+
+    media_gateway_refresh_adaptive_policy_targets_if_due(ctx);
+    media_gateway_apply_adaptive_video_pacer_to_outputs(ctx);
+    media_gateway_apply_adaptive_video_source_and_encoder_controls(ctx, res);
+}
+
+/**
  * @description: 执行一次 run 主循环调度。
  * 这个函数是 run 循环的核心，负责从视频采集线程队列里获取最新帧并发布到对应的视频编码线程输入队列，
  * 没有让编码线程直接从采集线程队列获取帧的原因是多个编码线程可能对应一个采集源
@@ -2522,10 +2579,8 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
         return -1;
     }
 
-    /* 策略只计算目标值，硬件变更通过命令队列异步交给资源所属线程执行。 */
-    media_gateway_update_runtime_policies_if_due(ctx);
-    media_gateway_apply_output_pacing_rates(ctx);
-    drive_runtime_video_control_transition(ctx, res);
+    /* 执行运行期自适应控制：策略目标刷新、输出 pacer 下发、视频硬件控制下发。 */
+    media_gateway_run_adaptive_control_once(ctx, res);
 
     pthread_mutex_lock(&ctx->stats_lock);
     media_gateway_log_throughput_if_due(ctx);
@@ -2578,7 +2633,7 @@ int media_gateway_run(MediaGatewayCtx *ctx)
 
     /* 初始化所有 worker 共用的执行结果队列 */
     if (thread_message_queue_init(&res.result_queue,
-                                  MEDIA_GATEWAY_RESULT_QUEUE_CAPACITY) != 0)
+                                  MEDIA_GATEWAY_RESULT_QUEUE_CAPACITY) != MEDIA_OK)
     {
         LOG_ERROR("media_gateway_run failed: init result queue");
         ret = -1;

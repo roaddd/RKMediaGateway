@@ -18,7 +18,7 @@ extern "C" {
  * shell 命令服务的初始化、启动和释放由 main 程序负责，本接口只注册
  * MediaGateway 相关命令。
  */
-int media_gateway_debug_register_shell_commands(MediaGatewayCtx *ctx);
+int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx);
 
 #ifdef __cplusplus
 }

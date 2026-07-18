@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "mediaPacket.h"
+#include "commonDef.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,15 @@ typedef enum {
     MEDIA_OUTPUT_TYPE_RTMP = 1,    /* RTMP 推流输出。 */
     MEDIA_OUTPUT_TYPE_GB28181 = 2  /* GB28181/SIP+RTP 设备输出。 */
 } MediaOutputType;
+
+/*
+ * 输出通道视频 RTP pacer 开关状态。
+ * 使用枚举替代裸 int，避免调用层把开关值和 pacing rate 混用。
+ */
+typedef enum {
+    MEDIA_OUTPUT_PACER_DISABLED = 0, /* 关闭视频 RTP 包级 pacer。 */
+    MEDIA_OUTPUT_PACER_ENABLED = 1   /* 开启视频 RTP 包级 pacer。 */
+} MediaOutputPacerMode;
 
 typedef struct MediaOutput MediaOutput;
 
@@ -160,7 +170,7 @@ typedef struct {
     int (*send_packet)(MediaOutput *output, const MediaPacket *packet); /* 发送一个媒体包。 */
     void (*disconnect)(MediaOutput *output);                      /* 断开下游连接。 */
     void (*stop)(MediaOutput *output);                            /* 停止协议私有资源。 */
-    int (*set_video_pacing_rate)(MediaOutput *output, int pacing_rate_bps); /* 设置视频 RTP 包级 pacing 码率；不支持的协议可为空。 */
+    int (*set_video_pacer)(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps); /* 设置视频 RTP 包级 pacer；不支持的协议可为空。 */
 } MediaOutputVTable;
 
 /**
@@ -191,30 +201,34 @@ struct MediaOutput {
     int stop_requested;                      /* 是否已请求发送线程退出。 */
     int connected;                           /* 当前输出通道是否已连接。 */
     int waiting_for_keyframe;                /* 重连后是否仍在等待关键帧恢复发送。 */
-    int video_pacing_rate_bps;               /* 当前已下发到协议层的视频 RTP pacing 码率，<=0 表示关闭。 */
+    MediaOutputPacerMode video_pacer_mode;   /* 当前已下发到协议层的视频 RTP pacer 开关。 */
+    int video_pacing_rate_bps;               /* 当前已下发到协议层的视频 RTP pacing 码率，单位 bit/s。 */
 };
 
 /**
  * @description: 按协议类型创建并初始化一个输出通道。
  * @param output 输出通道对象。
  * @param config 输出协议配置。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
+/* 返回 MEDIA_OK 表示成功，错误码表示参数非法、协议类型不支持或协议层初始化失败。 */
 int media_output_setup(MediaOutput *output, const MediaOutputConfig *config);
 
 /**
  * @description: 启动输出通道协议资源和后台发送线程。
  * @param output 输出通道对象。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
+/* 返回 MEDIA_OK 表示成功，错误码表示参数非法、协议层启动失败或线程创建失败。 */
 int media_output_start(MediaOutput *output);
 
 /**
  * @description: 将媒体包引用压入对应音频/视频输出队列，不复制底层媒体数据。
  * @param output 输出通道对象。
  * @param packet 待发送媒体包。
- * @return 0 成功或按丢帧策略丢弃，-1 参数非法或入队失败。
+ * @return MEDIA_OK 成功或按丢帧策略丢弃，错误码表示参数非法或入队失败。
  */
+/* 返回 MEDIA_OK 表示成功或按丢帧策略丢弃，错误码表示参数非法或队列入队失败。 */
 int media_output_enqueue(MediaOutput *output, const MediaPacket *packet);
 
 /**
@@ -244,12 +258,19 @@ void media_output_deinit(MediaOutput *output);
 void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats);
 
 /**
- * @description: 设置输出通道的视频 RTP 包级 pacing 码率。
+ * @description: 设置输出通道的视频 RTP 包级 pacer。
  * @param output 输出通道对象。
- * @param pacing_rate_bps 目标码率，单位 bit/s；<=0 表示关闭 pacing。
- * @return 0 成功；-1 参数非法或协议层设置失败。
+ * @param mode pacer 开关状态。
+ * @param pacing_rate_bps 目标码率，单位 bit/s；mode 为 MEDIA_OUTPUT_PACER_ENABLED 时必须大于 0。
+ * @return MEDIA_OK 成功，错误码表示参数非法或协议层设置失败。
  */
-int media_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps);
+/* 返回 MEDIA_OK 表示成功，错误码表示参数非法或协议层 pacing 设置失败。 */
+/*
+ * 设置输出通道的视频 RTP 包级 pacer。
+ * mode 为 MEDIA_OUTPUT_PACER_DISABLED 表示关闭 pacer，此时忽略 pacing_rate_bps；
+ * mode 为 MEDIA_OUTPUT_PACER_ENABLED 表示开启 pacer，此时 pacing_rate_bps 必须大于 0。
+ */
+int media_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps);
 
 /**
  * @description: 协议实现内部使用的通用输出通道初始化函数。
@@ -257,8 +278,9 @@ int media_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps)
  * @param config 通用输出通道配置。
  * @param vtable 协议回调表。
  * @param impl 协议私有上下文。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
+/* 返回 MEDIA_OK 表示成功，错误码表示参数非法或队列资源初始化失败。 */
 int media_output_init(MediaOutput *output,
                       const MediaOutputChannelConfig *config,
                       const MediaOutputVTable *vtable,

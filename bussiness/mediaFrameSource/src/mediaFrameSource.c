@@ -8,6 +8,7 @@
 
 #include "mediaFrameSource.h"
 
+#include "commonDef.h"
 #include "logger.h"
 #include "mediaControlMessage.h"
 #include "util.h"
@@ -129,7 +130,7 @@ static void frame_source_publish_command_result(MediaFrameSource *source,
     result.data = (void *)data;
     result.data_size = data_size;
     push_ret = thread_message_queue_push_copy(source->messaging.result_queue, &result);
-    if (push_ret != 0)
+    if (push_ret != MEDIA_OK)
     {
         LOG_ERROR("frame source publish command result failed source=%d request=%" PRIu64 " ret=%d",
                   source->config.source_index,
@@ -159,14 +160,14 @@ static void frame_source_execute_set_fps(MediaFrameSource *source,
                   command ? command->data_size : 0,
                   sizeof(MediaSetFpsRequest));
         if (source && command)
-            frame_source_publish_command_result(source, command, -1, NULL, 0);
+            frame_source_publish_command_result(source, command, MEDIA_ERR_INVALID_PARAM, NULL, 0);
         return;
     }
 
     request = (const MediaSetFpsRequest *)command->data;
     result.requested_fps = request->target_fps;
     ret = v4l2_capture_set_fps(source->config.capture, request->target_fps);
-    if (ret == 0)
+    if (ret == MEDIA_OK)
         result.applied_fps = request->target_fps;
     frame_source_publish_command_result(source,
                                         command,
@@ -197,7 +198,7 @@ static void frame_source_process_commands(MediaFrameSource *source)
         pop_ret = thread_message_queue_try_pop(&source->messaging.command_queue, &command);
         if (pop_ret < 0)
         {
-            if (pop_ret != -3)
+            if (pop_ret != MEDIA_ERR_STOPPED)
             {
                 LOG_ERROR("frame_source_process_commands failed: pop command source=%d ret=%d",
                           source->config.source_index,
@@ -217,7 +218,7 @@ static void frame_source_process_commands(MediaFrameSource *source)
             LOG_WARN("frame source ignored unknown command type=%u source=%d",
                      command.type,
                      source->config.source_index);
-            frame_source_publish_command_result(source, &command, -1, NULL, 0);
+            frame_source_publish_command_result(source, &command, MEDIA_ERR_UNSUPPORTED, NULL, 0);
             break;
         }
         thread_message_release(&command);
@@ -578,7 +579,7 @@ int media_frame_source_init(MediaFrameSource *source,
     }
     queue_ret = thread_message_queue_init(&source->messaging.command_queue,
                                           MEDIA_FRAME_SOURCE_COMMAND_QUEUE_CAPACITY);
-    if (queue_ret != 0)
+    if (queue_ret != MEDIA_OK)
     {
         pthread_cond_destroy(&source->runtime.cond);
         pthread_mutex_destroy(&source->runtime.lock);
@@ -606,7 +607,7 @@ int media_frame_source_submit_command(MediaFrameSource *source,
         return -1;
     }
     ret = thread_message_queue_push_copy(&source->messaging.command_queue, command);
-    if (ret != 0)
+    if (ret != MEDIA_OK)
     {
         LOG_ERROR("media_frame_source_submit_command failed: source=%d type=%u request=%" PRIu64 " ret=%d",
                   source->config.source_index,

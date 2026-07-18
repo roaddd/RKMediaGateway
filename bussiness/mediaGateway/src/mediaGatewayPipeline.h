@@ -1,11 +1,9 @@
-/*** 
- * @Author: huangkelong
- * @Date: 2026-05-09 22:46:00
- * @LastEditTime: 2026-05-19 22:40:10
- * @LastEditors: huangkelong
- * @Description: 采集层和编码处理层之间的并发调度层，负责音视频帧的线程安全转交、编码 worker 生命周期管理、丢帧策略和错误传播
- * @FilePath: \Fork\RKMediaGateway\bussiness\mediaGateway\src\mediaGatewayPipeline.h
- * @可以输入预定的版权声明、个性签名、空行等
+/**
+ * @file mediaGatewayPipeline.h
+ * @brief 采集层和编码处理层之间的并发调度接口。
+ *
+ * 本文件定义视频 latest-frame 缓存、编码 worker 生命周期管理、音视频帧转交、
+ * 丢帧策略和错误传播相关接口。
  */
 
 #ifndef __MEDIA_GATEWAY_PIPELINE_H__

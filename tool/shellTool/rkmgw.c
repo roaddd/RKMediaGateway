@@ -12,7 +12,7 @@
  * 发送给正在运行的 RKMediaGateway 进程，再把服务端返回的文本结果打印到终端。
  */
 
-#include "shellCommandServer.h"
+#include "debugCommandServer.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -110,13 +110,13 @@ static int connect_shell_server(void)
     }
 
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", SHELL_COMMAND_DEFAULT_SOCKET_PATH);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", debug_command_DEFAULT_SOCKET_PATH);
     ret = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
     if (ret != 0)
     {
         fprintf(stderr,
                 "connect failed: path=%s errno=%d(%s)\n",
-                SHELL_COMMAND_DEFAULT_SOCKET_PATH,
+                debug_command_DEFAULT_SOCKET_PATH,
                 errno,
                 strerror(errno));
         close(fd);

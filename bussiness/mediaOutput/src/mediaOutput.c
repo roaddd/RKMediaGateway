@@ -1,5 +1,6 @@
 #include "mediaOutput.h"
 
+#include "commonDef.h"
 #include "gb28181/inc/gb28181Output.h"
 #include "logger.h"
 #include "mediaOutputPathMetrics.h"
@@ -30,14 +31,14 @@ static void output_set_thread_name(const char *output_name)
  * @description: 初始化输出包队列。
  * @param queue 待初始化的队列。
  * @param capacity 队列容量；小于等于 0 时使用默认容量。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
 static int output_queue_init(MediaOutputPacketQueue *queue, int capacity)
 {
     if (!queue)
     {
         LOG_ERROR("output_queue_init failed: queue is NULL");
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     memset(queue, 0, sizeof(*queue));
     queue->capacity = (capacity > 0) ? capacity : DEFAULT_OUTPUT_QUEUE_CAPACITY;
@@ -45,9 +46,9 @@ static int output_queue_init(MediaOutputPacketQueue *queue, int capacity)
     if (!queue->items)
     {
         LOG_ERROR("output_queue_init failed: alloc capacity=%d", queue->capacity);
-        return -1;
+        return MEDIA_ERR_NO_MEMORY;
     }
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -109,19 +110,19 @@ static MediaPacket *output_queue_peek(MediaOutputPacketQueue *queue)
  * @param output 输出通道，用于更新统计。
  * @param queue 待出队的队列。
  * @param packet 输出弹出的包，调用方负责 reset。
- * @return 0 成功，-1 队列为空或参数无效。
+ * @return MEDIA_OK 成功，MEDIA_ERR_NOT_FOUND 表示队列为空，错误码表示失败原因。
  */
 static int output_queue_pop_locked(MediaOutput *output, MediaOutputPacketQueue *queue, MediaPacket *packet)
 {
     if (!queue || queue->size <= 0)
-        return -1;
+        return MEDIA_ERR_NOT_FOUND;
 
     *packet = queue->items[queue->head];
     media_packet_init(&queue->items[queue->head]);
     queue->head = (queue->head + 1) % queue->capacity;
     queue->size--;
     output_update_queue_depth_locked(output);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -134,7 +135,7 @@ static void output_queue_drop_oldest_locked(MediaOutput *output, MediaOutputPack
     MediaPacket packet;
 
     media_packet_init(&packet);
-    if (output_queue_pop_locked(output, queue, &packet) == 0)
+    if (output_queue_pop_locked(output, queue, &packet) == MEDIA_OK)
     {
         output->stats.dropped_frames++;
         media_packet_reset(&packet);
@@ -159,11 +160,12 @@ static MediaOutputPacketQueue *output_queue_for_packet(MediaOutput *output, cons
  * @param output 输出通道，用于更新统计。
  * @param queue 目标队列。
  * @param packet 待入队媒体包。
- * @return 0 成功，-1 队列不可用或已满。
+ * @return MEDIA_OK 成功，MEDIA_ERR_FULL 表示队列不可用或已满。
  */
 static int output_queue_push_locked(MediaOutput *output, MediaOutputPacketQueue *queue, const MediaPacket *packet)
 {
     int tail;
+
     if (!queue || !queue->items || queue->capacity <= 0 || queue->size >= queue->capacity)
     {
         LOG_ERROR("output_queue_push_locked failed: invalid/full queue=%p items=%p capacity=%d size=%d",
@@ -171,14 +173,14 @@ static int output_queue_push_locked(MediaOutput *output, MediaOutputPacketQueue 
                   queue ? (void *)queue->items : NULL,
                   queue ? queue->capacity : -1,
                   queue ? queue->size : -1);
-        return -1;
+        return MEDIA_ERR_FULL;
     }
 
     tail = (queue->head + queue->size) % queue->capacity;
     media_packet_copy_ref(&queue->items[tail], packet);
     queue->size++;
     output_update_queue_depth_locked(output);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -191,7 +193,7 @@ static int output_queue_push_locked(MediaOutput *output, MediaOutputPacketQueue 
  *
  * @param output 输出通道。
  * @param packet 输出弹出的媒体包，调用方负责 reset。
- * @return 0 成功，-1 当前无包可取。
+ * @return MEDIA_OK 成功，MEDIA_ERR_NOT_FOUND 表示当前无包可取。
  */
 static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
 {
@@ -199,7 +201,7 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
     MediaPacket *audio = output_queue_peek(&output->audio_queue);
 
     if (!video && !audio)
-        return -1;
+        return MEDIA_ERR_NOT_FOUND;
 
     if (output->waiting_for_keyframe && video)
         return output_queue_pop_locked(output, &output->video_queue, packet);
@@ -244,7 +246,7 @@ static void *media_output_thread(void *arg)
             break;
         }
         /* 从队列中取出下一帧，可能是音频帧也可能是视频帧 */
-        if (output_pop_next_locked(output, &packet) != 0)
+        if (output_pop_next_locked(output, &packet) != MEDIA_OK)
         {
             pthread_mutex_unlock(&output->lock);
             continue;
@@ -253,7 +255,7 @@ static void *media_output_thread(void *arg)
 
         if (!output->connected)
         {
-            if (output->vtable->connect(output) == 0)
+            if (output->vtable->connect(output) == MEDIA_OK)
             {
                 pthread_mutex_lock(&output->lock);
                 output->connected = 1;
@@ -310,7 +312,7 @@ static void *media_output_thread(void *arg)
             path_sample.send_done_us = send_done_us;
             media_output_log_path_latency(&path_sample);
         }
-        if (send_ret != 0)
+        if (send_ret != MEDIA_OK)
         {
             pthread_mutex_lock(&output->lock);
             output->connected = 0;
@@ -346,7 +348,7 @@ static void *media_output_thread(void *arg)
  * @description: 根据输出类型创建并初始化具体协议输出通道。
  * @param output 待初始化的输出通道。
  * @param config 输出配置。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
 int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
 {
@@ -355,7 +357,7 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
         LOG_ERROR("media_output_setup failed: invalid arguments output=%p config=%p",
                   (void *)output,
                   (const void *)config);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     switch (config->type)
@@ -368,7 +370,7 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
         return media_output_setup_gb28181(output, &config->protocol.gb28181);
     default:
         LOG_ERROR("media_output_setup failed: unknown type=%d", config->type);
-        return -1;
+        return MEDIA_ERR_UNSUPPORTED;
     }
 }
 
@@ -378,7 +380,7 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
  * @param config 通道基础配置。
  * @param vtable 协议实现回调表。
  * @param impl 协议实现私有上下文。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
 int media_output_init(MediaOutput *output,
                       const MediaOutputChannelConfig *config,
@@ -395,7 +397,7 @@ int media_output_init(MediaOutput *output,
                   (const void *)vtable,
                   vtable ? (void *)vtable->connect : NULL,
                   vtable ? (void *)vtable->send_packet : NULL);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     memset(output, 0, sizeof(*output));
@@ -407,42 +409,42 @@ int media_output_init(MediaOutput *output,
                                                : DEFAULT_RECONNECT_INTERVAL_MS;
 
     queue_capacity = (config->queue_capacity > 0) ? config->queue_capacity : DEFAULT_OUTPUT_QUEUE_CAPACITY;
-    if (output_queue_init(&output->video_queue, queue_capacity) != 0 ||
-        output_queue_init(&output->audio_queue, queue_capacity) != 0)
+    if (output_queue_init(&output->video_queue, queue_capacity) != MEDIA_OK ||
+        output_queue_init(&output->audio_queue, queue_capacity) != MEDIA_OK)
     {
         LOG_ERROR("media_output_init failed: queue alloc name=%s capacity=%d",
                   config->name ? config->name : "unknown",
                   queue_capacity);
         output_queue_deinit(&output->video_queue);
         output_queue_deinit(&output->audio_queue);
-        return -1;
+        return MEDIA_ERR_NO_MEMORY;
     }
 
     pthread_mutex_init(&output->lock, NULL);
     pthread_cond_init(&output->cond, NULL);
     output->waiting_for_keyframe = output->config.drop_until_keyframe_after_reconnect ? 1 : 0;
     output->stats.waiting_for_keyframe = output->waiting_for_keyframe;
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
  * @description: 启动输出通道，并创建后台发送线程。
  * @param output 输出通道。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
 int media_output_start(MediaOutput *output)
 {
     if (!output)
     {
         LOG_ERROR("media_output_start failed: output is NULL");
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     /* 调用各个输出通道的启动函数 */
-    if (output->vtable->start && output->vtable->start(output) != 0)
+    if (output->vtable->start && output->vtable->start(output) != MEDIA_OK)
     {
         LOG_ERROR("media_output_start failed: vtable start name=%s",
                   output->config.name ? output->config.name : "unknown");
-        return -1;
+        return MEDIA_ERR;
     }
 
     output->running = 1;
@@ -453,9 +455,9 @@ int media_output_start(MediaOutput *output)
                   output->config.name ? output->config.name : "unknown");
         if (output->vtable->stop)
             output->vtable->stop(output);
-        return -1;
+        return MEDIA_ERR;
     }
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -468,7 +470,7 @@ int media_output_start(MediaOutput *output)
  *
  * @param output 输出通道。
  * @param packet 待入队媒体包。
- * @return 0 成功或按策略丢包，-1 参数或队列错误。
+ * @return MEDIA_OK 成功或按策略丢包，错误码表示参数或队列错误。
  */
 int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
 {
@@ -480,7 +482,7 @@ int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
                   (void *)output,
                   (const void *)packet,
                   packet ? (void *)packet->buffer : NULL);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     pthread_mutex_lock(&output->lock);
@@ -498,7 +500,7 @@ int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
         {
             output->stats.dropped_frames++;
             pthread_mutex_unlock(&output->lock);
-            return 0;
+            return MEDIA_OK;
         }
         else
         {
@@ -507,18 +509,18 @@ int media_output_enqueue(MediaOutput *output, const MediaPacket *packet)
         }
     }
 
-    if (output_queue_push_locked(output, queue, packet) != 0)
+    if (output_queue_push_locked(output, queue, packet) != MEDIA_OK)
     {
         LOG_ERROR("media_output_enqueue failed: push packet frame=%" PRIu64 " type=%d codec=%d",
                   packet->frame_id,
                   packet->frame_type,
                   packet->codec);
         pthread_mutex_unlock(&output->lock);
-        return -1;
+        return MEDIA_ERR_FULL;
     }
     pthread_cond_signal(&output->cond);
     pthread_mutex_unlock(&output->lock);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -534,7 +536,7 @@ int media_output_consume_external_idr_request(MediaOutput *output)
         return media_output_rtsp_consume_external_idr_request(output);
     if (output->type == MEDIA_OUTPUT_TYPE_GB28181)
         return media_output_gb28181_consume_external_idr_request(output);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -590,38 +592,61 @@ void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats)
     pthread_mutex_unlock(&output->lock);
 }
 
-int media_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps)
+/*
+ * 设置输出通道的视频 RTP 包级 pacer。
+ * 通用输出层负责参数校验和去重，具体协议层负责把开关下发到真实发送点。
+ */
+int media_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps)
 {
-    int normalized_rate_bps = 0;
+    int effective_rate_bps = 0;
     int ret = 0;
 
     if (!output)
-        return -1;
-    normalized_rate_bps = pacing_rate_bps > 0 ? pacing_rate_bps : 0;
-    if (output->video_pacing_rate_bps == normalized_rate_bps)
-        return 0;
-
-    if (output->vtable && output->vtable->set_video_pacing_rate)
     {
-        ret = output->vtable->set_video_pacing_rate(output, normalized_rate_bps);
-        if (ret != 0)
+        LOG_ERROR("media_output_set_video_pacer failed: output is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (mode != MEDIA_OUTPUT_PACER_DISABLED && mode != MEDIA_OUTPUT_PACER_ENABLED)
+    {
+        LOG_ERROR("media_output_set_video_pacer failed: invalid mode=%d", mode);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (mode == MEDIA_OUTPUT_PACER_ENABLED && pacing_rate_bps <= 0)
+    {
+        LOG_ERROR("media_output_set_video_pacer failed: mode=%d invalid rate=%d",
+                  mode,
+                  pacing_rate_bps);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    effective_rate_bps = (mode == MEDIA_OUTPUT_PACER_ENABLED) ? pacing_rate_bps : 0;
+
+    if (output->video_pacer_mode == mode && output->video_pacing_rate_bps == effective_rate_bps)
+        return MEDIA_OK;
+
+    if (output->vtable && output->vtable->set_video_pacer)
+    {
+        ret = output->vtable->set_video_pacer(output, mode, effective_rate_bps);
+        if (ret != MEDIA_OK)
         {
-            LOG_ERROR("media_output_set_video_pacing_rate failed: name=%s rate=%d ret=%d",
+            LOG_ERROR("media_output_set_video_pacer failed: name=%s mode=%d rate=%d ret=%d",
                       output->config.name ? output->config.name : "unknown",
-                      normalized_rate_bps,
+                      mode,
+                      effective_rate_bps,
                       ret);
-            return -1;
+            return ret;
         }
     }
-    else if (normalized_rate_bps > 0)
+    else if (mode == MEDIA_OUTPUT_PACER_ENABLED)
     {
         /*
          * 非 RTSP 输出当前没有 RTP 包级 pacing 执行点。返回成功但不记录为已应用，
          * 避免上层把 RTMP/GB28181 误判为已经启用 RTP pacer。
          */
-        return 0;
+        return MEDIA_OK;
     }
 
-    output->video_pacing_rate_bps = normalized_rate_bps;
-    return 0;
+    output->video_pacer_mode = mode;
+    output->video_pacing_rate_bps = effective_rate_bps;
+    return MEDIA_OK;
 }

@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include <time.h>
 
+#include "commonDef.h"
 #include "logger.h"
 #include "rtsp_server_api.h"
 #include "util.h"
@@ -217,7 +218,7 @@ static void rtsp_output_handle_rtcp_report(const RtspRtcpReceiverReport *report,
     pthread_mutex_unlock(&g_rtsp_feedback_lock);
 }
 
-/* 发送一帧编码音频到 RTSP server，并保留媒体 PTS。 */
+/* 发送一帧编码音频到 RTSP server，并保留媒体 PTS；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
     RtspMediaFrame frame;
     if (packet->codec != MEDIA_CODEC_G711A && packet->codec != MEDIA_CODEC_AAC) {
@@ -226,7 +227,7 @@ static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket
                      packet->codec);
             impl->unsupported_audio_warned = 1;
         }
-        return 0;
+        return MEDIA_OK;
     }
 
     frame.data = (uint8_t *)packet->buffer->data;
@@ -236,11 +237,12 @@ static int rtsp_output_send_audio_packet(RtspOutputImpl *impl, const MediaPacket
         LOG_ERROR("rtsp_output_send_audio_packet failed: sessionSendAudioFrame size=%zu frame=%" PRIu64,
                   packet->buffer->size,
                   packet->frame_id);
-        return -1;
+        return MEDIA_ERR;
     }
-    return 0;
+    return MEDIA_OK;
 }
 
+/* 根据 RTSP output 配置添加音频 track；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
     MediaCodecType codec;
     int sample_rate;
@@ -250,7 +252,7 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
 
     codec = impl->config.audio_codec;
     if (codec == MEDIA_CODEC_NONE) {
-        return 0;
+        return MEDIA_OK;
     }
 
     sample_rate = (impl->config.audio_sample_rate > 0) ? impl->config.audio_sample_rate : 8000;
@@ -266,7 +268,7 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
         LOG_WARN("rtsp_output_start skip unsupported declared audio codec=%d session=%s",
                  codec,
                  impl->config.session_name ? impl->config.session_name : "unknown");
-        return 0;
+        return MEDIA_OK;
     }
 
     if (sessionAddAudio(impl->session, rtsp_audio_type, profile, sample_rate, channels) < 0) {
@@ -275,9 +277,9 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
                   codec,
                   sample_rate,
                   channels);
-        return -1;
+        return MEDIA_ERR;
     }
-    return 0;
+    return MEDIA_OK;
 }
 
 static void rtsp_output_report_first_keyframe_after_idr(RtspOutputImpl *impl, const MediaPacket *packet) {
@@ -307,10 +309,13 @@ static void rtsp_output_report_first_keyframe_after_idr(RtspOutputImpl *impl, co
            detect_to_send);
 }
 
+/* 发送一帧 H264 视频到 RTSP server；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_send_video_packet(RtspOutputImpl *impl, const MediaPacket *packet) {
     RtspMediaFrame frame;
+    int ret = MEDIA_OK;
+
     if (packet->codec != MEDIA_CODEC_H264) {
-        return 0;
+        return MEDIA_OK;
     }
 
     rtsp_output_probe_new_client(impl);
@@ -322,7 +327,10 @@ static int rtsp_output_send_video_packet(RtspOutputImpl *impl, const MediaPacket
     frame.data = (uint8_t *)packet->buffer->data;
     frame.data_len = (int)packet->buffer->size;
     frame.pts_us = packet->pts_us;
-    return sessionSendVideoFrame(impl->session, &frame);
+    ret = sessionSendVideoFrame(impl->session, &frame);
+    if (ret < 0)
+        return MEDIA_ERR;
+    return MEDIA_OK;
 }
 
 /* 共享 RTSP 服务线程入口：阻塞运行 rtspStartServer。 */
@@ -370,6 +378,7 @@ static int shared_rtsp_config_compatible(const MediaOutputRtspConfig *cfg) {
  * @return {*}
  */
 
+/* 获取共享 RTSP server 引用；返回 MEDIA_OK 或统一错误码。 */
 static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
     int ret = 0;
     pthread_mutex_lock(&g_rtsp_shared_lock);
@@ -387,7 +396,7 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
                       cfg->server_ip ? cfg->server_ip : "unknown",
                       cfg->server_port);
             pthread_mutex_unlock(&g_rtsp_shared_lock);
-            return -1;
+            return MEDIA_ERR;
         }
         rtspSetRtcpReportCallback(rtsp_output_handle_rtcp_report, NULL);
         g_rtsp_shared_server.module_ready = 1;
@@ -402,7 +411,7 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
             rtspModuleDel();
             memset(&g_rtsp_shared_server, 0, sizeof(g_rtsp_shared_server));
             pthread_mutex_unlock(&g_rtsp_shared_lock);
-            return -1;
+            return MEDIA_ERR;
         }
         g_rtsp_shared_server.server_started = 1;
     } else if (!shared_rtsp_config_compatible(cfg)) {
@@ -412,12 +421,12 @@ static int shared_rtsp_server_acquire(const MediaOutputRtspConfig *cfg) {
                   g_rtsp_shared_server.auth_enable,
                   g_rtsp_shared_server.user);
         pthread_mutex_unlock(&g_rtsp_shared_lock);
-        return -1;
+        return MEDIA_ERR_INVALID_CONFIG;
     }
 
     g_rtsp_shared_ref_count++;
     pthread_mutex_unlock(&g_rtsp_shared_lock);
-    return 0;
+    return MEDIA_OK;
 }
 
 /* 释放共享 RTSP server：最后一个引用释放时才停止并反初始化。 */
@@ -445,20 +454,20 @@ static void shared_rtsp_server_release(void) {
     pthread_mutex_unlock(&g_rtsp_shared_lock);
 }
 
-/* output 启动：挂载共享 server，并创建当前 output 的 session。 */
+/* output 启动：挂载共享 server，并创建当前 output 的 session；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_start(MediaOutput *output) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl) {
         LOG_ERROR("rtsp_output_start failed: impl is NULL");
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
-    if (shared_rtsp_server_acquire(&impl->config) != 0) {
+    if (shared_rtsp_server_acquire(&impl->config) != MEDIA_OK) {
         LOG_ERROR("rtsp_output_start failed: acquire shared server ip=%s port=%d session=%s",
                   impl->config.server_ip ? impl->config.server_ip : "unknown",
                   impl->config.server_port,
                   impl->config.session_name ? impl->config.session_name : "unknown");
-        return -1;
+        return MEDIA_ERR;
     }
     impl->shared_server_acquired = 1;
 
@@ -469,14 +478,14 @@ static int rtsp_output_start(MediaOutput *output) {
                   impl->config.session_name ? impl->config.session_name : "unknown");
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
-        return -1;
+        return MEDIA_ERR;
     }
-    if (rtsp_output_add_audio_track(impl) != 0) {
+    if (rtsp_output_add_audio_track(impl) != MEDIA_OK) {
         rtspDelSession(impl->session);
         impl->session = NULL;
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
-        return -1;
+        return MEDIA_ERR;
     }
     /* 当前session添加视频流 */
     if (sessionAddVideo(impl->session, VIDEO_H264) < 0) {
@@ -486,7 +495,7 @@ static int rtsp_output_start(MediaOutput *output) {
         impl->session = NULL;
         shared_rtsp_server_release();
         impl->shared_server_acquired = 0;
-        return -1;
+        return MEDIA_ERR;
     }
     impl->last_client_count = query_rtsp_session_client_count(impl->session);
     if (impl->last_client_count < 0) {
@@ -502,20 +511,20 @@ static int rtsp_output_start(MediaOutput *output) {
            impl->config.server_ip,
            impl->config.server_port,
            impl->config.session_name);
-    return 0;
+    return MEDIA_OK;
 }
 
-/* output 连接检查：session 已就绪即可视为可用。 */
+/* output 连接检查：session 已就绪即可视为可用；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_connect(MediaOutput *output) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session) {
         LOG_ERROR("rtsp_output_connect failed: session is NULL");
-        return -1;
+        return MEDIA_ERR_NOT_READY;
     }
-    return 0;
+    return MEDIA_OK;
 }
 
-/* output 发送：视频发送 H264，音频发送 G711A/PCMA。 */
+/* output 发送：视频发送 H264，音频发送 G711A/PCMA；返回 MEDIA_OK 或统一错误码。 */
 static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packet) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
 
@@ -524,7 +533,7 @@ static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packe
                   (impl && impl->session) ? 1 : 0,
                   (void *)packet,
                   (void *)(packet ? packet->buffer : NULL));
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
@@ -533,37 +542,62 @@ static int rtsp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     if (packet->frame_type == MEDIA_FRAME_TYPE_VIDEO) {
         return rtsp_output_send_video_packet(impl, packet);
     }
-    return 0;
+    return MEDIA_OK;
 }
 
-/* 设置 RTSP session 的视频 RTP 包级 pacing 码率。 */
-static int rtsp_output_set_video_pacing_rate(MediaOutput *output, int pacing_rate_bps) {
+/* 设置 RTSP session 的视频 RTP 包级 pacer；返回 MEDIA_OK 或统一错误码。 */
+static int rtsp_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps) {
     RtspOutputImpl *impl = NULL;
-    int normalized_rate_bps = 0;
+    RtspVideoPacerMode rtsp_mode = RTSP_VIDEO_PACER_DISABLED;
+    int enabled = 0;
 
     if (!output) {
-        LOG_ERROR("rtsp_output_set_video_pacing_rate failed: output is NULL");
-        return -1;
+        LOG_ERROR("output is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
     }
+
+    switch (mode) {
+    case MEDIA_OUTPUT_PACER_DISABLED:
+        enabled = 0;
+        rtsp_mode = RTSP_VIDEO_PACER_DISABLED;
+        break;
+    case MEDIA_OUTPUT_PACER_ENABLED:
+        enabled = 1;
+        rtsp_mode = RTSP_VIDEO_PACER_ENABLED;
+        break;
+    default:
+        LOG_ERROR("invalid mode=%d", mode);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    if (enabled && pacing_rate_bps <= 0) {
+        LOG_ERROR("enabled=%d invalid rate=%d",
+                  enabled,
+                  pacing_rate_bps);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
     impl = (RtspOutputImpl *)output->impl;
-    normalized_rate_bps = pacing_rate_bps > 0 ? pacing_rate_bps : 0;
     if (!impl || !impl->session) {
         /*
          * session 未创建时不能缓存为已应用；返回失败让通用层保留旧值，
          * 后续 output start 后 gateway 主循环会继续下发当前 pacing 目标。
          */
-        return -1;
+        LOG_ERROR("session is NULL");
+        return MEDIA_ERR_NOT_READY;
     }
-    if (rtspSetSessionVideoPacingRate(impl->session, normalized_rate_bps) != 0) {
-        LOG_ERROR("rtsp_output_set_video_pacing_rate failed: session=%s rate=%d",
+    if (rtspSetSessionVideoPacer(impl->session, rtsp_mode, pacing_rate_bps) != 0) {
+        LOG_ERROR("session=%s enabled=%d rate=%d",
                   impl->config.session_name ? impl->config.session_name : "unknown",
-                  normalized_rate_bps);
-        return -1;
+                  enabled,
+                  pacing_rate_bps);
+        return MEDIA_ERR;
     }
-    LOG_WARN("[RTSP_PACER] session=%s video_pacing_rate_bps=%d",
+    LOG_WARN("[RTSP_PACER] session=%s enabled=%d video_pacing_rate_bps=%d",
              impl->config.session_name ? impl->config.session_name : "unknown",
-             normalized_rate_bps);
-    return 0;
+             enabled,
+             pacing_rate_bps);
+    return MEDIA_OK;
 }
 
 /* 当前实现无需主动断链，保留该钩子用于接口一致性。 */
@@ -588,7 +622,7 @@ static void rtsp_output_stop(MediaOutput *output) {
     }
 }
 
-/* 构建并初始化一个 RTSP output。 */
+/* 构建并初始化一个 RTSP output；返回 MEDIA_OK 或统一错误码。 */
 int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *config) {
     static const MediaOutputVTable vtable = {
         rtsp_output_start,
@@ -596,20 +630,20 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
         rtsp_output_send_packet,
         rtsp_output_disconnect,
         rtsp_output_stop,
-        rtsp_output_set_video_pacing_rate
+        rtsp_output_set_video_pacer
     };
     MediaOutputChannelConfig output_config;
     RtspOutputImpl *impl;
 
     if (!output) {
         LOG_ERROR("media_output_setup_rtsp failed: output is NULL");
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     impl = (RtspOutputImpl *)calloc(1, sizeof(*impl));
     if (!impl) {
         LOG_ERROR("media_output_setup_rtsp failed: impl alloc");
-        return -1;
+        return MEDIA_ERR_NO_MEMORY;
     }
 
     if (config) {
@@ -648,15 +682,15 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     output_config.drop_until_keyframe_after_reconnect = 0;
     output_config.feedback_holder = impl->config.feedback_holder;
 
-    if (media_output_init(output, &output_config, &vtable, impl) != 0) {
+    if (media_output_init(output, &output_config, &vtable, impl) != MEDIA_OK) {
         LOG_ERROR("media_output_setup_rtsp failed: media_output_init name=%s session=%s",
                   impl->config.name ? impl->config.name : "unknown",
                   impl->config.session_name ? impl->config.session_name : "unknown");
         free(impl);
-        return -1;
+        return MEDIA_ERR;
     }
     output->type = MEDIA_OUTPUT_TYPE_RTSP;
-    return 0;
+    return MEDIA_OK;
 }
 
 int media_output_rtsp_consume_external_idr_request(MediaOutput *output) {

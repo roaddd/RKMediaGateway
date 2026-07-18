@@ -8,6 +8,7 @@
 
 #include "threadMessageQueue.h"
 
+#include "commonDef.h"
 #include "logger.h"
 
 #include <errno.h>
@@ -59,7 +60,7 @@ int thread_message_queue_init(ThreadMessageQueue *queue, size_t capacity)
         LOG_ERROR("thread_message_queue_init failed: invalid args queue=%p capacity=%zu",
                   (void *)queue,
                   capacity);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     memset(queue, 0, sizeof(*queue));
@@ -68,7 +69,7 @@ int thread_message_queue_init(ThreadMessageQueue *queue, size_t capacity)
     {
         LOG_ERROR("thread_message_queue_init failed: calloc messages capacity=%zu",
                   capacity);
-        return -1;
+        return MEDIA_ERR_NO_MEMORY;
     }
     mutex_ret = pthread_mutex_init(&queue->lock, NULL);
     if (mutex_ret != 0)
@@ -77,7 +78,7 @@ int thread_message_queue_init(ThreadMessageQueue *queue, size_t capacity)
                   mutex_ret,
                   strerror(mutex_ret));
         free(messages);
-        return -1;
+        return MEDIA_ERR;
     }
     cond_ret = pthread_cond_init(&queue->cond, NULL);
     if (cond_ret != 0)
@@ -87,14 +88,14 @@ int thread_message_queue_init(ThreadMessageQueue *queue, size_t capacity)
                   strerror(cond_ret));
         pthread_mutex_destroy(&queue->lock);
         free(messages);
-        return -1;
+        return MEDIA_ERR;
     }
 
     queue->messages = messages;
     queue->capacity = capacity;
     queue->running = 1;
     queue->initialized = 1;
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -111,7 +112,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
                   (void *)queue,
                   (const void *)message,
                   queue ? queue->initialized : 0);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     if (message->data_size > 0 && !message->data)
     {
@@ -119,7 +120,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
                   message->type,
                   (unsigned long long)message->request_id,
                   message->data_size);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     copied = *message;
@@ -133,7 +134,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
                       message->type,
                       (unsigned long long)message->request_id,
                       message->data_size);
-            return -1;
+            return MEDIA_ERR_NO_MEMORY;
         }
         memcpy(copied.data, message->data, message->data_size);
     }
@@ -146,7 +147,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
                   (unsigned long long)message->request_id);
         pthread_mutex_unlock(&queue->lock);
         thread_message_release(&copied);
-        return -3;
+        return MEDIA_ERR_STOPPED;
     }
     if (queue->size >= queue->capacity)
     {
@@ -157,7 +158,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
                   queue->capacity);
         pthread_mutex_unlock(&queue->lock);
         thread_message_release(&copied);
-        return -2;
+        return MEDIA_ERR_FULL;
     }
 
     tail = (queue->head + queue->size) % queue->capacity;
@@ -165,7 +166,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
     queue->size++;
     pthread_cond_signal(&queue->cond);
     pthread_mutex_unlock(&queue->lock);
-    return 0;
+    return MEDIA_OK;
 }
 
 /**
@@ -174,7 +175,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
 static int thread_message_queue_pop_locked(ThreadMessageQueue *queue, ThreadMessage *message)
 {
     if (queue->size == 0)
-        return queue->running ? 0 : -3;
+        return queue->running ? 0 : MEDIA_ERR_STOPPED;
 
     *message = queue->messages[queue->head];
     memset(&queue->messages[queue->head], 0, sizeof(queue->messages[queue->head]));
@@ -196,7 +197,7 @@ int thread_message_queue_try_pop(ThreadMessageQueue *queue, ThreadMessage *messa
                   (void *)queue,
                   (void *)message,
                   queue ? queue->initialized : 0);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     memset(message, 0, sizeof(*message));
@@ -224,7 +225,7 @@ int thread_message_queue_pop(ThreadMessageQueue *queue,
                   (void *)message,
                   queue ? queue->initialized : 0,
                   timeout_ms);
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     if (timeout_ms <= 0)
         return thread_message_queue_try_pop(queue, message);

@@ -8,7 +8,7 @@
 #include "systemDebug.h"
 
 #include "logger.h"
-#include "shellCommandServer.h"
+#include "debugCommandServer.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -112,7 +112,7 @@ static int system_debug_shell_set_log_level(void *user_data,
     if (input == end)
     {
         LOG_ERROR("system_debug_shell_set_log_level failed: missing level input=%s", input);
-        shell_command_reply_append(output,
+        debug_command_reply_append(output,
                                    &offset,
                                    "invalid input: missing log level\nusage: setLogLevel <0|1|2|3>\n");
         return -1;
@@ -123,7 +123,7 @@ static int system_debug_shell_set_log_level(void *user_data,
         LOG_ERROR("system_debug_shell_set_log_level failed: strtol errno=%d input=%s",
                   errno,
                   input);
-        shell_command_reply_append(output,
+        debug_command_reply_append(output,
                                    &offset,
                                    "invalid input: parse log level failed\nusage: setLogLevel <0|1|2|3>\n");
         return -1;
@@ -132,7 +132,7 @@ static int system_debug_shell_set_log_level(void *user_data,
     if (!system_debug_is_blank_tail(end))
     {
         LOG_ERROR("system_debug_shell_set_log_level failed: invalid tail input=%s", input);
-        shell_command_reply_append(output,
+        debug_command_reply_append(output,
                                    &offset,
                                    "invalid input: log level must be a number\nusage: setLogLevel <0|1|2|3>\n");
         return -1;
@@ -141,7 +141,7 @@ static int system_debug_shell_set_log_level(void *user_data,
     if (level_value < LOG_LEVEL_DEBUG || level_value > LOG_LEVEL_ERROR)
     {
         LOG_ERROR("system_debug_shell_set_log_level failed: invalid level=%ld", level_value);
-        shell_command_reply_append(output,
+        debug_command_reply_append(output,
                                    &offset,
                                    "invalid log level: %ld\nvalid range: 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR\n",
                                    level_value);
@@ -152,7 +152,7 @@ static int system_debug_shell_set_log_level(void *user_data,
     log_set_level(level);
     current_level = log_get_level();
 
-    shell_command_reply_append(output,
+    debug_command_reply_append(output,
                                &offset,
                                "log level set to %d(%s)\n",
                                (int)current_level,
@@ -163,15 +163,15 @@ static int system_debug_shell_set_log_level(void *user_data,
 /**
  * @brief 注册系统级 shell 调试命令。
  *
- * 该函数应在 shell_command_server_init 成功后调用。
+ * 该函数应在 debug_command_server_init 成功后调用。
  *
  * @return 0 成功，-1 失败。
  */
-static int system_debug_register_shell_commands(void)
+static int system_debug_register_debug_commands(void)
 {
-    if (regShellCmd("setLogLevel", system_debug_shell_set_log_level, NULL) != 0)
+    if (regDebugCmd("setLogLevel", system_debug_shell_set_log_level, NULL) != 0)
     {
-        LOG_ERROR("system_debug_register_shell_commands failed: regShellCmd setLogLevel");
+        LOG_ERROR("system_debug_register_debug_commands failed: regDebugCmd setLogLevel");
         return -1;
     }
 
@@ -181,14 +181,14 @@ static int system_debug_register_shell_commands(void)
 /**
  * @brief 初始化系统调试模块。
  *
- * 该函数应在 shell_command_server_init 成功后调用。当前初始化动作是注册
+ * 该函数应在 debug_command_server_init 成功后调用。当前初始化动作是注册
  * 系统级 shell 调试命令，后续如果增加系统调试资源，也统一放在这里初始化。
  *
  * @return 0 成功，-1 失败。
  */
 int system_debug_init(void)
 {
-    if (system_debug_register_shell_commands() != 0)
+    if (system_debug_register_debug_commands() != 0)
     {
         LOG_ERROR("system_debug_init failed: register shell commands");
         return -1;

@@ -8,6 +8,7 @@
  */
 #include "mediaGatewayPolicy.h"
 
+#include "commonDef.h"
 #include "logger.h"
 #include "mediaGatewayClock.h"
 
@@ -23,6 +24,13 @@ static uint64_t policy_now_us(void)
     return media_gateway_get_now_us();
 }
 
+/**
+ * @brief 网络策略生成的每路中间动作。
+ *
+ * 该结构体只表达 RTCP/队列反馈判断出的网络等级动作系数，不直接代表最终下发值。
+ * 最终编码码率需要在融合阶段结合基准码率、目标帧率和 bitrate_percent 计算；
+ * 最终 RTP pacing 速率需要在融合阶段结合最终编码码率和 pacing_percent 计算。
+ */
 typedef struct {
     int bitrate_percent[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路网络状态对应的码率系数，百分比。 */
     int pacing_percent[MEDIA_GATEWAY_MAX_STREAMS];  /* 每路网络状态对应的 pacing 系数，百分比。 */
@@ -94,28 +102,105 @@ static const char *adaptive_network_name(MediaGatewayNetworkState state)
 }
 
 /**
+ * @brief 判断当前 RTCP/队列指标是否达到指定网络等级阈值。
+ */
+static int adaptive_network_detector_matched(const MediaGatewayNetworkDetectLevelConfig *detector,
+                                             uint8_t fraction_lost,
+                                             uint32_t rtt_ms,
+                                             uint32_t jitter,
+                                             int queue_depth)
+{
+    if (!detector)
+        return 0;
+    if (detector->min_fraction_lost > 0 && fraction_lost >= detector->min_fraction_lost)
+        return 1;
+    if (detector->min_rtt_ms > 0 && rtt_ms >= detector->min_rtt_ms)
+        return 1;
+    if (detector->min_jitter > 0 && jitter >= detector->min_jitter)
+        return 1;
+    if (detector->min_queue_depth > 0 && queue_depth >= detector->min_queue_depth)
+        return 1;
+    return 0;
+}
+
+/**
+ * @brief 计算场景策略关闭时使用的全局帧率上限。
+ *
+ * 亮度感知调帧率关闭时，场景侧应该作为中性约束参与融合，不能再用某一路
+ * stream.fps 限制网络反馈策略的结果。因此这里取配置中所有可能的最高帧率，
+ * 作为 scene.max_fps 的兜底上限。
+ */
+static int adaptive_get_global_max_fps(MediaGatewayCtx *ctx)
+{
+    int max_fps = 0;
+    int stream_idx = 0;
+
+    if (!ctx)
+        return 0;
+
+    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count &&
+                         stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_idx)
+    {
+        if (!ctx->config.video.streams[stream_idx].enabled)
+            continue;
+        if (ctx->config.video.streams[stream_idx].fps > max_fps)
+            max_fps = ctx->config.video.streams[stream_idx].fps;
+    }
+
+    if (ctx->config.policy.light_fps.targets.bright_fps > max_fps)
+        max_fps = ctx->config.policy.light_fps.targets.bright_fps;
+    if (ctx->config.policy.network_encode.network.action.good.max_fps > max_fps)
+        max_fps = ctx->config.policy.network_encode.network.action.good.max_fps;
+    if (ctx->config.policy.network_encode.base_fps > max_fps)
+        max_fps = ctx->config.policy.network_encode.base_fps;
+    if (max_fps <= 0)
+        max_fps = 30;
+
+    return max_fps;
+}
+
+/**
  * @brief 根据 AE 已确认目标生成场景侧帧率上限。
  * 该函数只产出约束，不直接修改硬件。
+ * @return MEDIA_OK 表示场景侧约束更新成功，错误码表示配置或状态非法。
  */
-static void adaptive_update_scene_constraint(MediaGatewayCtx *ctx)
+static int adaptive_update_scene_constraint(MediaGatewayCtx *ctx)
 {
     MediaAdaptCtrlState *state = NULL;
     const MediaGatewayLightFpsPolicyConfig *fps_cfg = NULL;
     int scene_fps = 0;
+    int global_max_fps = 0;
 
     if (!ctx)
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] adaptive control is disabled or ctx is NULL");
-        return;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     state = &ctx->adaptive_policy_state;
     fps_cfg = &ctx->config.policy.light_fps;
-    if (ctx->config.policy.light_fps.enabled)
-        scene_fps = ctx->light_fps_state.target_fps;
-    else if (ctx->config.video.stream_count > 0)
-        scene_fps = ctx->config.video.streams[0].fps;
+    global_max_fps = adaptive_get_global_max_fps(ctx);
+
+    if (!fps_cfg->enabled)
+    {
+        /* 亮度调帧率关闭时，场景侧保持中性上限，不影响 RTCP/队列反馈的网络侧约束。 */
+        state->scene.state = MEDIA_GATEWAY_SCENE_NORMAL;
+        state->scene.max_fps = global_max_fps;
+        return MEDIA_OK;
+    }
+
+    /* 亮度调帧率开启时，场景侧严格使用 AE 确认后的目标帧率参与融合。 */
+    scene_fps = ctx->light_fps_state.target_fps;
     if (scene_fps <= 0)
         scene_fps = fps_cfg->targets.normal_fps;
+    if (scene_fps <= 0)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] invalid scene_fps=%d target_fps=%d normal_fps=%d",
+                  scene_fps,
+                  ctx->light_fps_state.target_fps,
+                  fps_cfg->targets.normal_fps);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
     state->scene.max_fps = scene_fps;
     if (scene_fps == fps_cfg->targets.low_light_fps)
         state->scene.state = MEDIA_GATEWAY_SCENE_LOW_LIGHT;
@@ -124,7 +209,13 @@ static void adaptive_update_scene_constraint(MediaGatewayCtx *ctx)
     else
         state->scene.state = MEDIA_GATEWAY_SCENE_NORMAL;
     if (state->scene.max_fps <= 0)
-        state->scene.max_fps = ctx->config.policy.network_encode.base_fps;
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] invalid scene max_fps=%d global_max_fps=%d",
+                  state->scene.max_fps,
+                  global_max_fps);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
+    return MEDIA_OK;
 }
 
 /**
@@ -188,7 +279,7 @@ static MediaAdaptNetworkDecision adaptive_update_network_constraint(MediaGateway
 
     state = &ctx->adaptive_policy_state;
     network = &ctx->config.policy.network_encode.network;
-    aggregate_max_fps = network->good_max_fps;
+    aggregate_max_fps = network->action.good.max_fps;
     if (aggregate_max_fps <= 0)
         aggregate_max_fps = ctx->config.policy.network_encode.base_fps;
 
@@ -219,33 +310,45 @@ static MediaAdaptNetworkDecision adaptive_update_network_constraint(MediaGateway
         stream_network->max_output_queue_depth = max_queue_depth;
 
         /* 根据本码流 RTCP 丢包、RTT、jitter 和输出队列深度粗分网络等级。 */
-        if (fraction_lost > 20 || rtt_ms > 300 || max_queue_depth >= network->very_bad_queue_depth)
+        if (adaptive_network_detector_matched(&network->detector.very_bad,
+                                              fraction_lost,
+                                              rtt_ms,
+                                              jitter,
+                                              max_queue_depth))
         {
             stream_network->state = MEDIA_GATEWAY_NETWORK_VERY_BAD;
-            stream_network->max_fps = network->very_bad_max_fps;
-            decision.bitrate_percent[stream_idx] = network->very_bad_bitrate_percent;
-            decision.pacing_percent[stream_idx] = network->very_bad_pacing_percent;
+            stream_network->max_fps = network->action.very_bad.max_fps;
+            decision.bitrate_percent[stream_idx] = network->action.very_bad.bitrate_percent;
+            decision.pacing_percent[stream_idx] = network->action.very_bad.pacing_percent;
         }
-        else if (fraction_lost > 8 || rtt_ms > 150 || max_queue_depth >= network->bad_queue_depth)
+        else if (adaptive_network_detector_matched(&network->detector.bad,
+                                                   fraction_lost,
+                                                   rtt_ms,
+                                                   jitter,
+                                                   max_queue_depth))
         {
             stream_network->state = MEDIA_GATEWAY_NETWORK_BAD;
-            stream_network->max_fps = network->bad_max_fps;
-            decision.bitrate_percent[stream_idx] = network->bad_bitrate_percent;
-            decision.pacing_percent[stream_idx] = network->bad_pacing_percent;
+            stream_network->max_fps = network->action.bad.max_fps;
+            decision.bitrate_percent[stream_idx] = network->action.bad.bitrate_percent;
+            decision.pacing_percent[stream_idx] = network->action.bad.pacing_percent;
         }
-        else if (fraction_lost > 2 || rtt_ms > 80 || jitter > 20 || max_queue_depth >= network->normal_queue_depth)
+        else if (adaptive_network_detector_matched(&network->detector.normal,
+                                                   fraction_lost,
+                                                   rtt_ms,
+                                                   jitter,
+                                                   max_queue_depth))
         {
             stream_network->state = MEDIA_GATEWAY_NETWORK_NORMAL;
-            stream_network->max_fps = network->normal_max_fps;
-            decision.bitrate_percent[stream_idx] = network->normal_bitrate_percent;
-            decision.pacing_percent[stream_idx] = network->normal_pacing_percent;
+            stream_network->max_fps = network->action.normal.max_fps;
+            decision.bitrate_percent[stream_idx] = network->action.normal.bitrate_percent;
+            decision.pacing_percent[stream_idx] = network->action.normal.pacing_percent;
         }
         else
         {
             stream_network->state = MEDIA_GATEWAY_NETWORK_GOOD;
-            stream_network->max_fps = network->good_max_fps;
-            decision.bitrate_percent[stream_idx] = 100;
-            decision.pacing_percent[stream_idx] = network->good_pacing_percent;
+            stream_network->max_fps = network->action.good.max_fps;
+            decision.bitrate_percent[stream_idx] = network->action.good.bitrate_percent;
+            decision.pacing_percent[stream_idx] = network->action.good.pacing_percent;
         }
 
         /* 配置缺失时回退到基准帧率，避免网络侧约束生成不可用的 0 fps。 */
@@ -282,30 +385,72 @@ static MediaAdaptNetworkDecision adaptive_update_network_constraint(MediaGateway
 
 /**
  * @brief 按最终帧率和关键帧时间间隔计算 GOP。
+ * @return 大于 0 表示有效 GOP，-1 表示输入参数或关键帧间隔配置非法。
  */
 static int adaptive_compute_gop(const MediaGatewayNetworkEncodePolicyConfig *cfg,
                                 MediaGatewayNetworkState network_state,
                                 int target_fps)
 {
+    const MediaGatewayNetworkLevelConfig *level = NULL;
     int interval_ms = 0;
     int gop = 0;
 
-    if (!cfg || target_fps <= 0)
-        return 1;
-    if (network_state == MEDIA_GATEWAY_NETWORK_VERY_BAD)
-        interval_ms = cfg->very_bad_keyframe_interval_ms;
-    else if (network_state == MEDIA_GATEWAY_NETWORK_BAD)
-        interval_ms = cfg->bad_keyframe_interval_ms;
-    else
-        interval_ms = cfg->good_keyframe_interval_ms;
+    if (!cfg)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] compute gop failed: cfg is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (target_fps <= 0)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] compute gop failed: invalid target_fps=%d", target_fps);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    /* 按网络状态选择对应的 GOP 时间间隔配置 */
+    switch (network_state)
+    {
+    case MEDIA_GATEWAY_NETWORK_GOOD:
+    case MEDIA_GATEWAY_NETWORK_NORMAL:
+        level = &cfg->network.action.good;
+        break;
+    case MEDIA_GATEWAY_NETWORK_BAD:
+        level = &cfg->network.action.bad;
+        break;
+    case MEDIA_GATEWAY_NETWORK_VERY_BAD:
+        level = &cfg->network.action.very_bad;
+        break;
+    default:
+        LOG_ERROR("[ADAPTIVE_CONTROL] compute gop failed: invalid network_state=%d", network_state);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    /* 关键帧间隔属于网络等级对应的编码输出约束 */
+    interval_ms = level->keyframe_interval_ms;
+    if (interval_ms <= 0)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] compute gop failed: invalid keyframe_interval_ms=%d state=%d",
+                  interval_ms,
+                  network_state);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
+    /* 根据目标帧率和关键帧间隔计算 GOP */
     gop = target_fps * interval_ms / 1000;
-    return gop > 0 ? gop : 1;
+    if (gop <= 0)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] compute gop failed: target_fps=%d interval_ms=%d gop=%d",
+                  target_fps,
+                  interval_ms,
+                  gop);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
+    return gop;
 }
 
 /**
  * @brief 根据最终 fps 和各路网络码率系数生成每路编码器目标运行参数。
+ * @return MEDIA_OK 表示目标编码参数生成成功，错误码表示输入或配置非法。
  */
-static void adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNetworkDecision *decision)
+static int adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNetworkDecision *decision)
 {
     MediaAdaptCtrlState *state = NULL;
     const MediaGatewayNetworkEncodePolicyConfig *cfg = NULL;
@@ -317,30 +462,45 @@ static void adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptN
     int base_bitrate = 0;
     int bitrate_percent = 100;
     int64_t bitrate = 0;
+    int target_gop = 0;
 
     if (!ctx || !decision)
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] adaptive control is disabled or ctx is NULL");
-        return;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     state = &ctx->adaptive_policy_state;
     cfg = &ctx->config.policy.network_encode;
+    if (cfg->base_fps <= 0)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] build target params failed: invalid base_fps=%d", cfg->base_fps);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
+
     for (stream_idx = 0; stream_idx < ctx->config.video.stream_count && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
     {
         stream = &ctx->config.video.streams[stream_idx];
-        base_params = &state->encode_params.base[stream_idx];
-        params = &state->encode_params.target[stream_idx];
+        base_params = &state->encode_params.base[stream_idx]; /* 每路编码器自适应计算基准参数 */
+        params = &state->encode_params.target[stream_idx]; /* 根据RTCP网络反馈计算出来的编码器最终目标参数 */
         memset(params, 0, sizeof(*params));
-        if (!stream->enabled)
+        if (!stream->enabled) /* 跳过未启用的码流 */
             continue;
-        stream_network = &state->stream_network[stream_idx];
-        bitrate_percent = decision->bitrate_percent[stream_idx] > 0 ?
-                          decision->bitrate_percent[stream_idx] : 100;
-        /* 调整码率 */
+        stream_network = &state->stream_network[stream_idx]; /* 每路码流独立的网络反馈和网络侧约束状态 */
+        /* 获取码率调整系数，这个系数是根据网络反馈决定的 */
+        bitrate_percent = decision->bitrate_percent[stream_idx] > 0 ?  decision->bitrate_percent[stream_idx] : 100;
+        /* 调整码率，先根据基准帧率对应的码率算出目标帧率对应的码率，然后再乘以码率调整系数，得到最终目标码率 */
         base_bitrate = base_params->bitrate > 0 ? base_params->bitrate : stream->bitrate;
         if (base_bitrate <= 0)
             base_bitrate = cfg->max_bitrate;
+        if (base_bitrate <= 0)
+        {
+            LOG_ERROR("[ADAPTIVE_CONTROL] build target params failed: stream=%d invalid base_bitrate=%d max_bitrate=%d",
+                      stream_idx,
+                      base_bitrate,
+                      cfg->max_bitrate);
+            return MEDIA_ERR_INVALID_CONFIG;
+        }
         bitrate = (int64_t)base_bitrate * state->output.target_fps / cfg->base_fps;
         bitrate = bitrate * bitrate_percent / 100;
         /* 调整帧率 */
@@ -348,7 +508,17 @@ static void adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptN
         /* 调整码率 */
         params->bitrate = clamp_int_policy((int)bitrate, cfg->min_bitrate, cfg->max_bitrate);
         /* 调整 GOP */
-        params->gop = adaptive_compute_gop(cfg, stream_network->state, state->output.target_fps);
+        target_gop = adaptive_compute_gop(cfg, stream_network->state, state->output.target_fps);
+        if (target_gop <= 0)
+        {
+            LOG_ERROR("[ADAPTIVE_CONTROL] build target params failed: stream=%d target_fps=%d network_state=%d",
+                      stream_idx,
+                      state->output.target_fps,
+                      stream_network->state);
+            return target_gop;
+        }
+        params->gop = target_gop;
+
         params->rc_mode = base_params->rc_mode;
         params->qp_init = base_params->qp_init;
         params->qp_min = base_params->qp_min;
@@ -357,6 +527,7 @@ static void adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptN
         params->qp_max_i = base_params->qp_max_i;
         params->qp_max_step = base_params->qp_max_step;
     }
+    return MEDIA_OK;
 }
 
 /**
@@ -369,6 +540,7 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
     MediaAdaptCtrlState *state = NULL;
     MediaAdaptNetworkDecision network_decision;
     int stream_idx = 0;
+    int global_max_fps = 0;
 
     adaptive_init_network_decision(&network_decision);
     if (!ctx)
@@ -378,20 +550,23 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
     }
 
     state = &ctx->adaptive_policy_state;
+    global_max_fps = adaptive_get_global_max_fps(ctx);
+
+    /* 根据是否开启了RTCP/队列反馈驱动的网络自适应编码参数控制来更新编码参数 */
     if (ctx->config.policy.network_encode.enabled)
     {
         network_decision = adaptive_update_network_constraint(ctx);
     }
     else
     {
-        /* 未启用网络自适应时，网络侧保持中性约束，不影响场景侧帧率结果。 */
+        /* 未启用网络自适应时，网络侧保持全局帧率上限，不影响场景侧帧率结果。 */
         state->aggregate_network.state = MEDIA_GATEWAY_NETWORK_GOOD;
-        state->aggregate_network.max_fps = state->scene.max_fps;
+        state->aggregate_network.max_fps = global_max_fps;
         state->aggregate_network.max_output_queue_depth = 0;
         for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
         {
             state->stream_network[stream_idx].state = MEDIA_GATEWAY_NETWORK_GOOD;
-            state->stream_network[stream_idx].max_fps = state->scene.max_fps;
+            state->stream_network[stream_idx].max_fps = global_max_fps;
             state->stream_network[stream_idx].max_output_queue_depth = 0;
         }
     }
@@ -400,53 +575,69 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
 
 /**
  * @brief 联合控制输出：合并场景约束和网络约束，生成最终 fps、码率、GOP 和 pacing 目标。
+ * @return MEDIA_OK 表示融合成功，错误码表示融合过程发现非法参数。
  */
-static void media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
-                                                      MediaAdaptNetworkDecision network_decision)
+static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
+                                                     MediaAdaptNetworkDecision network_decision)
 {
     MediaAdaptCtrlState *state = NULL;
     int old_target_fps = 0; /* 保存旧的帧率值 */
     int stream_idx = 0;
     int max_pacing_rate_bps = 0;
+    int ret = MEDIA_OK;
 
     if (!ctx)
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] fuse runtime policy failed: ctx is NULL");
-        return;
+        return MEDIA_ERR_INVALID_PARAM;
     }
-    if (!ctx->config.policy.light_fps.enabled &&
-        !ctx->config.policy.network_encode.enabled)
-        return;
+
+    /* 如果场景和网络自适应都未启用，直接返回 */
+    if (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled)
+        return MEDIA_OK;
 
     state = &ctx->adaptive_policy_state;
     old_target_fps = state->output.target_fps;
 
-    /* 取网络反馈决定的帧率和亮度决定的帧率最小值作为最终帧率 */
+    /* 取网络反馈决定的帧率和亮度决定的帧率最小值作为最终帧率,此时肯定有一个是有效的 */
     state->output.target_fps = state->scene.max_fps < state->aggregate_network.max_fps ? state->scene.max_fps : state->aggregate_network.max_fps;
     if (state->output.target_fps <= 0)
     {
-        /* 融合后的帧率小于等于 0 属于配置或策略计算错误，记录错误后回退到基准帧率。 */
+        /* 融合后的帧率小于等于 0 属于配置或策略计算错误，直接返回错误。 */
         LOG_ERROR("[ADAPTIVE_CONTROL] invalid fused target_fps=%d scene_fps=%d network_fps=%d base_fps=%d",
                   state->output.target_fps,
                   state->scene.max_fps,
                   state->aggregate_network.max_fps,
                   ctx->config.policy.network_encode.base_fps);
-        state->output.target_fps = ctx->config.policy.network_encode.base_fps;
+        return MEDIA_ERR_INVALID_CONFIG;
     }
     /* 网络自适应开启时才生成并下发完整编码运行参数；否则保留原有 set_fps 路径。 */
     if (ctx->config.policy.network_encode.enabled)
-        adaptive_build_target_params(ctx, &network_decision);
-    
+    {
+        ret = adaptive_build_target_params(ctx, &network_decision);
+        if (ret != MEDIA_OK)
+        {
+            LOG_ERROR("[ADAPTIVE_CONTROL] fuse runtime policy failed: build target params ret=%d", ret);
+            return ret;
+        }
+    }
+
     for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
         state->output.pacing_rate_bps[stream_idx] = 0;
-    if (ctx->config.policy.network_encode.enabled)
+
+    /*
+     * pacing 是网络自适应的独立执行项。
+     * 只有网络自适应和 pacing 开关同时开启时，最终输出状态才生成 pacing rate；
+     * 任一开关关闭时保持 0，表示后续输出层需要显式关闭 RTP pacer。
+     */
+    if (ctx->config.policy.network_encode.enabled &&
+        ctx->config.policy.network_encode.pacing_enabled)
     {
-        for (stream_idx = 0; stream_idx < ctx->config.video.stream_count &&
-                             stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
-             ++stream_idx)
+        for (stream_idx = 0; stream_idx < ctx->config.video.stream_count && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
         {
             if (!ctx->config.video.streams[stream_idx].enabled)
                 continue;
+            /* pacing rate 等于目标码率乘以 pacing_percent。 */
             state->output.pacing_rate_bps[stream_idx] =
                 state->encode_params.target[stream_idx].bitrate *
                 network_decision.pacing_percent[stream_idx] / 100;
@@ -454,7 +645,7 @@ static void media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
                 max_pacing_rate_bps = state->output.pacing_rate_bps[stream_idx];
         }
     }
-    
+
     snprintf(state->output.reason,
             sizeof(state->output.reason),
             "scene=%s network=%s scene_fps=%d network_fps=%d queue=%d loss=%u rtt=%u jitter=%u",
@@ -466,6 +657,7 @@ static void media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
             state->aggregate_network.rtcp_fraction_lost,
             state->aggregate_network.rtcp_rtt_ms,
             state->aggregate_network.rtcp_jitter);
+
     state->output.last_decision_ts_us = policy_now_us();
     if (old_target_fps != state->output.target_fps)
     {
@@ -473,8 +665,9 @@ static void media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
                  old_target_fps,
                  state->output.target_fps,
                  state->output.reason,
-                 max_pacing_rate_bps);
+                 max_pacing_rate_bps); /* TODO；这里是不是要打印出所有路的pacing rate bps */
     }
+    return MEDIA_OK;
 }
 
 /**
@@ -567,13 +760,14 @@ static int light_fps_ae_is_low_light(const MediaGatewayLightFpsPolicyConfig *cfg
 
 /**
  * @brief 获取目标帧率对应的场景确认时间，单位毫秒。
+ * @return 大于 0 表示确认时间，错误码表示输入参数非法。
  */
 static int light_fps_confirm_ms(const MediaGatewayLightFpsPolicyConfig *cfg, int target_fps)
 {
     if (!cfg)
     {
         LOG_ERROR("cfg is null");
-        return -1;
+        return MEDIA_ERR_INVALID_PARAM;
     }
 
     if (target_fps == cfg->targets.bright_fps)
@@ -587,8 +781,9 @@ static int light_fps_confirm_ms(const MediaGatewayLightFpsPolicyConfig *cfg, int
  * @brief 更新环境亮度感知的帧率策略输出。
  *
  * 本函数只推进 AE/亮度侧状态机，并刷新 scene 约束，不读取 RTCP，也不做最终融合。
+ * @return MEDIA_OK 表示亮度侧策略更新成功，错误码表示配置或状态非法。
  */
-static void media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
+static int media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
 {
     const MediaGatewayLightFpsPolicyConfig *cfg = NULL;
     MediaLightFpsState *state = NULL;
@@ -596,6 +791,7 @@ static void media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     uint64_t now_us = 0;
     uint64_t confirm_us = 0;
     uint64_t elapsed_us = 0;
+    int confirm_ms = 0;
     int target_fps = 0;
     int low_light_active = 0;
     int bright_active = 0;
@@ -605,11 +801,11 @@ static void media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     if (!ctx)
     {
         LOG_ERROR("[DYNAMIC_FPS] update light fps policy failed: ctx is NULL");
-        return;
+        return MEDIA_ERR_INVALID_PARAM;
     }
     if (!ctx->config.policy.light_fps.enabled)
     {
-        /* 环境亮度调帧率未启用时，场景侧输出当前配置帧率作为中性约束。 */
+        /* 环境亮度调帧率未启用时，场景侧只刷新中性上限，不推进 AE 状态机。 */
         goto out_update_scene;
     }
 
@@ -688,7 +884,13 @@ static void media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     else if (target_fps != state->target_fps)
     {
         /* 进入此分支时target_fps等于pending_fps，判断pending的fps等待时间是否满足时间 */
-        confirm_us = (uint64_t)light_fps_confirm_ms(cfg, target_fps) * 1000ULL;
+        confirm_ms = light_fps_confirm_ms(cfg, target_fps);
+        if (confirm_ms <= 0)
+        {
+            LOG_ERROR("[DYNAMIC_FPS] invalid scene confirm_ms=%d target_fps=%d", confirm_ms, target_fps);
+            return MEDIA_ERR_INVALID_CONFIG;
+        }
+        confirm_us = (uint64_t)confirm_ms * 1000ULL;
         if (now_us >= state->pending_since_ts_us &&
             now_us - state->pending_since_ts_us < confirm_us)
         {
@@ -734,7 +936,7 @@ static void media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     }
 
 out_update_scene:
-    adaptive_update_scene_constraint(ctx);
+    return adaptive_update_scene_constraint(ctx);
 }
 
 /**
@@ -746,7 +948,7 @@ out_update_scene:
  * 3. 统一融合两侧结果，生成最终帧率和编码运行参数；
  * 4. 具体硬件切换交给 gateway 主循环异步事务处理。
  */
-void media_gateway_update_runtime_policies_if_due(MediaGatewayCtx *ctx)
+void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
 {
     MediaAdaptNetworkDecision network_decision;
 
@@ -756,16 +958,23 @@ void media_gateway_update_runtime_policies_if_due(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] ctx is null, skipping runtime policy update");
         return;
     }
-    if (!ctx->config.policy.light_fps.enabled &&
-        !ctx->config.policy.network_encode.enabled)
+    if (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled)
         return;
 
-    /* 第一步：亮度感知过程，只更新场景侧约束。 */
-    media_gateway_update_light_fps_policy(ctx);
+    /* 第一步：亮度感知过程，只更新场景侧约束。场景侧无效时停止本轮融合。 */
+    if (media_gateway_update_light_fps_policy(ctx) != MEDIA_OK)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] update scene constraint failed, skipping runtime policy fusion");
+        return;
+    }
 
     /* 第二步：RTCP/队列反馈过程，只更新网络侧约束。 */
     network_decision = media_gateway_update_network_policy(ctx);
 
     /* 第三步：融合两侧控制输出，硬件切换仍由 gateway 主循环异步投递。 */
-    media_gateway_fuse_runtime_policy_outputs(ctx, network_decision);
+    if (media_gateway_fuse_runtime_policy_outputs(ctx, network_decision) != MEDIA_OK)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] fuse runtime policy failed, skipping this round");
+        return;
+    }
 }

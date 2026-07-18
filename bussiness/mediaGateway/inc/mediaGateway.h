@@ -66,30 +66,43 @@ typedef enum {
 } MediaGatewayNetworkState;
 
 typedef struct {
-    int good_max_fps;                 /* GOOD 网络状态允许的最高帧率。 */
-    int normal_max_fps;               /* NORMAL 网络状态允许的最高帧率。 */
-    int bad_max_fps;                  /* BAD 网络状态允许的最高帧率。 */
-    int very_bad_max_fps;             /* VERY_BAD 网络状态允许的最高帧率。 */
-    int normal_queue_depth;           /* 输出队列达到该深度时进入 NORMAL 网络状态。 */
-    int bad_queue_depth;              /* 输出队列达到该深度时进入 BAD 网络状态。 */
-    int very_bad_queue_depth;         /* 输出队列达到该深度时进入 VERY_BAD 网络状态。 */
-    int normal_bitrate_percent;       /* NORMAL 网络状态码率系数，百分比。 */
-    int bad_bitrate_percent;          /* BAD 网络状态码率系数，百分比。 */
-    int very_bad_bitrate_percent;     /* VERY_BAD 网络状态码率系数，百分比。 */
-    int good_pacing_percent;          /* GOOD 网络状态 pacing 系数，百分比。 */
-    int normal_pacing_percent;        /* NORMAL 网络状态 pacing 系数，百分比。 */
-    int bad_pacing_percent;           /* BAD 网络状态 pacing 系数，百分比。 */
-    int very_bad_pacing_percent;      /* VERY_BAD 网络状态 pacing 系数，百分比。 */
+    int max_fps;                      /* 当前网络等级允许的最高帧率。 */
+    int bitrate_percent;              /* 当前网络等级码率系数，百分比。 */
+    int pacing_percent;               /* 当前网络等级 RTP pacing 系数，百分比。 */
+    int keyframe_interval_ms;         /* 当前网络等级关键帧时间间隔，单位毫秒。 */
+} MediaGatewayNetworkLevelConfig;
+
+typedef struct {
+    uint8_t min_fraction_lost;        /* 进入当前网络等级的最小 RTCP fraction lost，0 表示不按丢包判定。 */
+    uint32_t min_rtt_ms;              /* 进入当前网络等级的最小 RTT，单位毫秒，0 表示不按 RTT 判定。 */
+    uint32_t min_jitter;              /* 进入当前网络等级的最小 RTCP jitter，当前为 RTP timestamp tick，0 表示不按 jitter 判定。 */
+    int min_queue_depth;              /* 进入当前网络等级的最小输出队列深度，0 表示不按队列深度判定。 */
+} MediaGatewayNetworkDetectLevelConfig;
+
+typedef struct {
+    MediaGatewayNetworkDetectLevelConfig normal;   /* NORMAL 网络等级判定阈值。 */
+    MediaGatewayNetworkDetectLevelConfig bad;      /* BAD 网络等级判定阈值。 */
+    MediaGatewayNetworkDetectLevelConfig very_bad; /* VERY_BAD 网络等级判定阈值。 */
+} MediaGatewayNetworkDetectorConfig;
+
+typedef struct {
+    MediaGatewayNetworkLevelConfig good;     /* GOOD 网络等级的编码和 pacing 约束。 */
+    MediaGatewayNetworkLevelConfig normal;   /* NORMAL 网络等级的编码和 pacing 约束。 */
+    MediaGatewayNetworkLevelConfig bad;      /* BAD 网络等级的编码和 pacing 约束。 */
+    MediaGatewayNetworkLevelConfig very_bad; /* VERY_BAD 网络等级的编码和 pacing 约束。 */
+} MediaGatewayNetworkActionConfig;
+
+typedef struct {
+    MediaGatewayNetworkDetectorConfig detector; /* 网络等级判定阈值配置。 */
+    MediaGatewayNetworkActionConfig action;     /* 网络等级对应的编码和 RTP pacing 输出动作。 */
 } MediaGatewayNetworkAdaptiveConfig;
 
 typedef struct {
     int enabled;                      /* 是否启用 RTCP/队列反馈驱动的网络自适应编码参数控制。 */
+    int pacing_enabled;               /* 是否启用 RTCP/队列反馈生成的 RTP pacing 下发，可独立关闭用于定位卡顿来源。 */
     int base_fps;                     /* 码率按帧率缩放时使用的基准帧率。 */
     int min_bitrate;                  /* 自适应控制允许的最低目标码率，bit/s。 */
     int max_bitrate;                  /* 自适应控制允许的最高目标码率，bit/s。 */
-    int good_keyframe_interval_ms;    /* GOOD/NORMAL 网络状态关键帧时间间隔。 */
-    int bad_keyframe_interval_ms;     /* BAD 网络状态关键帧时间间隔。 */
-    int very_bad_keyframe_interval_ms;/* VERY_BAD 网络状态关键帧时间间隔。 */
     MediaGatewayNetworkAdaptiveConfig network; /* 网络状态分级和约束配置。 */
 } MediaGatewayNetworkEncodePolicyConfig;
 

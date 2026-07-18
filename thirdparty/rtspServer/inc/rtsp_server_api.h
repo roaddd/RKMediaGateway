@@ -1,11 +1,9 @@
-/*** 
- * @Author: huangkelong
- * @Date: 2026-03-03 23:10:24
- * @LastEditTime: 2026-07-13 22:45:20
- * @LastEditors: huangkelong
- * @Description: rtsp server对外头文件
- * @FilePath: \Fork\RKMediaGateway\thirdparty\rtspServer\inc\rtsp_server_api.h
- * @可以输入预定的版权声明、个性签名、空行等
+/**
+ * @file rtsp_server_api.h
+ * @brief RTSP server 对外 C 接口。
+ *
+ * 上层通过本文件创建 RTSP session、添加音视频 track、发送编码帧，
+ * 并接收 RTCP Receiver Report 网络反馈。
  */
 #ifndef _RTSP_SERVER_API_H_
 #define _RTSP_SERVER_API_H_
@@ -29,6 +27,18 @@ enum AUDIO_e
     AUDIO_PCMA,
     AUDIO_NONE,
 };
+
+#ifndef RTSP_VIDEO_PACER_MODE_DEFINED
+#define RTSP_VIDEO_PACER_MODE_DEFINED
+/*
+ * RTSP session 视频 RTP pacer 开关状态。
+ * 使用枚举替代裸 int，避免调用层把开关值和 pacing rate 混用。
+ */
+typedef enum {
+    RTSP_VIDEO_PACER_DISABLED = 0, /* 关闭视频 RTP 包级 pacer。 */
+    RTSP_VIDEO_PACER_ENABLED = 1   /* 开启视频 RTP 包级 pacer。 */
+} RtspVideoPacerMode;
+#endif
 
 #ifndef RTSP_MEDIA_FRAME_DEFINED
 #define RTSP_MEDIA_FRAME_DEFINED
@@ -65,7 +75,7 @@ void rtspModuleDel(void);
 
 int rtspConfigSession(int file_reloop_flag, const char *mp4_file_path);
 
-/*** 
+/**
  * @description: 在“已经启动的 RTSP server”里注册一条流路径
  * @param {char*} session_name
  * @return {*}
@@ -81,10 +91,12 @@ void rtspSetRtcpReportCallback(RtspRtcpReportCallback callback, void *userdata);
 int sessionAddVideo(void *context, enum VIDEO_e type);
 int sessionAddAudio(void *context, enum AUDIO_e type, int profile, int sample_rate, int channels);
 /*
- * 设置指定 session 的视频 RTP 包级 pacing 码率。
- * pacing_rate_bps <= 0 表示关闭；音频 RTP 不受该接口影响。
+ * 设置指定 session 的视频 RTP 包级 pacer。
+ * mode 为 RTSP_VIDEO_PACER_DISABLED 表示关闭 pacer，此时忽略 pacing_rate_bps；
+ * mode 为 RTSP_VIDEO_PACER_ENABLED 表示开启 pacer，此时 pacing_rate_bps 必须大于 0。
+ * 音频 RTP 不受该接口影响。
  */
-int rtspSetSessionVideoPacingRate(void *context, int pacing_rate_bps);
+int rtspSetSessionVideoPacer(void *context, RtspVideoPacerMode mode, int pacing_rate_bps);
 
 /*
  * 整帧发送 API。server 会把 frame->pts_us 换算到对应媒体的 RTP 时钟域，

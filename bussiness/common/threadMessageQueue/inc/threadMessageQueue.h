@@ -14,6 +14,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "commonDef.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,16 +45,18 @@ typedef struct {
  * @brief 初始化线程消息队列。
  * @param queue 待初始化队列。
  * @param capacity 队列最大消息数量，必须大于 0。
- * @return 0 成功，-1 失败。
+ * @return MEDIA_OK 成功，错误码表示失败原因。
  */
+/* 返回 MEDIA_OK 表示成功，错误码表示参数、内存或同步资源初始化失败。 */
 int thread_message_queue_init(ThreadMessageQueue *queue, size_t capacity);
 
 /**
  * @brief 深拷贝一条消息并放入队列。
  * @param queue 目标队列。
  * @param message 待复制消息。
- * @return 0 成功，-1 参数或内存错误，-2 队列已满，-3 队列已停止。
+ * @return MEDIA_OK 成功，MEDIA_ERR_FULL 表示队列已满，MEDIA_ERR_STOPPED 表示队列已停止，其他错误码表示失败原因。
  */
+/* 返回 MEDIA_OK 表示成功，MEDIA_ERR_FULL 表示队列满，MEDIA_ERR_STOPPED 表示队列停止。 */
 int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessage *message);
 
 /**
@@ -61,6 +65,7 @@ int thread_message_queue_push_copy(ThreadMessageQueue *queue, const ThreadMessag
  * @param message 接收消息；成功后由调用方负责 release。
  * @return 1 成功取出，0 暂无消息，-1 参数错误，-3 队列停止且为空。
  */
+/* 返回 1 表示成功取出消息，0 表示暂无消息，错误码表示参数非法或队列已停止。 */
 int thread_message_queue_try_pop(ThreadMessageQueue *queue, ThreadMessage *message);
 
 /**
@@ -70,6 +75,7 @@ int thread_message_queue_try_pop(ThreadMessageQueue *queue, ThreadMessage *messa
  * @param timeout_ms 最大等待毫秒数；0 表示非阻塞。
  * @return 1 成功取出，0 超时，-1 参数错误，-3 队列停止且为空。
  */
+/* 返回 1 表示成功取出消息，0 表示超时或暂无消息，错误码表示参数非法或队列已停止。 */
 int thread_message_queue_pop(ThreadMessageQueue *queue,
                              ThreadMessage *message,
                              int timeout_ms);
