@@ -23,6 +23,38 @@ static std::string trim_copy(const std::string &s) {
     return s.substr(begin, end - begin);
 }
 
+/*
+ * 去掉配置值后面的行内注释。
+ * 支持：
+ *   KEY=1 # comment
+ *   KEY=1 ; comment
+ * 被单引号或双引号包裹的 #/; 认为是字符串内容，不当作注释起点。
+ */
+static std::string strip_inline_comment_copy(const std::string &s) {
+    size_t i = 0;
+    char quote = '\0';
+
+    for (i = 0; i < s.size(); ++i) {
+        if (quote != '\0') {
+            if (s[i] == quote) {
+                quote = '\0';
+            }
+            continue;
+        }
+
+        if (s[i] == '"' || s[i] == '\'') {
+            quote = s[i];
+            continue;
+        }
+
+        if (s[i] == '#' || s[i] == ';') {
+            return trim_copy(s.substr(0, i));
+        }
+    }
+
+    return trim_copy(s);
+}
+
 static void set_value(const char *key, const char *value) {
     g_values[key] = value ? value : "";
 }
@@ -108,7 +140,7 @@ static void load_file_values(const char *config_path) {
         }
 
         key = trim_copy(trimmed.substr(0, eq_pos));
-        value = trim_copy(trimmed.substr(eq_pos + 1));
+        value = strip_inline_comment_copy(trimmed.substr(eq_pos + 1));
         if (key.empty()) {
             continue;
         }
