@@ -15,6 +15,37 @@
 #include <string.h>
 #include <time.h>
 
+#define GATEWAY_DEBUG_COLOR_RESET "\033[0m"
+#define GATEWAY_DEBUG_COLOR_CYAN "\033[36m"
+#define GATEWAY_DEBUG_COLOR_GREEN "\033[32m"
+#define GATEWAY_DEBUG_COLOR_YELLOW "\033[33m"
+#define GATEWAY_DEBUG_COLOR_BLUE "\033[34m"
+#define GATEWAY_DEBUG_COLOR_MAGENTA "\033[35m"
+
+/**
+ * @brief 向 shell 回复中追加带颜色的分段标题。
+ *
+ * getAdapt 输出字段较多，按功能分段后更容易观察开关、场景、网络和每路码流状态。
+ * ANSI 颜色码只影响支持颜色的终端；不支持颜色的客户端会看到原始转义字符。
+ */
+static void gateway_debug_append_section(char *reply, size_t *offset, const char *color, const char *title)
+{
+    const char *use_color = NULL;
+    const char *use_title = NULL;
+
+    if (!reply || !offset)
+        return;
+
+    use_color = color ? color : GATEWAY_DEBUG_COLOR_RESET;
+    use_title = title ? title : "UNKNOWN";
+    debug_command_reply_append(reply,
+                               offset,
+                               "%s--------%s--------%s\n",
+                               use_color,
+                               use_title,
+                               GATEWAY_DEBUG_COLOR_RESET);
+}
+
 /**
  * @brief 返回场景状态名称，便于 shell 输出阅读。
  */
@@ -412,6 +443,7 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
     MediaVideoEncodeParams *params = NULL;
     MediaOutputStats output_stats = {0};
     char *reply = NULL;
+    const char *stream_color = NULL;
     size_t offset = 0;
     int stream_idx = 0;
     int output_idx = 0;
@@ -439,14 +471,20 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         pthread_mutex_unlock(&ctx->stats_lock);
 
     debug_command_reply_append(reply, &offset, "cmd=getAdapt\n");
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "POLICY_SWITCH");
     debug_command_reply_append(reply, &offset, "light_fps_enabled=%d\n", ctx->config.policy.light_fps.enabled);
     debug_command_reply_append(reply, &offset, "network_encode_enabled=%d\n", ctx->config.policy.network_encode.enabled);
     debug_command_reply_append(reply, &offset, "network_pacing_enabled=%d\n", ctx->config.policy.network_encode.pacing_enabled);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_GREEN, "SCENE_LIGHT_FPS");
     debug_command_reply_append(reply, &offset, "manual_override=%d\n", light_state.manual_override);
     debug_command_reply_append(reply, &offset, "light_current_fps=%d\n", light_state.current_fps);
     debug_command_reply_append(reply, &offset, "light_target_fps=%d\n", light_state.target_fps);
     debug_command_reply_append(reply, &offset, "scene_state=%s\n", gateway_debug_scene_name(state.scene.state));
     debug_command_reply_append(reply, &offset, "scene_max_fps=%d\n", state.scene.max_fps);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_YELLOW, "AGGREGATE_NETWORK");
     debug_command_reply_append(reply, &offset, "aggregate_network_state=%s\n", gateway_debug_network_name(state.aggregate_network.state));
     debug_command_reply_append(reply, &offset, "aggregate_network_max_fps=%d\n", state.aggregate_network.max_fps);
     debug_command_reply_append(reply, &offset, "aggregate_network_queue_depth=%d\n", state.aggregate_network.max_output_queue_depth);
@@ -454,6 +492,8 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
     debug_command_reply_append(reply, &offset, "aggregate_network_rtt_ms=%u\n", state.aggregate_network.rtcp_rtt_ms);
     debug_command_reply_append(reply, &offset, "aggregate_network_jitter=%u\n", state.aggregate_network.rtcp_jitter);
     debug_command_reply_append(reply, &offset, "aggregate_network_jitter_ms=%u\n", state.aggregate_network.rtcp_jitter_ms);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_MAGENTA, "FUSED_OUTPUT");
     debug_command_reply_append(reply, &offset, "output_target_fps=%d\n", state.output.target_fps);
     debug_command_reply_append(reply, &offset, "output_last_decision_ms=%" PRIu64 "\n", state.output.last_decision_ts_us / 1000ULL);
     debug_command_reply_append(reply, &offset, "output_reason=%s\n", state.output.reason);
@@ -482,6 +522,13 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         }
 
         params = &state.encode_params.target[stream_idx];
+        stream_color = (stream_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_BLUE : GATEWAY_DEBUG_COLOR_CYAN;
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "%s--------STREAM_%d--------%s\n",
+                                   stream_color,
+                                   stream_idx,
+                                   GATEWAY_DEBUG_COLOR_RESET);
         debug_command_reply_append(reply, &offset, "stream%d_enabled=%d\n", stream_idx, ctx->config.video.streams[stream_idx].enabled);
         debug_command_reply_append(reply, &offset, "stream%d_network_state=%s\n", stream_idx, gateway_debug_network_name(state.stream_network[stream_idx].state));
         debug_command_reply_append(reply, &offset, "stream%d_network_max_fps=%d\n", stream_idx, state.stream_network[stream_idx].max_fps);
