@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define debug_command_DEFAULT_SOCKET_PATH "/tmp/rkmedia_gateway_shell.sock"
-#define debug_command_MAX_REPLY_SIZE 8192
+#define debug_command_MAX_REPLY_SIZE 32768
 
 /**
  * @brief shell 命令处理函数。

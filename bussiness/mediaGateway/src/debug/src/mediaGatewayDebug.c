@@ -47,6 +47,170 @@ static void gateway_debug_append_section(char *reply, size_t *offset, const char
 }
 
 /**
+ * @brief 返回安全字符串，避免配置项为空时 printf 访问空指针。
+ */
+static const char *gateway_debug_safe_str(const char *value)
+{
+    if (!value || value[0] == '\0')
+        return "";
+    return value;
+}
+
+/**
+ * @brief 打印视频编码参数结构体。
+ */
+static void gateway_debug_append_encode_params(char *reply,
+                                               size_t *offset,
+                                               const char *prefix,
+                                               const MediaVideoEncodeParams *params)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !params)
+        return;
+
+    use_prefix = prefix ? prefix : "encode";
+    debug_command_reply_append(reply, offset, "%s_fps=%d\n", use_prefix, params->fps);
+    debug_command_reply_append(reply, offset, "%s_bitrate=%d\n", use_prefix, params->bitrate);
+    debug_command_reply_append(reply, offset, "%s_gop=%d\n", use_prefix, params->gop);
+    debug_command_reply_append(reply, offset, "%s_rc_mode=%d\n", use_prefix, params->rc_mode);
+    debug_command_reply_append(reply, offset, "%s_qp_init=%d\n", use_prefix, params->qp_init);
+    debug_command_reply_append(reply, offset, "%s_qp_min=%d\n", use_prefix, params->qp_min);
+    debug_command_reply_append(reply, offset, "%s_qp_max=%d\n", use_prefix, params->qp_max);
+    debug_command_reply_append(reply, offset, "%s_qp_min_i=%d\n", use_prefix, params->qp_min_i);
+    debug_command_reply_append(reply, offset, "%s_qp_max_i=%d\n", use_prefix, params->qp_max_i);
+    debug_command_reply_append(reply, offset, "%s_qp_max_step=%d\n", use_prefix, params->qp_max_step);
+}
+
+/**
+ * @brief 打印网络等级对应的检测阈值。
+ */
+static void gateway_debug_append_network_detector(char *reply,
+                                                  size_t *offset,
+                                                  const char *prefix,
+                                                  const MediaGatewayNetworkDetectLevelConfig *detector)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !detector)
+        return;
+
+    use_prefix = prefix ? prefix : "network_detector";
+    debug_command_reply_append(reply, offset, "%s_min_fraction_lost=%u\n", use_prefix, detector->min_fraction_lost);
+    debug_command_reply_append(reply, offset, "%s_min_rtt_ms=%u\n", use_prefix, detector->min_rtt_ms);
+    debug_command_reply_append(reply, offset, "%s_min_jitter_ms=%u\n", use_prefix, detector->min_jitter_ms);
+    debug_command_reply_append(reply, offset, "%s_min_queue_depth=%d\n", use_prefix, detector->min_queue_depth);
+}
+
+/**
+ * @brief 打印网络等级对应的编码和 RTP pacing 输出动作。
+ */
+static void gateway_debug_append_network_action(char *reply,
+                                                size_t *offset,
+                                                const char *prefix,
+                                                const MediaGatewayNetworkLevelConfig *level)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !level)
+        return;
+
+    use_prefix = prefix ? prefix : "network_action";
+    debug_command_reply_append(reply, offset, "%s_max_fps=%d\n", use_prefix, level->max_fps);
+    debug_command_reply_append(reply, offset, "%s_bitrate_percent=%d\n", use_prefix, level->bitrate_percent);
+    debug_command_reply_append(reply, offset, "%s_pacing_percent=%d\n", use_prefix, level->pacing_percent);
+    debug_command_reply_append(reply, offset, "%s_min_pacing_rate_bps=%d\n", use_prefix, level->min_pacing_rate_bps);
+    debug_command_reply_append(reply, offset, "%s_keyframe_interval_ms=%d\n", use_prefix, level->keyframe_interval_ms);
+}
+
+/**
+ * @brief 打印 RTSP 输出配置。
+ */
+static void gateway_debug_append_rtsp_config(char *reply,
+                                             size_t *offset,
+                                             const char *prefix,
+                                             const MediaOutputRtspConfig *rtsp)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !rtsp)
+        return;
+
+    use_prefix = prefix ? prefix : "rtsp";
+    debug_command_reply_append(reply, offset, "%s_name=%s\n", use_prefix, gateway_debug_safe_str(rtsp->name));
+    debug_command_reply_append(reply, offset, "%s_session_name=%s\n", use_prefix, gateway_debug_safe_str(rtsp->session_name));
+    debug_command_reply_append(reply, offset, "%s_server_ip=%s\n", use_prefix, gateway_debug_safe_str(rtsp->server_ip));
+    debug_command_reply_append(reply, offset, "%s_server_port=%d\n", use_prefix, rtsp->server_port);
+    debug_command_reply_append(reply, offset, "%s_auth_enable=%d\n", use_prefix, rtsp->auth_enable);
+    debug_command_reply_append(reply, offset, "%s_user=%s\n", use_prefix, gateway_debug_safe_str(rtsp->user));
+    debug_command_reply_append(reply, offset, "%s_password=%s\n", use_prefix, gateway_debug_safe_str(rtsp->password));
+    debug_command_reply_append(reply, offset, "%s_queue_capacity=%d\n", use_prefix, rtsp->queue_capacity);
+    debug_command_reply_append(reply, offset, "%s_immediate_sps_pps_on_new_client=%d\n", use_prefix, rtsp->immediate_sps_pps_on_new_client);
+    debug_command_reply_append(reply, offset, "%s_audio_codec=%d\n", use_prefix, rtsp->audio_codec);
+    debug_command_reply_append(reply, offset, "%s_audio_sample_rate=%d\n", use_prefix, rtsp->audio_sample_rate);
+    debug_command_reply_append(reply, offset, "%s_audio_channels=%d\n", use_prefix, rtsp->audio_channels);
+    debug_command_reply_append(reply, offset, "%s_aac_profile=%d\n", use_prefix, rtsp->aac_profile);
+}
+
+/**
+ * @brief 打印 RTMP 输出配置。
+ */
+static void gateway_debug_append_rtmp_config(char *reply,
+                                             size_t *offset,
+                                             const char *prefix,
+                                             const MediaOutputRtmpConfig *rtmp)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !rtmp)
+        return;
+
+    use_prefix = prefix ? prefix : "rtmp";
+    debug_command_reply_append(reply, offset, "%s_name=%s\n", use_prefix, gateway_debug_safe_str(rtmp->name));
+    debug_command_reply_append(reply, offset, "%s_publish_url=%s\n", use_prefix, gateway_debug_safe_str(rtmp->publish_url));
+    debug_command_reply_append(reply, offset, "%s_queue_capacity=%d\n", use_prefix, rtmp->queue_capacity);
+    debug_command_reply_append(reply, offset, "%s_reconnect_interval_ms=%d\n", use_prefix, rtmp->reconnect_interval_ms);
+    debug_command_reply_append(reply, offset, "%s_connect_timeout_ms=%d\n", use_prefix, rtmp->connect_timeout_ms);
+    debug_command_reply_append(reply, offset, "%s_audio_enabled=%d\n", use_prefix, rtmp->audio_enabled);
+    debug_command_reply_append(reply, offset, "%s_video_width=%d\n", use_prefix, rtmp->video_width);
+    debug_command_reply_append(reply, offset, "%s_video_height=%d\n", use_prefix, rtmp->video_height);
+    debug_command_reply_append(reply, offset, "%s_video_fps=%d\n", use_prefix, rtmp->video_fps);
+    debug_command_reply_append(reply, offset, "%s_video_bitrate=%d\n", use_prefix, rtmp->video_bitrate);
+    debug_command_reply_append(reply, offset, "%s_video_codec_name=%s\n", use_prefix, gateway_debug_safe_str(rtmp->video_codec_name));
+    debug_command_reply_append(reply, offset, "%s_encoder_name=%s\n", use_prefix, gateway_debug_safe_str(rtmp->encoder_name));
+}
+
+/**
+ * @brief 打印 GB28181 输出配置摘要。
+ */
+static void gateway_debug_append_gb28181_config(char *reply,
+                                                size_t *offset,
+                                                const char *prefix,
+                                                const MediaOutputGb28181Config *gb28181)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !gb28181)
+        return;
+
+    use_prefix = prefix ? prefix : "gb28181";
+    debug_command_reply_append(reply, offset, "%s_name=%s\n", use_prefix, gateway_debug_safe_str(gb28181->name));
+    debug_command_reply_append(reply, offset, "%s_server_ip=%s\n", use_prefix, gateway_debug_safe_str(gb28181->server_ip));
+    debug_command_reply_append(reply, offset, "%s_server_port=%d\n", use_prefix, gb28181->server_port);
+    debug_command_reply_append(reply, offset, "%s_server_id=%s\n", use_prefix, gateway_debug_safe_str(gb28181->server_id));
+    debug_command_reply_append(reply, offset, "%s_device_id=%s\n", use_prefix, gateway_debug_safe_str(gb28181->device_id));
+    debug_command_reply_append(reply, offset, "%s_bind_ip=%s\n", use_prefix, gateway_debug_safe_str(gb28181->bind_ip));
+    debug_command_reply_append(reply, offset, "%s_local_sip_port=%d\n", use_prefix, gb28181->local_sip_port);
+    debug_command_reply_append(reply, offset, "%s_media_ip=%s\n", use_prefix, gateway_debug_safe_str(gb28181->media_ip));
+    debug_command_reply_append(reply, offset, "%s_media_port=%d\n", use_prefix, gb28181->media_port);
+    debug_command_reply_append(reply, offset, "%s_register_expires=%d\n", use_prefix, gb28181->register_expires);
+    debug_command_reply_append(reply, offset, "%s_keepalive_interval_sec=%d\n", use_prefix, gb28181->keepalive_interval_sec);
+    debug_command_reply_append(reply, offset, "%s_register_retry_interval_sec=%d\n", use_prefix, gb28181->register_retry_interval_sec);
+    debug_command_reply_append(reply, offset, "%s_channel_id=%s\n", use_prefix, gateway_debug_safe_str(gb28181->channel_id));
+    debug_command_reply_append(reply, offset, "%s_queue_capacity=%d\n", use_prefix, gb28181->queue_capacity);
+}
+
+/**
  * @brief 返回场景状态名称，便于 shell 输出阅读。
  */
 static const char *gateway_debug_scene_name(MediaGatewaySceneState state)
@@ -550,6 +714,152 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
 }
 
 /**
+ * @brief 处理 getConfig 调试命令，打印 MediaGatewayConfig 中 video/output/policy 配置。
+ *
+ * 该命令只读取启动后已经解析进内存的配置结构体，不重新读取配置文件。
+ * 输出按 video、output、policy 分段，便于确认配置文件是否真正映射到运行参数。
+ */
+static int gateway_shell_get_config(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaGatewayConfig *cfg = NULL;
+    MediaGatewayEncodeDefaultConfig *encode = NULL;
+    MediaGatewayStreamConfig *stream = NULL;
+    MediaGatewayLightFpsPolicyConfig *light_fps = NULL;
+    MediaGatewayNetworkEncodePolicyConfig *network_encode = NULL;
+    char *reply = NULL;
+    char prefix[64] = {0};
+    size_t offset = 0;
+    int stream_idx = 0;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_config failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    cfg = &ctx->config;
+    encode = &cfg->video.encode;
+    light_fps = &cfg->policy.light_fps;
+    network_encode = &cfg->policy.network_encode;
+    reply = output;
+    reply[0] = '\0';
+
+    debug_command_reply_append(reply, &offset, "cmd=getConfig\n");
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_GREEN, "VIDEO_DEFAULT");
+    debug_command_reply_append(reply, &offset, "video_stream_count=%d\n", cfg->video.stream_count);
+    debug_command_reply_append(reply, &offset, "video_encode_fps=%d\n", encode->fps);
+    debug_command_reply_append(reply, &offset, "video_encode_bitrate=%d\n", encode->bitrate);
+    debug_command_reply_append(reply, &offset, "video_encode_gop=%d\n", encode->gop);
+    debug_command_reply_append(reply, &offset, "video_encode_rc_mode=%d\n", encode->rc_mode);
+    debug_command_reply_append(reply, &offset, "video_encode_h264_profile=%d\n", encode->h264_profile);
+    debug_command_reply_append(reply, &offset, "video_encode_h264_level=%d\n", encode->h264_level);
+    debug_command_reply_append(reply, &offset, "video_encode_h264_cabac_en=%d\n", encode->h264_cabac_en);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_init=%d\n", encode->qp_init);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_min=%d\n", encode->qp_min);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_max=%d\n", encode->qp_max);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_min_i=%d\n", encode->qp_min_i);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_max_i=%d\n", encode->qp_max_i);
+    debug_command_reply_append(reply, &offset, "video_encode_qp_max_step=%d\n", encode->qp_max_step);
+
+    for (stream_idx = 0; stream_idx < cfg->video.stream_count && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        stream = &cfg->video.streams[stream_idx];
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "%s--------VIDEO_STREAM_%d--------%s\n",
+                                   (stream_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_BLUE : GATEWAY_DEBUG_COLOR_CYAN,
+                                   stream_idx,
+                                   GATEWAY_DEBUG_COLOR_RESET);
+        debug_command_reply_append(reply, &offset, "stream%d_enabled=%d\n", stream_idx, stream->enabled);
+        debug_command_reply_append(reply, &offset, "stream%d_name=%s\n", stream_idx, gateway_debug_safe_str(stream->name));
+        debug_command_reply_append(reply, &offset, "stream%d_source_index=%d\n", stream_idx, stream->source_index);
+        debug_command_reply_append(reply, &offset, "stream%d_width=%d\n", stream_idx, stream->width);
+        debug_command_reply_append(reply, &offset, "stream%d_height=%d\n", stream_idx, stream->height);
+        debug_command_reply_append(reply, &offset, "stream%d_fps=%d\n", stream_idx, stream->fps);
+        debug_command_reply_append(reply, &offset, "stream%d_bitrate=%d\n", stream_idx, stream->bitrate);
+        debug_command_reply_append(reply, &offset, "stream%d_gop=%d\n", stream_idx, stream->gop);
+        debug_command_reply_append(reply, &offset, "stream%d_rc_mode=%d\n", stream_idx, stream->rc_mode);
+        debug_command_reply_append(reply, &offset, "stream%d_h264_profile=%d\n", stream_idx, stream->h264_profile);
+        debug_command_reply_append(reply, &offset, "stream%d_h264_level=%d\n", stream_idx, stream->h264_level);
+        debug_command_reply_append(reply, &offset, "stream%d_h264_cabac_en=%d\n", stream_idx, stream->h264_cabac_en);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_init=%d\n", stream_idx, stream->qp_init);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_min=%d\n", stream_idx, stream->qp_min);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_max=%d\n", stream_idx, stream->qp_max);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_min_i=%d\n", stream_idx, stream->qp_min_i);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_max_i=%d\n", stream_idx, stream->qp_max_i);
+        debug_command_reply_append(reply, &offset, "stream%d_qp_max_step=%d\n", stream_idx, stream->qp_max_step);
+        debug_command_reply_append(reply, &offset, "stream%d_enable_rtsp=%d\n", stream_idx, stream->enable_rtsp);
+        debug_command_reply_append(reply, &offset, "stream%d_enable_rtmp=%d\n", stream_idx, stream->enable_rtmp);
+        debug_command_reply_append(reply, &offset, "stream%d_enable_gb28181=%d\n", stream_idx, stream->enable_gb28181);
+
+        snprintf(prefix, sizeof(prefix), "stream%d_dynamic_low", stream_idx);
+        gateway_debug_append_encode_params(reply, &offset, prefix, &stream->dynamic_profiles.low_light);
+        snprintf(prefix, sizeof(prefix), "stream%d_dynamic_normal", stream_idx);
+        gateway_debug_append_encode_params(reply, &offset, prefix, &stream->dynamic_profiles.normal);
+        snprintf(prefix, sizeof(prefix), "stream%d_dynamic_bright", stream_idx);
+        gateway_debug_append_encode_params(reply, &offset, prefix, &stream->dynamic_profiles.bright);
+
+        snprintf(prefix, sizeof(prefix), "stream%d_rtsp", stream_idx);
+        gateway_debug_append_rtsp_config(reply, &offset, prefix, &stream->rtsp);
+        snprintf(prefix, sizeof(prefix), "stream%d_rtmp", stream_idx);
+        gateway_debug_append_rtmp_config(reply, &offset, prefix, &stream->rtmp);
+        snprintf(prefix, sizeof(prefix), "stream%d_gb28181", stream_idx);
+        gateway_debug_append_gb28181_config(reply, &offset, prefix, &stream->gb28181);
+    }
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_MAGENTA, "OUTPUT_DEFAULT");
+    debug_command_reply_append(reply, &offset, "output_enable_rtsp=%d\n", cfg->output.switches.enable_rtsp);
+    debug_command_reply_append(reply, &offset, "output_enable_rtmp=%d\n", cfg->output.switches.enable_rtmp);
+    debug_command_reply_append(reply, &offset, "output_enable_gb28181=%d\n", cfg->output.switches.enable_gb28181);
+    gateway_debug_append_rtsp_config(reply, &offset, "output_rtsp", &cfg->output.rtsp);
+    gateway_debug_append_rtmp_config(reply, &offset, "output_rtmp", &cfg->output.rtmp);
+    gateway_debug_append_gb28181_config(reply, &offset, "output_gb28181", &cfg->output.gb28181);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_YELLOW, "POLICY_LIGHT_FPS");
+    debug_command_reply_append(reply, &offset, "policy_light_fps_enabled=%d\n", light_fps->enabled);
+    debug_command_reply_append(reply, &offset, "policy_light_fps_normal=%d\n", light_fps->targets.normal_fps);
+    debug_command_reply_append(reply, &offset, "policy_light_fps_low=%d\n", light_fps->targets.low_light_fps);
+    debug_command_reply_append(reply, &offset, "policy_light_fps_bright=%d\n", light_fps->targets.bright_fps);
+    debug_command_reply_append(reply, &offset, "policy_light_min_switch_interval_ms=%d\n", light_fps->timing.min_switch_interval_ms);
+    debug_command_reply_append(reply, &offset, "policy_light_evaluate_interval_ms=%d\n", light_fps->timing.evaluate_interval_ms);
+    debug_command_reply_append(reply, &offset, "policy_light_bright_confirm_ms=%d\n", light_fps->timing.bright_confirm_ms);
+    debug_command_reply_append(reply, &offset, "policy_light_low_light_confirm_ms=%d\n", light_fps->timing.low_light_confirm_ms);
+    debug_command_reply_append(reply, &offset, "policy_light_ae_scene_confirm_ms=%d\n", light_fps->timing.ae_scene_confirm_ms);
+    debug_command_reply_append(reply, &offset, "policy_light_bright_max_exposure_us=%.2f\n", light_fps->ae.bright_max_exposure_us);
+    debug_command_reply_append(reply, &offset, "policy_light_bright_max_analog_gain=%.2f\n", light_fps->ae.bright_max_analog_gain);
+    debug_command_reply_append(reply, &offset, "policy_light_bright_min_mean_luma=%.2f\n", light_fps->ae.bright_min_mean_luma);
+    debug_command_reply_append(reply, &offset, "policy_light_low_min_exposure_ratio=%.2f\n", light_fps->ae.low_light_min_exposure_ratio);
+    debug_command_reply_append(reply, &offset, "policy_light_low_min_analog_gain=%.2f\n", light_fps->ae.low_light_min_analog_gain);
+    debug_command_reply_append(reply, &offset, "policy_light_low_max_mean_luma=%.2f\n", light_fps->ae.low_light_max_mean_luma);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "POLICY_NETWORK_ENCODE");
+    debug_command_reply_append(reply, &offset, "policy_network_enabled=%d\n", network_encode->enabled);
+    debug_command_reply_append(reply, &offset, "policy_network_pacing_enabled=%d\n", network_encode->pacing_enabled);
+    debug_command_reply_append(reply, &offset, "policy_network_pacing_update_interval_ms=%d\n", network_encode->pacing_update_interval_ms);
+    debug_command_reply_append(reply, &offset, "policy_network_pacing_update_change_percent=%d\n", network_encode->pacing_update_change_percent);
+    debug_command_reply_append(reply, &offset, "policy_network_downgrade_confirm_count=%d\n", network_encode->network_downgrade_confirm_count);
+    debug_command_reply_append(reply, &offset, "policy_network_upgrade_confirm_count=%d\n", network_encode->network_upgrade_confirm_count);
+    debug_command_reply_append(reply, &offset, "policy_network_base_fps=%d\n", network_encode->base_fps);
+    debug_command_reply_append(reply, &offset, "policy_network_min_bitrate=%d\n", network_encode->min_bitrate);
+    debug_command_reply_append(reply, &offset, "policy_network_max_bitrate=%d\n", network_encode->max_bitrate);
+    gateway_debug_append_network_detector(reply, &offset, "policy_network_detector_normal", &network_encode->network.detector.normal);
+    gateway_debug_append_network_detector(reply, &offset, "policy_network_detector_bad", &network_encode->network.detector.bad);
+    gateway_debug_append_network_detector(reply, &offset, "policy_network_detector_very_bad", &network_encode->network.detector.very_bad);
+    gateway_debug_append_network_action(reply, &offset, "policy_network_action_good", &network_encode->network.action.good);
+    gateway_debug_append_network_action(reply, &offset, "policy_network_action_normal", &network_encode->network.action.normal);
+    gateway_debug_append_network_action(reply, &offset, "policy_network_action_bad", &network_encode->network.action.bad);
+    gateway_debug_append_network_action(reply, &offset, "policy_network_action_very_bad", &network_encode->network.action.very_bad);
+
+    return 0;
+}
+
+/**
  * @description: 处理 setAdaptPolicy 调试命令，运行期打开或关闭亮度/网络两个子策略。
  *
  * 用法：
@@ -818,6 +1128,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("getAdapt", gateway_shell_get_adapt, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getAdapt");
+        return -1;
+    }
+    if (regDebugCmd("getConfig", gateway_shell_get_config, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getConfig");
         return -1;
     }
     if (regDebugCmd("setAdaptPolicy", gateway_shell_set_adapt_policy, ctx) != 0)
