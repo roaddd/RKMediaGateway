@@ -1,4 +1,5 @@
 #include "mppEncoder.h"
+#include "commonDef.h"
 #include "logger.h"
 #include "mpp_meta.h"
 #include "rk_mpi_cmd.h"
@@ -772,6 +773,129 @@ int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps)
  * 动态 setFps 会调用该接口一次性同步 fps、码率、GOP、RC 和 QP 参数，
  * 避免编码器进入“60fps 但仍使用 30fps 码率/GOP”的中间状态。
  */
+/*
+ * 查询编码器当前缓存的运行参数。
+ * enc->rc 和 enc->qp.current 在 MPP 初始化或 MPP_ENC_SET_CFG 成功后更新，
+ * 因此这里返回的是编码器模块认为已经生效的当前目标参数。
+ */
+int mpp_encoder_get_video_encode_params(MppEncoderCtx *enc, MediaVideoEncodeParams *params)
+{
+    if (!enc || !params)
+    {
+        LOG_ERROR("mpp_encoder_get_video_encode_params failed: enc=%p params=%p",
+                  (void *)enc,
+                  (void *)params);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    memset(params, 0, sizeof(*params));
+    params->fps = enc->rc.fps;
+    params->bitrate = enc->rc.bitrate;
+    params->gop = enc->rc.gop;
+    params->rc_mode = enc->rc.rc_mode;
+    params->qp_init = enc->qp.current.qp_init;
+    params->qp_min = enc->qp.current.qp_min;
+    params->qp_max = enc->qp.current.qp_max;
+    params->qp_min_i = enc->qp.current.qp_min_i;
+    params->qp_max_i = enc->qp.current.qp_max_i;
+    params->qp_max_step = enc->qp.current.qp_max_step;
+    return MEDIA_OK;
+}
+
+/*
+ * 从 MPP 配置对象读取 s32 字段。
+ * 读取失败时输出错误日志，调用方据此放弃本次实时查询结果，避免打印半套参数误导调试。
+ */
+static int mpp_encoder_read_cfg_s32(MppEncCfg cfg, const char *name, int *value)
+{
+    MPP_RET ret = MPP_OK;
+    RK_S32 mpp_value = 0;
+
+    if (!cfg || !name || !value)
+    {
+        LOG_ERROR("mpp_encoder_read_cfg_s32 failed: cfg=%p name=%p value=%p",
+                  (void *)cfg,
+                  (const void *)name,
+                  (void *)value);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ret = mpp_enc_cfg_get_s32(cfg, name, &mpp_value);
+    if (ret != MPP_OK)
+    {
+        LOG_ERROR("mpp_encoder_read_cfg_s32 failed: key=%s ret=%d", name, ret);
+        return MEDIA_ERR;
+    }
+
+    *value = (int)mpp_value;
+    return MEDIA_OK;
+}
+
+/*
+ * 从 MPP 编码器实时查询当前配置。
+ * 该接口先执行 MPP_ENC_GET_CFG，再读取 MppEncCfg 中的关键字段。
+ */
+int mpp_encoder_query_realtime_params(MppEncoderCtx *enc, MppEncoderRealtimeParams *params)
+{
+    MPP_RET ret = MPP_OK;
+    int read_ret = MEDIA_OK;
+
+    if (!enc || !params || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg)
+    {
+        LOG_ERROR("mpp_encoder_query_realtime_params failed: enc=%p params=%p",
+                  (void *)enc,
+                  (void *)params);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    memset(params, 0, sizeof(*params));
+
+    /*
+     * 这里主动从 MPP 拉取当前配置，区别于 enc->rc/enc->qp.current 缓存值。
+     * 用于确认 MPP 内部配置对象是否和业务层缓存一致。
+     */
+    ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_GET_CFG, enc->mpp.cfg);
+    if (ret != MPP_OK)
+    {
+        mpp_log_error("mpp_encoder_query_realtime_params MPP_ENC_GET_CFG failed", ret);
+        return MEDIA_ERR;
+    }
+
+#define READ_MPP_CFG_INT(key, field)                         \
+    do {                                                      \
+        read_ret = mpp_encoder_read_cfg_s32(enc->mpp.cfg, key, &params->field); \
+        if (read_ret != MEDIA_OK)                            \
+            return read_ret;                                 \
+    } while (0)
+
+    READ_MPP_CFG_INT("prep:width", prep_width);
+    READ_MPP_CFG_INT("prep:height", prep_height);
+    READ_MPP_CFG_INT("prep:hor_stride", prep_hor_stride);
+    READ_MPP_CFG_INT("prep:ver_stride", prep_ver_stride);
+    READ_MPP_CFG_INT("rc:mode", rc_mode);
+    READ_MPP_CFG_INT("rc:gop", rc_gop);
+    READ_MPP_CFG_INT("rc:fps_in_num", fps_in_num);
+    READ_MPP_CFG_INT("rc:fps_in_denorm", fps_in_denorm);
+    READ_MPP_CFG_INT("rc:fps_out_num", fps_out_num);
+    READ_MPP_CFG_INT("rc:fps_out_denorm", fps_out_denorm);
+    READ_MPP_CFG_INT("rc:bps_target", bps_target);
+    READ_MPP_CFG_INT("rc:bps_max", bps_max);
+    READ_MPP_CFG_INT("rc:bps_min", bps_min);
+    READ_MPP_CFG_INT("rc:qp_init", qp_init);
+    READ_MPP_CFG_INT("rc:qp_min", qp_min);
+    READ_MPP_CFG_INT("rc:qp_max", qp_max);
+    READ_MPP_CFG_INT("rc:qp_min_i", qp_min_i);
+    READ_MPP_CFG_INT("rc:qp_max_i", qp_max_i);
+    READ_MPP_CFG_INT("rc:qp_max_step", qp_max_step);
+    READ_MPP_CFG_INT("h264:profile", h264_profile);
+    READ_MPP_CFG_INT("h264:level", h264_level);
+    READ_MPP_CFG_INT("h264:cabac_en", h264_cabac_en);
+
+#undef READ_MPP_CFG_INT
+
+    return MEDIA_OK;
+}
+
 int mpp_encoder_apply_video_encode_params(MppEncoderCtx *enc, const MediaVideoEncodeParams *params)
 {
     MPP_RET ret;

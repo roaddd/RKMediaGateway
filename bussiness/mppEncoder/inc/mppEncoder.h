@@ -123,6 +123,31 @@ typedef struct {
     uint64_t encode_frame_total_us;        /* Whole mpp_encoder_encode_frame duration. */
 } MppEncoderTiming;
 
+typedef struct {
+    int prep_width;             /* MPP 当前配置中的输入宽度。 */
+    int prep_height;            /* MPP 当前配置中的输入高度。 */
+    int prep_hor_stride;        /* MPP 当前配置中的水平 stride。 */
+    int prep_ver_stride;        /* MPP 当前配置中的垂直 stride。 */
+    int rc_mode;                /* MPP 当前配置中的码控模式。 */
+    int rc_gop;                 /* MPP 当前配置中的 GOP。 */
+    int fps_in_num;             /* MPP 当前配置中的输入帧率分子。 */
+    int fps_in_denorm;          /* MPP 当前配置中的输入帧率分母。 */
+    int fps_out_num;            /* MPP 当前配置中的输出帧率分子。 */
+    int fps_out_denorm;         /* MPP 当前配置中的输出帧率分母。 */
+    int bps_target;             /* MPP 当前配置中的目标码率。 */
+    int bps_max;                /* MPP 当前配置中的最大码率。 */
+    int bps_min;                /* MPP 当前配置中的最小码率。 */
+    int qp_init;                /* MPP 当前配置中的初始 QP。 */
+    int qp_min;                 /* MPP 当前配置中的 P/B 最小 QP。 */
+    int qp_max;                 /* MPP 当前配置中的 P/B 最大 QP。 */
+    int qp_min_i;               /* MPP 当前配置中的 I 帧最小 QP。 */
+    int qp_max_i;               /* MPP 当前配置中的 I 帧最大 QP。 */
+    int qp_max_step;            /* MPP 当前配置中的相邻帧最大 QP 变化步长。 */
+    int h264_profile;           /* MPP 当前配置中的 H.264 profile。 */
+    int h264_level;             /* MPP 当前配置中的 H.264 level。 */
+    int h264_cabac_en;          /* MPP 当前配置中的 CABAC 开关。 */
+} MppEncoderRealtimeParams;
+
 int mpp_encoder_init(MppEncoderCtx *enc,
                      int width,
                      int height,
@@ -180,6 +205,18 @@ int mpp_encoder_request_idr(MppEncoderCtx *enc);
 int mpp_encoder_set_bitrate(MppEncoderCtx *enc, int bitrate);
 
 int mpp_encoder_set_fps(MppEncoderCtx *enc, int fps);
+
+/*
+ * 查询编码器当前缓存的运行参数。
+ * 这些值在 MPP 初始化或 MPP_ENC_SET_CFG 成功后更新，用于调试当前编码器实际生效目标。
+ */
+int mpp_encoder_get_video_encode_params(MppEncoderCtx *enc, MediaVideoEncodeParams *params);
+
+/*
+ * 从 MPP 编码器实时查询当前配置。
+ * 该接口会执行 MPP_ENC_GET_CFG，再读取 MppEncCfg 中的关键编码字段。
+ */
+int mpp_encoder_query_realtime_params(MppEncoderCtx *enc, MppEncoderRealtimeParams *params);
 
 /*
  * 运行时应用完整视频编码档位。

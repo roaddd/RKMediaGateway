@@ -83,6 +83,44 @@ static void gateway_debug_append_encode_params(char *reply,
 }
 
 /**
+ * @brief 打印从 MPP 实时查询到的编码器参数。
+ */
+static void gateway_debug_append_mpp_realtime_params(char *reply,
+                                                     size_t *offset,
+                                                     const char *prefix,
+                                                     const MppEncoderRealtimeParams *params)
+{
+    const char *use_prefix = NULL;
+
+    if (!reply || !offset || !params)
+        return;
+
+    use_prefix = prefix ? prefix : "mpp";
+    debug_command_reply_append(reply, offset, "%s_prep_width=%d\n", use_prefix, params->prep_width);
+    debug_command_reply_append(reply, offset, "%s_prep_height=%d\n", use_prefix, params->prep_height);
+    debug_command_reply_append(reply, offset, "%s_prep_hor_stride=%d\n", use_prefix, params->prep_hor_stride);
+    debug_command_reply_append(reply, offset, "%s_prep_ver_stride=%d\n", use_prefix, params->prep_ver_stride);
+    debug_command_reply_append(reply, offset, "%s_rc_mode=%d\n", use_prefix, params->rc_mode);
+    debug_command_reply_append(reply, offset, "%s_rc_gop=%d\n", use_prefix, params->rc_gop);
+    debug_command_reply_append(reply, offset, "%s_fps_in_num=%d\n", use_prefix, params->fps_in_num);
+    debug_command_reply_append(reply, offset, "%s_fps_in_denorm=%d\n", use_prefix, params->fps_in_denorm);
+    debug_command_reply_append(reply, offset, "%s_fps_out_num=%d\n", use_prefix, params->fps_out_num);
+    debug_command_reply_append(reply, offset, "%s_fps_out_denorm=%d\n", use_prefix, params->fps_out_denorm);
+    debug_command_reply_append(reply, offset, "%s_bps_target=%d\n", use_prefix, params->bps_target);
+    debug_command_reply_append(reply, offset, "%s_bps_max=%d\n", use_prefix, params->bps_max);
+    debug_command_reply_append(reply, offset, "%s_bps_min=%d\n", use_prefix, params->bps_min);
+    debug_command_reply_append(reply, offset, "%s_qp_init=%d\n", use_prefix, params->qp_init);
+    debug_command_reply_append(reply, offset, "%s_qp_min=%d\n", use_prefix, params->qp_min);
+    debug_command_reply_append(reply, offset, "%s_qp_max=%d\n", use_prefix, params->qp_max);
+    debug_command_reply_append(reply, offset, "%s_qp_min_i=%d\n", use_prefix, params->qp_min_i);
+    debug_command_reply_append(reply, offset, "%s_qp_max_i=%d\n", use_prefix, params->qp_max_i);
+    debug_command_reply_append(reply, offset, "%s_qp_max_step=%d\n", use_prefix, params->qp_max_step);
+    debug_command_reply_append(reply, offset, "%s_h264_profile=%d\n", use_prefix, params->h264_profile);
+    debug_command_reply_append(reply, offset, "%s_h264_level=%d\n", use_prefix, params->h264_level);
+    debug_command_reply_append(reply, offset, "%s_h264_cabac_en=%d\n", use_prefix, params->h264_cabac_en);
+}
+
+/**
  * @brief 打印网络等级对应的检测阈值。
  */
 static void gateway_debug_append_network_detector(char *reply,
@@ -860,6 +898,91 @@ static int gateway_shell_get_config(void *user_data, const char *input, char *ou
 }
 
 /**
+ * @brief 处理 getEncoder 调试命令，从编码器模块读取当前运行参数。
+ *
+ * 该命令不读取 MediaGatewayConfig，也不读取自适应策略目标值；
+ * fps、bitrate、gop、rc 和 QP 均来自 MppEncoderCtx 内部当前缓存状态。
+ */
+static int gateway_shell_get_encoder(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MppEncoderCtx *encoder = NULL;
+    MediaVideoEncodeParams params = {0};
+    MppEncoderRealtimeParams realtime_params = {0};
+    char *reply = NULL;
+    char prefix[64] = {0};
+    size_t offset = 0;
+    int stream_idx = 0;
+    int ret = MEDIA_OK;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_encoder failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    debug_command_reply_append(reply, &offset, "cmd=getEncoder\n");
+
+    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count &&
+                         stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_idx)
+    {
+        encoder = &ctx->encoders[stream_idx];
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "%s--------ENCODER_STREAM_%d--------%s\n",
+                                   (stream_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_BLUE : GATEWAY_DEBUG_COLOR_CYAN,
+                                   stream_idx,
+                                   GATEWAY_DEBUG_COLOR_RESET);
+        debug_command_reply_append(reply, &offset, "stream%d_config_enabled=%d\n", stream_idx, ctx->config.video.streams[stream_idx].enabled);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_ready=%d\n", stream_idx, ctx->encoder_ready[stream_idx]);
+        if (!ctx->encoder_ready[stream_idx])
+        {
+            debug_command_reply_append(reply, &offset, "stream%d_query_ret=%d\n", stream_idx, MEDIA_ERR_NOT_READY);
+            continue;
+        }
+
+        memset(&params, 0, sizeof(params));
+        ret = mpp_encoder_get_video_encode_params(encoder, &params);
+        debug_command_reply_append(reply, &offset, "stream%d_query_ret=%d\n", stream_idx, ret);
+        if (ret != MEDIA_OK)
+            continue;
+
+        /*
+         * CACHED 打印的是编码器上下文缓存值，不是配置文件值，也不是策略待下发目标。
+         * 这些缓存值在 MPP 初始化或 MPP_ENC_SET_CFG 成功后更新。
+         */
+        snprintf(prefix, sizeof(prefix), "stream%d_cached", stream_idx);
+        gateway_debug_append_encode_params(reply, &offset, prefix, &params);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_input_width=%d\n", stream_idx, encoder->input.width);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_input_height=%d\n", stream_idx, encoder->input.height);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_hor_stride=%d\n", stream_idx, encoder->input.hor_stride);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_ver_stride=%d\n", stream_idx, encoder->input.ver_stride);
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_pts=%" PRId64 "\n", stream_idx, encoder->runtime.pts);
+
+        /*
+         * REALTIME 通过 MPP_ENC_GET_CFG 从 MPP 当前配置对象中读取，用于和缓存值对比。
+         */
+        memset(&realtime_params, 0, sizeof(realtime_params));
+        ret = mpp_encoder_query_realtime_params(encoder, &realtime_params);
+        debug_command_reply_append(reply, &offset, "stream%d_mpp_realtime_query_ret=%d\n", stream_idx, ret);
+        if (ret == MEDIA_OK)
+        {
+            snprintf(prefix, sizeof(prefix), "stream%d_mpp", stream_idx);
+            gateway_debug_append_mpp_realtime_params(reply, &offset, prefix, &realtime_params);
+        }
+    }
+
+    return MEDIA_OK;
+}
+
+/**
  * @description: 处理 setAdaptPolicy 调试命令，运行期打开或关闭亮度/网络两个子策略。
  *
  * 用法：
@@ -1133,6 +1256,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("getConfig", gateway_shell_get_config, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getConfig");
+        return -1;
+    }
+    if (regDebugCmd("getEncoder", gateway_shell_get_encoder, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getEncoder");
         return -1;
     }
     if (regDebugCmd("setAdaptPolicy", gateway_shell_set_adapt_policy, ctx) != 0)

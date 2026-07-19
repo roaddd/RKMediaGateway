@@ -548,7 +548,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->width = value_int((p + "WIDTH").c_str());
     stream->height = value_int((p + "HEIGHT").c_str());
     stream->fps = value_int((p + "FPS").c_str());
-    stream->bitrate = value_int((p + "BITRATE").c_str());
+    stream->bitrate = value_int((p + "BITRATE").c_str()); /* STREAM_MAIN_BITRATE */
     stream->gop = value_int((p + "GOP").c_str());
     stream->rc_mode = value_int((p + "RC_MODE").c_str());
     stream->h264_profile = value_int((p + "H264_PROFILE").c_str());
