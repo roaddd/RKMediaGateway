@@ -650,3 +650,23 @@ int media_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode mode,
     output->video_pacing_rate_bps = effective_rate_bps;
     return MEDIA_OK;
 }
+
+/*
+ * 查询输出通道的视频 RTP pacer 调试统计。
+ * 非 RTSP 等不支持包级 pacer 的输出协议返回 MEDIA_ERR_UNSUPPORTED。
+ */
+int media_output_get_video_pacer_stats(MediaOutput *output, MediaOutputPacerStats *stats)
+{
+    if (!output || !stats)
+    {
+        LOG_ERROR("media_output_get_video_pacer_stats failed: output=%p stats=%p",
+                  (void *)output,
+                  (void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    memset(stats, 0, sizeof(*stats));
+    if (!output->vtable || !output->vtable->get_video_pacer_stats)
+        return MEDIA_ERR_UNSUPPORTED;
+    return output->vtable->get_video_pacer_stats(output, stats);
+}

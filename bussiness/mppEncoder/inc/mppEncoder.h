@@ -124,6 +124,9 @@ typedef struct {
 } MppEncoderTiming;
 
 typedef struct {
+    int get_cfg_mpp_ret;        /* MPP_ENC_GET_CFG 的原始返回值，0 表示成功。 */
+    int read_fail_count;        /* mpp_enc_cfg_get_s32 读取失败字段数量。 */
+    char first_failed_key[64];  /* 第一个读取失败的 MPP 配置 key。 */
     int prep_width;             /* MPP 当前配置中的输入宽度。 */
     int prep_height;            /* MPP 当前配置中的输入高度。 */
     int prep_hor_stride;        /* MPP 当前配置中的水平 stride。 */

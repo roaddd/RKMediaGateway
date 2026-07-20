@@ -820,10 +820,10 @@ static int mpp_encoder_read_cfg_s32(MppEncCfg cfg, const char *name, int *value)
         return MEDIA_ERR_INVALID_PARAM;
     }
 
+    *value = -1;
     ret = mpp_enc_cfg_get_s32(cfg, name, &mpp_value);
     if (ret != MPP_OK)
     {
-        LOG_ERROR("mpp_encoder_read_cfg_s32 failed: key=%s ret=%d", name, ret);
         return MEDIA_ERR;
     }
 
@@ -839,6 +839,7 @@ int mpp_encoder_query_realtime_params(MppEncoderCtx *enc, MppEncoderRealtimePara
 {
     MPP_RET ret = MPP_OK;
     int read_ret = MEDIA_OK;
+    const char *failed_key = NULL;
 
     if (!enc || !params || !enc->mpp.ctx || !enc->mpp.mpi || !enc->mpp.cfg)
     {
@@ -855,17 +856,28 @@ int mpp_encoder_query_realtime_params(MppEncoderCtx *enc, MppEncoderRealtimePara
      * 用于确认 MPP 内部配置对象是否和业务层缓存一致。
      */
     ret = enc->mpp.mpi->control(enc->mpp.ctx, MPP_ENC_GET_CFG, enc->mpp.cfg);
+    params->get_cfg_mpp_ret = (int)ret;
     if (ret != MPP_OK)
     {
         mpp_log_error("mpp_encoder_query_realtime_params MPP_ENC_GET_CFG failed", ret);
         return MEDIA_ERR;
     }
 
-#define READ_MPP_CFG_INT(key, field)                         \
-    do {                                                      \
+#define READ_MPP_CFG_INT(key, field)                                      \
+    do {                                                                  \
+        failed_key = key;                                                 \
         read_ret = mpp_encoder_read_cfg_s32(enc->mpp.cfg, key, &params->field); \
-        if (read_ret != MEDIA_OK)                            \
-            return read_ret;                                 \
+        if (read_ret != MEDIA_OK)                                         \
+        {                                                                 \
+            params->read_fail_count++;                                    \
+            if (params->first_failed_key[0] == '\0')                      \
+            {                                                             \
+                snprintf(params->first_failed_key,                        \
+                         sizeof(params->first_failed_key),                \
+                         "%s",                                           \
+                         failed_key);                                     \
+            }                                                             \
+        }                                                                 \
     } while (0)
 
     READ_MPP_CFG_INT("prep:width", prep_width);

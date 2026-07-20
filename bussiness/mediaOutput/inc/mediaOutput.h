@@ -161,6 +161,33 @@ typedef struct {
     int waiting_for_keyframe;   /* 当前是否处于等待关键帧恢复发送的状态。 */
 } MediaOutputStats;
 
+#define MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS 16
+
+typedef struct {
+    int in_use;                    /* 客户端槽位是否正在使用。 */
+    char client_ip[40];            /* 客户端 IP。 */
+    int client_rtp_port;           /* 客户端视频 RTP 端口。 */
+    int transport;                 /* RTSP transport 类型。 */
+    int rate_bps;                  /* 当前客户端 pacer 目标码率。 */
+    uint64_t packet_count;         /* pacer 观察到的视频 RTP 包数量。 */
+    uint64_t byte_count;           /* pacer 观察到的视频 RTP 字节数。 */
+    uint64_t sleep_count;          /* pacer 实际 sleep 次数。 */
+    uint64_t total_sleep_us;       /* pacer 累计 sleep 时间。 */
+    uint32_t last_packet_bytes;    /* 最近一次 RTP 包字节数。 */
+    uint32_t last_sleep_us;        /* 最近一次 sleep 时间。 */
+    uint32_t last_interval_us;     /* 最近一次按 rate 计算的发送间隔。 */
+    uint64_t last_window_bps;      /* 最近完成的 100ms 窗口估算码率。 */
+    uint64_t max_window_bps;       /* 已观察到的最大 100ms 窗口估算码率。 */
+} MediaOutputPacerClientStats;
+
+typedef struct {
+    MediaOutputPacerMode mode;     /* 当前输出通道 pacer 开关。 */
+    int pacing_rate_bps;           /* 当前输出通道目标 pacing rate。 */
+    int total_client_count;        /* 当前输出通道总客户端数量。 */
+    int reported_client_count;     /* 本快照实际填充的客户端数量。 */
+    MediaOutputPacerClientStats clients[MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS];
+} MediaOutputPacerStats;
+
 /**
  * @description: 具体协议输出实现的回调表。
  */
@@ -171,6 +198,7 @@ typedef struct {
     void (*disconnect)(MediaOutput *output);                      /* 断开下游连接。 */
     void (*stop)(MediaOutput *output);                            /* 停止协议私有资源。 */
     int (*set_video_pacer)(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps); /* 设置视频 RTP 包级 pacer；不支持的协议可为空。 */
+    int (*get_video_pacer_stats)(MediaOutput *output, MediaOutputPacerStats *stats); /* 获取视频 RTP pacer 调试统计；不支持的协议可为空。 */
 } MediaOutputVTable;
 
 /**
@@ -271,6 +299,7 @@ void media_output_get_stats(MediaOutput *output, MediaOutputStats *stats);
  * mode 为 MEDIA_OUTPUT_PACER_ENABLED 表示开启 pacer，此时 pacing_rate_bps 必须大于 0。
  */
 int media_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps);
+int media_output_get_video_pacer_stats(MediaOutput *output, MediaOutputPacerStats *stats);
 
 /**
  * @description: 协议实现内部使用的通用输出通道初始化函数。

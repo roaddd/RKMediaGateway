@@ -600,6 +600,62 @@ static int rtsp_output_set_video_pacer(MediaOutput *output, MediaOutputPacerMode
     return MEDIA_OK;
 }
 
+/* 查询当前 RTSP session 的视频 RTP pacer 调试统计。 */
+static int rtsp_output_get_video_pacer_stats(MediaOutput *output, MediaOutputPacerStats *stats) {
+    RtspOutputImpl *impl = NULL;
+    RtspVideoPacerStats rtsp_stats = {0};
+    int i = 0;
+
+    if (!output || !stats) {
+        LOG_ERROR("rtsp_output_get_video_pacer_stats failed: output=%p stats=%p",
+                  (void *)output,
+                  (void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    memset(stats, 0, sizeof(*stats));
+    impl = (RtspOutputImpl *)output->impl;
+    if (!impl || !impl->session) {
+        LOG_ERROR("rtsp_output_get_video_pacer_stats failed: session is NULL");
+        return MEDIA_ERR_NOT_READY;
+    }
+
+    if (rtspGetSessionVideoPacerStats(impl->session, &rtsp_stats) != 0) {
+        LOG_ERROR("rtsp_output_get_video_pacer_stats failed: session=%s",
+                  impl->config.session_name ? impl->config.session_name : "unknown");
+        return MEDIA_ERR;
+    }
+
+    stats->mode = rtsp_stats.mode == RTSP_VIDEO_PACER_ENABLED ?
+                  MEDIA_OUTPUT_PACER_ENABLED :
+                  MEDIA_OUTPUT_PACER_DISABLED;
+    stats->pacing_rate_bps = rtsp_stats.pacing_rate_bps;
+    stats->total_client_count = rtsp_stats.total_client_count;
+    stats->reported_client_count = rtsp_stats.reported_client_count;
+    for (i = 0; i < rtsp_stats.reported_client_count &&
+                i < MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS &&
+                i < RTSP_VIDEO_PACER_STATS_MAX_CLIENTS; ++i) {
+        stats->clients[i].in_use = rtsp_stats.clients[i].in_use;
+        snprintf(stats->clients[i].client_ip,
+                 sizeof(stats->clients[i].client_ip),
+                 "%s",
+                 rtsp_stats.clients[i].client_ip);
+        stats->clients[i].client_rtp_port = rtsp_stats.clients[i].client_rtp_port;
+        stats->clients[i].transport = rtsp_stats.clients[i].transport;
+        stats->clients[i].rate_bps = rtsp_stats.clients[i].rate_bps;
+        stats->clients[i].packet_count = rtsp_stats.clients[i].packet_count;
+        stats->clients[i].byte_count = rtsp_stats.clients[i].byte_count;
+        stats->clients[i].sleep_count = rtsp_stats.clients[i].sleep_count;
+        stats->clients[i].total_sleep_us = rtsp_stats.clients[i].total_sleep_us;
+        stats->clients[i].last_packet_bytes = rtsp_stats.clients[i].last_packet_bytes;
+        stats->clients[i].last_sleep_us = rtsp_stats.clients[i].last_sleep_us;
+        stats->clients[i].last_interval_us = rtsp_stats.clients[i].last_interval_us;
+        stats->clients[i].last_window_bps = rtsp_stats.clients[i].last_window_bps;
+        stats->clients[i].max_window_bps = rtsp_stats.clients[i].max_window_bps;
+    }
+    return MEDIA_OK;
+}
+
 /* 当前实现无需主动断链，保留该钩子用于接口一致性。 */
 static void rtsp_output_disconnect(MediaOutput *output) {
     (void)output;
@@ -630,7 +686,8 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
         rtsp_output_send_packet,
         rtsp_output_disconnect,
         rtsp_output_stop,
-        rtsp_output_set_video_pacer
+        rtsp_output_set_video_pacer,
+        rtsp_output_get_video_pacer_stats
     };
     MediaOutputChannelConfig output_config;
     RtspOutputImpl *impl;

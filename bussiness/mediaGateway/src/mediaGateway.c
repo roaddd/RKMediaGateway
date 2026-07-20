@@ -601,9 +601,9 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
     if (cfg->network.action.good.max_fps <= 0)
         cfg->network.action.good.max_fps = light_fps->targets.bright_fps;
     if (cfg->network.action.good.bitrate_percent <= 0)
-        cfg->network.action.good.bitrate_percent = 100;
+        cfg->network.action.good.bitrate_percent = 100; /* GOOD网络状况下的 bitrate 百分比 */
     if (cfg->network.action.good.pacing_percent <= 0)
-        cfg->network.action.good.pacing_percent = 200;
+        cfg->network.action.good.pacing_percent = 200; /* GOOD网络状况下的 pacing 百分比 */
     if (cfg->network.action.good.min_pacing_rate_bps <= 0)
         cfg->network.action.good.min_pacing_rate_bps = 4 * 1024 * 1024;
     if (cfg->network.action.good.keyframe_interval_ms <= 0)

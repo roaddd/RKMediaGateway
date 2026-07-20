@@ -96,6 +96,9 @@ static void gateway_debug_append_mpp_realtime_params(char *reply,
         return;
 
     use_prefix = prefix ? prefix : "mpp";
+    debug_command_reply_append(reply, offset, "%s_get_cfg_mpp_ret=%d\n", use_prefix, params->get_cfg_mpp_ret);
+    debug_command_reply_append(reply, offset, "%s_read_fail_count=%d\n", use_prefix, params->read_fail_count);
+    debug_command_reply_append(reply, offset, "%s_first_failed_key=%s\n", use_prefix, params->first_failed_key);
     debug_command_reply_append(reply, offset, "%s_prep_width=%d\n", use_prefix, params->prep_width);
     debug_command_reply_append(reply, offset, "%s_prep_height=%d\n", use_prefix, params->prep_height);
     debug_command_reply_append(reply, offset, "%s_prep_hor_stride=%d\n", use_prefix, params->prep_hor_stride);
@@ -972,10 +975,83 @@ static int gateway_shell_get_encoder(void *user_data, const char *input, char *o
         memset(&realtime_params, 0, sizeof(realtime_params));
         ret = mpp_encoder_query_realtime_params(encoder, &realtime_params);
         debug_command_reply_append(reply, &offset, "stream%d_mpp_realtime_query_ret=%d\n", stream_idx, ret);
-        if (ret == MEDIA_OK)
+        snprintf(prefix, sizeof(prefix), "stream%d_mpp", stream_idx);
+        gateway_debug_append_mpp_realtime_params(reply, &offset, prefix, &realtime_params);
+    }
+
+    return MEDIA_OK;
+}
+
+/**
+ * @brief 处理 getPacer 调试命令，查看 RTSP 视频 RTP pacer 是否真正作用到发送路径。
+ *
+ * 该命令从输出层读取协议侧 pacer 统计，用于和 Wireshark 100ms IO Graph 对比：
+ * max_window_bps 若明显高于 pacing_rate_bps，说明 pacer 发送节奏或抓包过滤需要继续排查。
+ */
+static int gateway_shell_get_pacer(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaOutputPacerStats stats = {0};
+    MediaOutputPacerClientStats *client = NULL;
+    char *reply = NULL;
+    size_t offset = 0;
+    int output_idx = 0;
+    int client_idx = 0;
+    int ret = MEDIA_OK;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_pacer failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    debug_command_reply_append(reply, &offset, "cmd=getPacer\n");
+
+    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+    {
+        memset(&stats, 0, sizeof(stats));
+        ret = media_output_get_video_pacer_stats(&ctx->outputs[output_idx], &stats);
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "%s--------PACER_OUTPUT_%d--------%s\n",
+                                   (output_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_BLUE : GATEWAY_DEBUG_COLOR_CYAN,
+                                   output_idx,
+                                   GATEWAY_DEBUG_COLOR_RESET);
+        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown");
+        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output_stream_index[output_idx]);
+        debug_command_reply_append(reply, &offset, "output%d_query_ret=%d\n", output_idx, ret);
+        if (ret != MEDIA_OK)
+            continue;
+
+        debug_command_reply_append(reply, &offset, "output%d_pacer_mode=%d\n", output_idx, stats.mode);
+        debug_command_reply_append(reply, &offset, "output%d_pacing_rate_bps=%d\n", output_idx, stats.pacing_rate_bps);
+        debug_command_reply_append(reply, &offset, "output%d_total_client_count=%d\n", output_idx, stats.total_client_count);
+        debug_command_reply_append(reply, &offset, "output%d_reported_client_count=%d\n", output_idx, stats.reported_client_count);
+
+        for (client_idx = 0; client_idx < stats.reported_client_count &&
+                             client_idx < MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS;
+             ++client_idx)
         {
-            snprintf(prefix, sizeof(prefix), "stream%d_mpp", stream_idx);
-            gateway_debug_append_mpp_realtime_params(reply, &offset, prefix, &realtime_params);
+            client = &stats.clients[client_idx];
+            debug_command_reply_append(reply, &offset, "output%d_client%d_ip=%s\n", output_idx, client_idx, client->client_ip);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_rtp_port=%d\n", output_idx, client_idx, client->client_rtp_port);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_transport=%d\n", output_idx, client_idx, client->transport);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_rate_bps=%d\n", output_idx, client_idx, client->rate_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_packet_count=%" PRIu64 "\n", output_idx, client_idx, client->packet_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_byte_count=%" PRIu64 "\n", output_idx, client_idx, client->byte_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_sleep_count=%" PRIu64 "\n", output_idx, client_idx, client->sleep_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_total_sleep_us=%" PRIu64 "\n", output_idx, client_idx, client->total_sleep_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_packet_bytes=%u\n", output_idx, client_idx, client->last_packet_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_sleep_us=%u\n", output_idx, client_idx, client->last_sleep_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_interval_us=%u\n", output_idx, client_idx, client->last_interval_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->last_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->max_window_bps);
         }
     }
 
@@ -1261,6 +1337,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("getEncoder", gateway_shell_get_encoder, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getEncoder");
+        return -1;
+    }
+    if (regDebugCmd("getPacer", gateway_shell_get_pacer, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getPacer");
         return -1;
     }
     if (regDebugCmd("setAdaptPolicy", gateway_shell_set_adapt_policy, ctx) != 0)
