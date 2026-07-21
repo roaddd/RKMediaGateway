@@ -652,6 +652,15 @@ static int rtsp_output_get_video_pacer_stats(MediaOutput *output, MediaOutputPac
         stats->clients[i].last_interval_us = rtsp_stats.clients[i].last_interval_us;
         stats->clients[i].last_window_bps = rtsp_stats.clients[i].last_window_bps;
         stats->clients[i].max_window_bps = rtsp_stats.clients[i].max_window_bps;
+        stats->clients[i].current_window_bps = rtsp_stats.clients[i].current_window_bps;
+        stats->clients[i].last_window_bytes = rtsp_stats.clients[i].last_window_bytes;
+        stats->clients[i].last_window_packets = rtsp_stats.clients[i].last_window_packets;
+        stats->clients[i].last_window_elapsed_us = rtsp_stats.clients[i].last_window_elapsed_us;
+        stats->clients[i].max_window_bytes = rtsp_stats.clients[i].max_window_bytes;
+        stats->clients[i].max_window_packets = rtsp_stats.clients[i].max_window_packets;
+        stats->clients[i].max_window_elapsed_us = rtsp_stats.clients[i].max_window_elapsed_us;
+        stats->clients[i].reset_count = rtsp_stats.clients[i].reset_count;
+        stats->clients[i].last_reset_reason = rtsp_stats.clients[i].last_reset_reason;
     }
     return MEDIA_OK;
 }

@@ -58,6 +58,15 @@ typedef struct {
     uint32_t last_interval_us;     /* 最近一次按 rate 计算的发送间隔。 */
     uint64_t last_window_bps;      /* 最近完成的 100ms 窗口估算码率。 */
     uint64_t max_window_bps;       /* 已观察到的最大 100ms 窗口估算码率。 */
+    uint64_t current_window_bps;   /* 当前未完成窗口按已用时间估算的码率。 */
+    uint64_t last_window_bytes;    /* 最近完成窗口内 RTP 字节数。 */
+    uint32_t last_window_packets;  /* 最近完成窗口内 RTP 包数。 */
+    uint64_t last_window_elapsed_us; /* 最近完成窗口持续时间。 */
+    uint64_t max_window_bytes;     /* 最大码率窗口内 RTP 字节数。 */
+    uint32_t max_window_packets;   /* 最大码率窗口内 RTP 包数。 */
+    uint64_t max_window_elapsed_us; /* 最大码率窗口持续时间。 */
+    uint64_t reset_count;          /* pacer 时间基准被重置的次数。 */
+    uint32_t last_reset_reason;    /* 最近一次重置原因：1=首次/未初始化，2=落后超过保护阈值。 */
 } RtspVideoPacerClientStats;
 
 typedef struct {

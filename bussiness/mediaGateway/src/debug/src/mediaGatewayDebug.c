@@ -1052,6 +1052,15 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
             debug_command_reply_append(reply, &offset, "output%d_client%d_last_interval_us=%u\n", output_idx, client_idx, client->last_interval_us);
             debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->last_window_bps);
             debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->max_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_current_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->current_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_bytes=%" PRIu64 "\n", output_idx, client_idx, client->last_window_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_packets=%u\n", output_idx, client_idx, client->last_window_packets);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_elapsed_us=%" PRIu64 "\n", output_idx, client_idx, client->last_window_elapsed_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_bytes=%" PRIu64 "\n", output_idx, client_idx, client->max_window_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_packets=%u\n", output_idx, client_idx, client->max_window_packets);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_elapsed_us=%" PRIu64 "\n", output_idx, client_idx, client->max_window_elapsed_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_reset_count=%" PRIu64 "\n", output_idx, client_idx, client->reset_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_reason=%u\n", output_idx, client_idx, client->last_reset_reason);
         }
     }
 
