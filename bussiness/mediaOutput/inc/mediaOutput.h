@@ -187,6 +187,11 @@ typedef struct {
     uint64_t max_window_elapsed_us; /* 最大码率窗口持续时间。 */
     uint64_t reset_count;          /* pacer 时间基准被重置的次数。 */
     uint32_t last_reset_reason;    /* 最近一次重置原因：1=首次/未初始化，2=落后超过保护阈值。 */
+    uint64_t last_reset_lag_us;    /* 最近一次落后重置时，当前时间超过计划发送时间的微秒数。 */
+    uint64_t last_reset_now_us;    /* 最近一次重置发生时的单调时间。 */
+    uint64_t last_reset_next_send_ts_us; /* 最近一次重置前的计划发送时间。 */
+    uint64_t last_reset_window_bytes; /* 最近一次重置时当前统计窗口内已经发送的 RTP 字节数。 */
+    uint32_t last_reset_window_packets; /* 最近一次重置时当前统计窗口内已经发送的 RTP 包数。 */
 } MediaOutputPacerClientStats;
 
 typedef struct {

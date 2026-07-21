@@ -992,6 +992,7 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
 {
     MediaGatewayCtx *ctx = NULL;
     MediaOutputPacerStats stats = {0};
+    MediaOutputStats output_stats = {0};
     MediaOutputPacerClientStats *client = NULL;
     char *reply = NULL;
     size_t offset = 0;
@@ -1016,6 +1017,8 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
     for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
     {
         memset(&stats, 0, sizeof(stats));
+        memset(&output_stats, 0, sizeof(output_stats));
+        media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
         ret = media_output_get_video_pacer_stats(&ctx->outputs[output_idx], &stats);
         debug_command_reply_append(reply,
                                    &offset,
@@ -1025,6 +1028,9 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
                                    GATEWAY_DEBUG_COLOR_RESET);
         debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown");
         debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output_stream_index[output_idx]);
+        debug_command_reply_append(reply, &offset, "output%d_queue_depth=%d\n", output_idx, output_stats.queue_depth);
+        debug_command_reply_append(reply, &offset, "output%d_video_queue_depth=%d\n", output_idx, output_stats.video_queue_depth);
+        debug_command_reply_append(reply, &offset, "output%d_audio_queue_depth=%d\n", output_idx, output_stats.audio_queue_depth);
         debug_command_reply_append(reply, &offset, "output%d_query_ret=%d\n", output_idx, ret);
         if (ret != MEDIA_OK)
             continue;
@@ -1061,6 +1067,11 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
             debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_elapsed_us=%" PRIu64 "\n", output_idx, client_idx, client->max_window_elapsed_us);
             debug_command_reply_append(reply, &offset, "output%d_client%d_reset_count=%" PRIu64 "\n", output_idx, client_idx, client->reset_count);
             debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_reason=%u\n", output_idx, client_idx, client->last_reset_reason);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_lag_us=%" PRIu64 "\n", output_idx, client_idx, client->last_reset_lag_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_now_us=%" PRIu64 "\n", output_idx, client_idx, client->last_reset_now_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_next_send_ts_us=%" PRIu64 "\n", output_idx, client_idx, client->last_reset_next_send_ts_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_window_bytes=%" PRIu64 "\n", output_idx, client_idx, client->last_reset_window_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_window_packets=%u\n", output_idx, client_idx, client->last_reset_window_packets);
         }
     }
 
