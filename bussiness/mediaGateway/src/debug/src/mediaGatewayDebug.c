@@ -1079,6 +1079,100 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
 }
 
 /**
+ * @brief 处理 getRtpRate 调试命令，查看 RTSP 视频 RTP 发送窗口码率。
+ *
+ * 该命令复用 RTSP server 内部的 RTP 包级统计。pacer 关闭时只统计不等待，
+ * pacer 开启时同时统计等待情况，用于对比 100ms 窗口峰值是否被削平。
+ */
+static int gateway_shell_get_rtp_rate(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    MediaOutputPacerStats stats = {0};
+    MediaOutputStats output_stats = {0};
+    MediaOutputPacerClientStats *client = NULL;
+    char *reply = NULL;
+    size_t offset = 0;
+    int output_idx = 0;
+    int client_idx = 0;
+    int ret = MEDIA_OK;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_rtp_rate failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    debug_command_reply_append(reply, &offset, "cmd=getRtpRate\n");
+
+    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+    {
+        memset(&stats, 0, sizeof(stats));
+        memset(&output_stats, 0, sizeof(output_stats));
+        media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
+        ret = media_output_get_video_pacer_stats(&ctx->outputs[output_idx], &stats);
+
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "%s--------RTP_RATE_OUTPUT_%d--------%s\n",
+                                   (output_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_GREEN : GATEWAY_DEBUG_COLOR_YELLOW,
+                                   output_idx,
+                                   GATEWAY_DEBUG_COLOR_RESET);
+        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown");
+        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output_stream_index[output_idx]);
+        debug_command_reply_append(reply, &offset, "output%d_queue_depth=%d\n", output_idx, output_stats.queue_depth);
+        debug_command_reply_append(reply, &offset, "output%d_video_queue_depth=%d\n", output_idx, output_stats.video_queue_depth);
+        debug_command_reply_append(reply, &offset, "output%d_audio_queue_depth=%d\n", output_idx, output_stats.audio_queue_depth);
+        debug_command_reply_append(reply, &offset, "output%d_query_ret=%d\n", output_idx, ret);
+        if (ret != MEDIA_OK)
+            continue;
+
+        debug_command_reply_append(reply, &offset, "output%d_pacer_mode=%d\n", output_idx, stats.mode);
+        debug_command_reply_append(reply, &offset, "output%d_pacing_rate_bps=%d\n", output_idx, stats.pacing_rate_bps);
+        debug_command_reply_append(reply, &offset, "output%d_total_client_count=%d\n", output_idx, stats.total_client_count);
+        debug_command_reply_append(reply, &offset, "output%d_reported_client_count=%d\n", output_idx, stats.reported_client_count);
+
+        for (client_idx = 0; client_idx < stats.reported_client_count &&
+                             client_idx < MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS;
+             ++client_idx)
+        {
+            client = &stats.clients[client_idx];
+            debug_command_reply_append(reply, &offset, "%s--------RTP_RATE_OUTPUT_%d_CLIENT_%d--------%s\n",
+                                       GATEWAY_DEBUG_COLOR_CYAN,
+                                       output_idx,
+                                       client_idx,
+                                       GATEWAY_DEBUG_COLOR_RESET);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_ip=%s\n", output_idx, client_idx, client->client_ip);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_rtp_port=%d\n", output_idx, client_idx, client->client_rtp_port);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_transport=%d\n", output_idx, client_idx, client->transport);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_packet_count=%" PRIu64 "\n", output_idx, client_idx, client->packet_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_byte_count=%" PRIu64 "\n", output_idx, client_idx, client->byte_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->last_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_current_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->current_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_bps=%" PRIu64 "\n", output_idx, client_idx, client->max_window_bps);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_bytes=%" PRIu64 "\n", output_idx, client_idx, client->last_window_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_packets=%u\n", output_idx, client_idx, client->last_window_packets);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_window_elapsed_us=%" PRIu64 "\n", output_idx, client_idx, client->last_window_elapsed_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_bytes=%" PRIu64 "\n", output_idx, client_idx, client->max_window_bytes);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_packets=%u\n", output_idx, client_idx, client->max_window_packets);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_max_window_elapsed_us=%" PRIu64 "\n", output_idx, client_idx, client->max_window_elapsed_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_sleep_count=%" PRIu64 "\n", output_idx, client_idx, client->sleep_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_total_sleep_us=%" PRIu64 "\n", output_idx, client_idx, client->total_sleep_us);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_reset_count=%" PRIu64 "\n", output_idx, client_idx, client->reset_count);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_reason=%u\n", output_idx, client_idx, client->last_reset_reason);
+            debug_command_reply_append(reply, &offset, "output%d_client%d_last_reset_lag_us=%" PRIu64 "\n", output_idx, client_idx, client->last_reset_lag_us);
+        }
+    }
+
+    return MEDIA_OK;
+}
+
+/**
  * @description: 处理 setAdaptPolicy 调试命令，运行期打开或关闭亮度/网络两个子策略。
  *
  * 用法：
@@ -1362,6 +1456,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("getPacer", gateway_shell_get_pacer, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getPacer");
+        return -1;
+    }
+    if (regDebugCmd("getRtpRate", gateway_shell_get_rtp_rate, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getRtpRate");
         return -1;
     }
     if (regDebugCmd("setAdaptPolicy", gateway_shell_set_adapt_policy, ctx) != 0)

@@ -162,7 +162,6 @@ typedef struct {
 } MediaOutputStats;
 
 #define MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS 16
-
 typedef struct {
     int in_use;                    /* 客户端槽位是否正在使用。 */
     char client_ip[40];            /* 客户端 IP。 */
