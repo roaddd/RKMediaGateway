@@ -641,6 +641,7 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
     MediaAdaptNetworkDecision network_decision;
     int stream_idx = 0;
     int global_max_fps = 0;
+    const MediaGatewayNetworkLevelConfig *good_level = NULL;
 
     adaptive_init_network_decision(&network_decision);
     if (!ctx)
@@ -660,6 +661,7 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
     else
     {
         /* 未启用网络自适应时，网络侧保持全局帧率上限，不影响场景侧帧率结果。 */
+        good_level = &ctx->config.policy.network_encode.network.action.good;
         state->aggregate_network.state = MEDIA_GATEWAY_NETWORK_GOOD;
         state->aggregate_network.max_fps = global_max_fps;
         state->aggregate_network.max_output_queue_depth = 0;
@@ -674,6 +676,12 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
             state->stream_network[stream_idx].rtcp_jitter_ms = 0;
             state->stream_network[stream_idx].pending_state = MEDIA_GATEWAY_NETWORK_GOOD;
             state->stream_network[stream_idx].pending_state_count = 0;
+            /*
+             * 网络反馈关闭时不让 RTCP/队列改变编码参数，但 pacer 独立开启时仍需要一个稳定的发送速率。
+             * 这里使用 GOOD 等级动作作为固定 pacing 基准，避免测试 pacer 时被网络状态抖动影响。
+             */
+            network_decision.bitrate_percent[stream_idx] = good_level->bitrate_percent > 0 ? good_level->bitrate_percent : 100;
+            network_decision.pacing_percent[stream_idx] = good_level->pacing_percent > 0 ? good_level->pacing_percent : 100;
         }
     }
     return network_decision;
@@ -700,8 +708,10 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         return MEDIA_ERR_INVALID_PARAM;
     }
 
-    /* 如果场景和网络自适应都未启用，直接返回 */
-    if (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled)
+    /* 如果场景、网络编码和 RTP pacing 都未启用，直接返回。 */
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled &&
+        !ctx->config.policy.network_encode.pacing_enabled)
         return MEDIA_OK;
 
     state = &ctx->adaptive_policy_state;
@@ -734,12 +744,13 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         state->output.pacing_rate_bps[stream_idx] = 0;
 
     /*
-     * pacing 是网络自适应的独立执行项。
-     * 只有网络自适应和 pacing 开关同时开启时，最终输出状态才生成 pacing rate；
-     * 任一开关关闭时保持 0，表示后续输出层需要显式关闭 RTP pacer。
+     * pacing 是 RTP 发送侧的独立执行项。
+     * network_encode.enabled 只决定 RTCP/队列反馈是否改编码参数；
+     * pacing_enabled 单独决定是否给输出层下发 RTP pacer。
+     * 网络反馈关闭时，网络等级保持 GOOD，pacing rate 使用当前编码目标码率和 GOOD 等级配置计算，
+     * 便于固定编码参数后单独验证 pacer 是否削平 100ms 窗口突发。
      */
-    if (ctx->config.policy.network_encode.enabled &&
-        ctx->config.policy.network_encode.pacing_enabled)
+    if (ctx->config.policy.network_encode.pacing_enabled)
     {
         for (stream_idx = 0; stream_idx < ctx->config.video.stream_count && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
         {
@@ -1075,7 +1086,9 @@ void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] ctx is null, skipping runtime policy update");
         return;
     }
-    if (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled)
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled &&
+        !ctx->config.policy.network_encode.pacing_enabled)
         return;
 
     /* 第一步：亮度感知过程，只更新场景侧约束。场景侧无效时停止本轮融合。 */

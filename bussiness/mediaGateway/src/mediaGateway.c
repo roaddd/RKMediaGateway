@@ -335,7 +335,7 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
     }
 
     now_us = media_gateway_get_now_us();
-    if (ctx->config.policy.network_encode.enabled && ctx->config.policy.network_encode.pacing_enabled)
+    if (ctx->config.policy.network_encode.pacing_enabled)
         pacer_mode = MEDIA_OUTPUT_PACER_ENABLED;
 
     for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)

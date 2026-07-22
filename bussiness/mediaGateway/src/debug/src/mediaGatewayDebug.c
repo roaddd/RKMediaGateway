@@ -1137,9 +1137,7 @@ static int gateway_shell_get_rtp_rate(void *user_data, const char *input, char *
         debug_command_reply_append(reply, &offset, "output%d_total_client_count=%d\n", output_idx, stats.total_client_count);
         debug_command_reply_append(reply, &offset, "output%d_reported_client_count=%d\n", output_idx, stats.reported_client_count);
 
-        for (client_idx = 0; client_idx < stats.reported_client_count &&
-                             client_idx < MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS;
-             ++client_idx)
+        for (client_idx = 0; client_idx < stats.reported_client_count && client_idx < MEDIA_OUTPUT_PACER_STATS_MAX_CLIENTS; ++client_idx)
         {
             client = &stats.clients[client_idx];
             debug_command_reply_append(reply, &offset, "%s--------RTP_RATE_OUTPUT_%d_CLIENT_%d--------%s\n",
