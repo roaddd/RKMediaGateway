@@ -6,3 +6,5 @@ if(BUILD_TARGET STREQUAL "enum_frame_interval_test" OR BUILD_TARGET STREQUAL "al
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()
+
+add_subdirectory(webRTC)
