@@ -1,0 +1,214 @@
+:root {
+    color-scheme: light;
+    --bg: #f5f7fb;
+    --panel: #ffffff;
+    --text: #1f2937;
+    --muted: #667085;
+    --line: #d8dee9;
+    --accent: #0f766e;
+    --accent-strong: #115e59;
+    --danger: #b42318;
+    --ok: #027a48;
+    --code-bg: #101828;
+    --code-text: #d0d5dd;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: Arial, "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+}
+
+.page {
+    width: min(1440px, 100%);
+    margin: 0 auto;
+    padding: 16px;
+}
+
+.toolbar,
+.actions,
+.status-grid,
+.content,
+.sdp-grid {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.toolbar {
+    grid-template-columns: minmax(320px, 1fr) minmax(160px, 220px) 96px 72px;
+    align-items: end;
+}
+
+.actions {
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.status-grid {
+    grid-template-columns: repeat(5, minmax(130px, 1fr));
+}
+
+.content {
+    grid-template-columns: minmax(360px, 1.1fr) minmax(360px, 0.9fr);
+}
+
+.sdp-grid {
+    grid-template-columns: repeat(2, minmax(360px, 1fr));
+}
+
+.field {
+    display: grid;
+    gap: 6px;
+}
+
+label,
+.status-item span,
+.panel-head span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+input,
+button {
+    height: 36px;
+    border-radius: 6px;
+    font: inherit;
+}
+
+input {
+    width: 100%;
+    border: 1px solid var(--line);
+    padding: 0 10px;
+    color: var(--text);
+    background: #fff;
+}
+
+button {
+    border: 1px solid transparent;
+    padding: 0 14px;
+    background: var(--accent);
+    color: #fff;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+    background: var(--accent-strong);
+}
+
+button:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+}
+
+#wsCloseBtn,
+#resetBtn,
+#clearIpcBtn,
+#clearLogBtn {
+    border-color: var(--line);
+    background: #fff;
+    color: var(--text);
+}
+
+#wsCloseBtn:hover:not(:disabled),
+#resetBtn:hover:not(:disabled),
+#clearIpcBtn:hover:not(:disabled),
+#clearLogBtn:hover:not(:disabled) {
+    background: #eef2f7;
+}
+
+.status-item,
+.panel {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+}
+
+.status-item {
+    display: grid;
+    gap: 6px;
+    min-height: 66px;
+    padding: 12px;
+}
+
+.status-item strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.state-ok {
+    color: var(--ok);
+}
+
+.state-bad {
+    color: var(--danger);
+}
+
+.panel {
+    min-width: 0;
+    padding: 12px;
+}
+
+.panel-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 36px;
+    margin-bottom: 8px;
+}
+
+h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 700;
+}
+
+video {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: 6px;
+    background: #111827;
+}
+
+.send-row {
+    display: grid;
+    grid-template-columns: 1fr 72px;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+pre {
+    margin: 0;
+    min-height: 180px;
+    max-height: 320px;
+    overflow: auto;
+    border-radius: 6px;
+    background: var(--code-bg);
+    color: var(--code-text);
+    padding: 10px;
+    font: 12px/1.5 Consolas, "Courier New", monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#eventLog {
+    min-height: 220px;
+}
+
+@media (max-width: 900px) {
+    .toolbar,
+    .actions,
+    .status-grid,
+    .content,
+    .sdp-grid {
+        grid-template-columns: 1fr;
+    }
+}

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RKMediaGateway WebRTC 测试</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <main class="page">
+        <section class="toolbar">
+            <div class="field">
+                <label for="wsUrl">WebSocket 地址</label>
+                <input id="wsUrl" type="text" value="ws://192.168.1.3:8000/browser" spellcheck="false">
+            </div>
+            <div class="field small">
+                <label for="remoteId">Remote ID</label>
+                <input id="remoteId" type="text" value="server" spellcheck="false">
+            </div>
+            <button id="wsConnectBtn" type="button">连接 WS</button>
+            <button id="wsCloseBtn" type="button" disabled>断开</button>
+        </section>
+
+        <section class="status-grid">
+            <div class="status-item">
+                <span>WebSocket</span>
+                <strong id="wsState">closed</strong>
+            </div>
+            <div class="status-item">
+                <span>PeerConnection</span>
+                <strong id="pcState">new</strong>
+            </div>
+            <div class="status-item">
+                <span>ICE</span>
+                <strong id="iceState">new</strong>
+            </div>
+            <div class="status-item">
+                <span>Gathering</span>
+                <strong id="gatheringState">new</strong>
+            </div>
+            <div class="status-item">
+                <span>DataChannel</span>
+                <strong id="dcState">closed</strong>
+            </div>
+        </section>
+
+        <section class="actions">
+            <button id="startBtn" type="button" disabled>创建 Offer</button>
+            <button id="pingBtn" type="button" disabled>发送 Ping</button>
+            <button id="statusBtn" type="button" disabled>查询状态</button>
+            <button id="resetBtn" type="button">重置 Peer</button>
+        </section>
+
+        <section class="content">
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>视频预览</h2>
+                    <span id="videoHint">等待远端 Track</span>
+                </div>
+                <video id="remoteVideo" autoplay playsinline controls muted></video>
+            </div>
+
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>IPC 消息</h2>
+                    <button id="clearIpcBtn" type="button">清空</button>
+                </div>
+                <div class="send-row">
+                    <input id="ipcInput" type="text" value='{"cmd":"ping"}' spellcheck="false" disabled>
+                    <button id="sendIpcBtn" type="button" disabled>发送</button>
+                </div>
+                <pre id="ipcLog"></pre>
+            </div>
+        </section>
+
+        <section class="sdp-grid">
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>本地 SDP</h2>
+                    <span id="localSdpType">-</span>
+                </div>
+                <pre id="localSdp"></pre>
+            </div>
+            <div class="panel">
+                <div class="panel-head">
+                    <h2>远端 SDP</h2>
+                    <span id="remoteSdpType">-</span>
+                </div>
+                <pre id="remoteSdp"></pre>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <h2>运行日志</h2>
+                <button id="clearLogBtn" type="button">清空</button>
+            </div>
+            <pre id="eventLog"></pre>
+        </section>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>
