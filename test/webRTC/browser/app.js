@@ -6,6 +6,7 @@
         remoteId: document.getElementById("remoteId"),
         wsConnectBtn: document.getElementById("wsConnectBtn"),
         wsCloseBtn: document.getElementById("wsCloseBtn"),
+        receiveVideo: document.getElementById("receiveVideo"),
         startBtn: document.getElementById("startBtn"),
         pingBtn: document.getElementById("pingBtn"),
         statusBtn: document.getElementById("statusBtn"),
@@ -231,14 +232,20 @@
 
     async function startOffer() {
         const peer = createPeerConnection();
+        const receiveVideo = els.receiveVideo.checked;
+        let offer;
 
         bindDataChannel(peer.createDataChannel("ipc"));
         log("创建本地 DataChannel：ipc");
 
-        const offer = await peer.createOffer({
-            offerToReceiveVideo: true,
-            offerToReceiveAudio: false,
-        });
+        if (receiveVideo) {
+            peer.addTransceiver("video", { direction: "recvonly" });
+            log("已启用视频接收，Offer 将包含 video recvonly m-line");
+        } else {
+            log("当前为纯 DataChannel 模式，Offer 不包含视频 m-line");
+        }
+
+        offer = await peer.createOffer();
         await peer.setLocalDescription(offer);
 
         els.localSdpType.textContent = "offer";

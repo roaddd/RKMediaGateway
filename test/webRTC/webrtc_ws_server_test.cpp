@@ -1,33 +1,51 @@
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <cstring>
 #include <exception>
+#include <fstream>
 #include <future>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <rtc/datachannel.hpp>
 #include <rtc/global.hpp>
+#include <rtc/h264rtppacketizer.hpp>
+#include <rtc/rtcpsrreporter.hpp>
+#include <rtc/rtcpnackresponder.hpp>
+#include <rtc/rtppacketizationconfig.hpp>
 #include <rtc/peerconnection.hpp>
+#include <rtc/track.hpp>
 #include <rtc/websocket.hpp>
 #include <rtc/websocketserver.hpp>
 
 namespace {
 
 struct WsSession {
-    int id;
+    int id = 0;
     std::shared_ptr<rtc::WebSocket> ws;
     std::shared_ptr<rtc::PeerConnection> pc;
     std::shared_ptr<rtc::DataChannel> dc;
+    std::shared_ptr<rtc::Track> videoTrack;
+    std::thread videoThread;
+    bool videoRunning = false;
+    std::string h264FilePath;
+    uint32_t videoFps = 30;
     std::mutex mutex;
 };
 
 std::atomic<int> g_next_session_id(1);
 std::mutex g_sessions_mutex;
 std::map<int, std::shared_ptr<WsSession>> g_sessions;
+std::string g_h264_file_path;
+uint32_t g_video_fps = 30;
 
 /*
  * 将字符串安全放进 JSON 字符串字段。
@@ -36,11 +54,13 @@ std::map<int, std::shared_ptr<WsSession>> g_sessions;
 std::string jsonEscape(const std::string &value)
 {
     std::ostringstream out;
+    unsigned char uch;
     char ch;
     size_t i;
 
     for (i = 0; i < value.size(); ++i) {
         ch = value[i];
+        uch = static_cast<unsigned char>(ch);
         switch (ch) {
         case '"':
             out << "\\\"";
@@ -64,10 +84,10 @@ std::string jsonEscape(const std::string &value)
             out << "\\t";
             break;
         default:
-            if (static_cast<unsigned char>(ch) < 0x20) {
+            if (uch < 0x20) {
                 out << "\\u00";
-                out << "0123456789abcdef"[(ch >> 4) & 0x0f];
-                out << "0123456789abcdef"[ch & 0x0f];
+                out << "0123456789abcdef"[(uch >> 4) & 0x0f];
+                out << "0123456789abcdef"[uch & 0x0f];
             } else {
                 out << ch;
             }
@@ -296,6 +316,522 @@ void bindDataChannel(const std::shared_ptr<WsSession> &session,
 }
 
 /*
+ * 判断浏览器 Offer 是否请求接收视频。
+ * 本测试只在 SDP 中出现 m=video 时才添加 H264 sendonly Track。
+ */
+bool offerHasVideo(const std::string &sdp)
+{
+    return sdp.find("\nm=video ") != std::string::npos ||
+           sdp.find("\r\nm=video ") != std::string::npos ||
+           sdp.rfind("m=video ", 0) == 0;
+}
+
+/*
+ * 从浏览器 Offer 的 video 媒体段中提取 mid。
+ * Answer 里的媒体 mid 需要和 Offer 对应，否则浏览器可能无法正确匹配收流轨道。
+ */
+std::string getVideoMidFromOffer(const std::string &sdp)
+{
+    const std::string mediaToken = "m=video ";
+    const std::string midToken = "a=mid:";
+    std::string mid;
+    size_t mediaPos;
+    size_t nextMediaPos;
+    size_t midPos;
+    size_t lineEnd;
+
+    mediaPos = sdp.find("\r\n" + mediaToken);
+    if (mediaPos != std::string::npos) {
+        mediaPos += 2;
+    } else {
+        mediaPos = sdp.find("\n" + mediaToken);
+        if (mediaPos != std::string::npos) {
+            mediaPos += 1;
+        } else {
+            mediaPos = sdp.rfind(mediaToken, 0) == 0 ? 0 : std::string::npos;
+        }
+    }
+
+    if (mediaPos == std::string::npos) {
+        return "video";
+    }
+
+    nextMediaPos = sdp.find("\nm=", mediaPos + mediaToken.size());
+    midPos = sdp.find(midToken, mediaPos);
+    if (midPos == std::string::npos || (nextMediaPos != std::string::npos && midPos > nextMediaPos)) {
+        return "video";
+    }
+
+    midPos += midToken.size();
+    lineEnd = sdp.find_first_of("\r\n", midPos);
+    if (lineEnd == std::string::npos) {
+        mid = sdp.substr(midPos);
+    } else {
+        mid = sdp.substr(midPos, lineEnd - midPos);
+    }
+
+    if (mid.empty()) {
+        mid = "video";
+    }
+
+    return mid;
+}
+
+/*
+ * 提取浏览器 Offer 的 video 媒体段。
+ * 后续解析 payload type 时只看 video 段，避免误读其他 m-line。
+ */
+std::string getVideoSectionFromOffer(const std::string &sdp)
+{
+    const std::string mediaToken = "m=video ";
+    std::string section;
+    size_t mediaPos;
+    size_t nextMediaPos;
+
+    mediaPos = sdp.find("\r\n" + mediaToken);
+    if (mediaPos != std::string::npos) {
+        mediaPos += 2;
+    } else {
+        mediaPos = sdp.find("\n" + mediaToken);
+        if (mediaPos != std::string::npos) {
+            mediaPos += 1;
+        } else {
+            mediaPos = sdp.rfind(mediaToken, 0) == 0 ? 0 : std::string::npos;
+        }
+    }
+
+    if (mediaPos == std::string::npos) {
+        return "";
+    }
+
+    nextMediaPos = sdp.find("\nm=", mediaPos + mediaToken.size());
+    if (nextMediaPos == std::string::npos) {
+        section = sdp.substr(mediaPos);
+    } else {
+        section = sdp.substr(mediaPos, nextMediaPos - mediaPos);
+    }
+
+    return section;
+}
+
+/*
+ * 从浏览器 Offer 中选择 H264 payload type。
+ * 优先选择 baseline 42e01f + packetization-mode=1，兼容 libdatachannel 默认 H264 profile。
+ */
+uint8_t getH264PayloadTypeFromOffer(const std::string &sdp)
+{
+    std::string section;
+    std::istringstream lines;
+    std::string line;
+    std::vector<int> h264PayloadTypes;
+    std::map<int, std::string> fmtps;
+    size_t prefixSize;
+    size_t spacePos;
+    int payloadType;
+    int selectedPayloadType;
+    size_t i;
+
+    section = getVideoSectionFromOffer(sdp);
+    lines.str(section);
+    prefixSize = std::string("a=rtpmap:").size();
+    selectedPayloadType = 102;
+
+    while (std::getline(lines, line)) {
+        if (!line.empty() && line[line.size() - 1] == '\r') {
+            line.erase(line.size() - 1);
+        }
+
+        if (line.rfind("a=rtpmap:", 0) == 0 && line.find("H264/90000") != std::string::npos) {
+            spacePos = line.find(' ', prefixSize);
+            if (spacePos != std::string::npos) {
+                payloadType = std::stoi(line.substr(prefixSize, spacePos - prefixSize));
+                h264PayloadTypes.push_back(payloadType);
+            }
+        } else if (line.rfind("a=fmtp:", 0) == 0) {
+            prefixSize = std::string("a=fmtp:").size();
+            spacePos = line.find(' ', prefixSize);
+            if (spacePos != std::string::npos) {
+                payloadType = std::stoi(line.substr(prefixSize, spacePos - prefixSize));
+                fmtps[payloadType] = line.substr(spacePos + 1);
+            }
+            prefixSize = std::string("a=rtpmap:").size();
+        }
+    }
+
+    for (i = 0; i < h264PayloadTypes.size(); ++i) {
+        payloadType = h264PayloadTypes[i];
+        if (fmtps[payloadType].find("packetization-mode=1") != std::string::npos &&
+            fmtps[payloadType].find("profile-level-id=42e01f") != std::string::npos) {
+            selectedPayloadType = payloadType;
+            return static_cast<uint8_t>(selectedPayloadType);
+        }
+    }
+
+    for (i = 0; i < h264PayloadTypes.size(); ++i) {
+        payloadType = h264PayloadTypes[i];
+        if (fmtps[payloadType].find("packetization-mode=1") != std::string::npos) {
+            selectedPayloadType = payloadType;
+            return static_cast<uint8_t>(selectedPayloadType);
+        }
+    }
+
+    if (!h264PayloadTypes.empty()) {
+        selectedPayloadType = h264PayloadTypes[0];
+    }
+
+    return static_cast<uint8_t>(selectedPayloadType);
+}
+
+/* 读取完整文件到内存，供单个 Annex-B H264 测试文件解析使用。 */
+bool readBinaryFile(const std::string &path, std::vector<uint8_t> &data)
+{
+    std::ifstream input;
+
+    input.open(path.c_str(), std::ios::binary);
+    if (!input.is_open()) {
+        return false;
+    }
+
+    data.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    return !data.empty();
+}
+
+/* 判断当前位置是否是 H264 Annex-B 起始码。 */
+size_t getAnnexBStartCodeSize(const std::vector<uint8_t> &data, size_t pos)
+{
+    if (pos + 4 <= data.size() &&
+        data[pos] == 0x00 && data[pos + 1] == 0x00 &&
+        data[pos + 2] == 0x00 && data[pos + 3] == 0x01) {
+        return 4;
+    }
+    if (pos + 3 <= data.size() &&
+        data[pos] == 0x00 && data[pos + 1] == 0x00 && data[pos + 2] == 0x01) {
+        return 3;
+    }
+
+    return 0;
+}
+
+/* 从指定位置开始查找下一个 Annex-B 起始码。 */
+size_t findAnnexBStartCode(const std::vector<uint8_t> &data, size_t pos)
+{
+    size_t i;
+
+    for (i = pos; i + 3 <= data.size(); ++i) {
+        if (getAnnexBStartCodeSize(data, i) > 0) {
+            return i;
+        }
+    }
+
+    return std::string::npos;
+}
+
+/* 将一个 Annex-B NALU 转成 4 字节长度前缀 NALU。 */
+void appendLengthPrefixedNalu(rtc::binary &frame, const uint8_t *nalu, size_t naluSize)
+{
+    uint32_t length;
+
+    length = static_cast<uint32_t>(naluSize);
+    frame.push_back(static_cast<std::byte>((length >> 24) & 0xff));
+    frame.push_back(static_cast<std::byte>((length >> 16) & 0xff));
+    frame.push_back(static_cast<std::byte>((length >> 8) & 0xff));
+    frame.push_back(static_cast<std::byte>(length & 0xff));
+    frame.insert(frame.end(),
+                 reinterpret_cast<const std::byte *>(nalu),
+                 reinterpret_cast<const std::byte *>(nalu + naluSize));
+}
+
+/*
+ * 将单个 Annex-B H264 裸流解析成一组视频帧。
+ * SPS/PPS/SEI 会跟随后面的第一个 VCL NALU 一起发送，保证浏览器收到关键帧参数集。
+ */
+bool parseAnnexBFrames(const std::vector<uint8_t> &data, std::vector<rtc::binary> &frames)
+{
+    rtc::binary frame;
+    size_t startPos;
+    size_t startCodeSize;
+    size_t naluStart;
+    size_t nextStartPos;
+    size_t naluSize;
+    uint8_t naluType;
+    bool frameHasVcl;
+
+    frames.clear();
+    frameHasVcl = false;
+    startPos = findAnnexBStartCode(data, 0);
+
+    while (startPos != std::string::npos) {
+        startCodeSize = getAnnexBStartCodeSize(data, startPos);
+        naluStart = startPos + startCodeSize;
+        nextStartPos = findAnnexBStartCode(data, naluStart);
+        if (nextStartPos == std::string::npos) {
+            naluSize = data.size() - naluStart;
+        } else {
+            naluSize = nextStartPos - naluStart;
+        }
+
+        while (naluSize > 0 && data[naluStart + naluSize - 1] == 0x00) {
+            --naluSize;
+        }
+
+        if (naluSize > 0) {
+            naluType = data[naluStart] & 0x1f;
+
+            /*
+             * 一个新的 VCL NALU 到来时，前一个已含 VCL 的组合帧可以发送。
+             * 当前测试文件由 ffmpeg 生成，baseline 单 slice 场景下这个规则足够稳定。
+             */
+            if ((naluType == 1 || naluType == 5) && frameHasVcl) {
+                frames.push_back(frame);
+                frame.clear();
+                frameHasVcl = false;
+            }
+
+            appendLengthPrefixedNalu(frame, &data[naluStart], naluSize);
+            if (naluType == 1 || naluType == 5) {
+                frameHasVcl = true;
+            }
+        }
+
+        startPos = nextStartPos;
+    }
+
+    if (frameHasVcl && !frame.empty()) {
+        frames.push_back(frame);
+    }
+
+    return !frames.empty();
+}
+
+/* 加载单个 Annex-B H264 文件，并解析成 libdatachannel packetizer 需要的长度前缀帧。 */
+bool loadAnnexBFrames(const std::string &path, std::vector<rtc::binary> &frames)
+{
+    std::vector<uint8_t> data;
+
+    if (!readBinaryFile(path, data)) {
+        return false;
+    }
+
+    return parseAnnexBFrames(data, frames);
+}
+
+/*
+ * 停止当前会话的视频发送线程。
+ * WebSocket 断开、PeerConnection 关闭或重新建链时都要调用，避免后台线程继续访问旧 Track。
+ */
+void stopVideoSender(const std::shared_ptr<WsSession> &session)
+{
+    std::thread oldThread;
+
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->videoRunning = false;
+        if (session->videoThread.joinable()) {
+            if (session->videoThread.get_id() == std::this_thread::get_id()) {
+                session->videoThread.detach();
+            } else {
+                oldThread = std::move(session->videoThread);
+            }
+        }
+    }
+
+    if (oldThread.joinable()) {
+        oldThread.join();
+    }
+}
+
+/*
+ * 循环读取 H264 测试帧并送入 Track。
+ * 输入是单个 Annex-B .h264 裸流文件，启动发送线程时一次性解析成帧数组。
+ */
+void videoSenderLoop(std::weak_ptr<WsSession> weakSession)
+{
+    std::shared_ptr<WsSession> session;
+    std::shared_ptr<rtc::Track> track;
+    std::string filePath;
+    std::vector<rtc::binary> fileFrames;
+    uint32_t fps;
+    uint32_t index;
+    uint64_t sampleTimeUs;
+    uint64_t frameDurationUs;
+    rtc::binary sample;
+    bool running;
+    bool loadOk;
+
+    index = 0;
+    sampleTimeUs = 0;
+
+    session = weakSession.lock();
+    if (!session) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        filePath = session->h264FilePath;
+    }
+
+    if (filePath.empty()) {
+        std::cout << "[VIDEO] H264 file path is empty, video sender stopped" << std::endl;
+        return;
+    }
+
+    loadOk = loadAnnexBFrames(filePath, fileFrames);
+    if (!loadOk) {
+        std::cout << "[VIDEO] invalid Annex-B H264 file: " << filePath << std::endl;
+        return;
+    }
+    std::cout << "[VIDEO] loaded Annex-B H264 file frames=" << fileFrames.size()
+              << " path=" << filePath << std::endl;
+
+    while (true) {
+        session = weakSession.lock();
+        if (!session) {
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(session->mutex);
+            running = session->videoRunning;
+            track = session->videoTrack;
+            fps = session->videoFps;
+        }
+
+        if (!running || !track || track->isClosed()) {
+            return;
+        }
+        if (fps == 0) {
+            fps = 30;
+        }
+
+        frameDurationUs = 1000000ULL / fps;
+        if (fileFrames.empty()) {
+            break;
+        }
+        if (index >= fileFrames.size()) {
+            index = 0;
+        }
+        sample = fileFrames[index];
+
+        try {
+            track->sendFrame(sample, std::chrono::duration<double, std::micro>(sampleTimeUs));
+            std::cout << "[VIDEO] send frame index=" << index << " bytes=" << sample.size() << std::endl;
+        } catch (const std::exception &e) {
+            std::cout << "[VIDEO] send failed: " << e.what() << std::endl;
+            break;
+        }
+
+        ++index;
+        sampleTimeUs += frameDurationUs;
+        std::this_thread::sleep_for(std::chrono::microseconds(frameDurationUs));
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->videoRunning = false;
+    }
+}
+
+/*
+ * Track open 后启动 H264 样本发送。
+ * 为了保持测试简单，这里只允许每个会话一个视频发送线程。
+ */
+void startVideoSender(const std::shared_ptr<WsSession> &session)
+{
+    std::weak_ptr<WsSession> weakSession;
+
+    stopVideoSender(session);
+
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->videoRunning = true;
+    }
+
+    weakSession = session;
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->videoThread = std::thread(videoSenderLoop, weakSession);
+    }
+}
+
+/*
+ * 为当前 PeerConnection 添加 H264 sendonly Track。
+ * 这里只做文件样本推流验证，不接摄像头、不接 MPP 编码器。
+ */
+void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
+                       const std::shared_ptr<rtc::PeerConnection> &pc,
+                       const std::string &mid,
+                       uint8_t payloadType)
+{
+    rtc::Description::Video video;
+    std::shared_ptr<rtc::Track> track;
+    std::shared_ptr<rtc::RtpPacketizationConfig> rtpConfig;
+    std::shared_ptr<rtc::H264RtpPacketizer> packetizer;
+    std::shared_ptr<rtc::RtcpSrReporter> srReporter;
+    std::shared_ptr<rtc::RtcpNackResponder> nackResponder;
+    std::weak_ptr<WsSession> weakSession;
+    std::string cname;
+    std::string msid;
+    uint32_t ssrc;
+    int id;
+
+    ssrc = 1234;
+    id = session->id;
+    cname = "rkmedia-video-" + std::to_string(id);
+    msid = "rkmedia-stream";
+    video = rtc::Description::Video(mid, rtc::Description::Direction::SendOnly);
+    video.addH264Codec(payloadType);
+    video.addSSRC(ssrc, cname, msid, cname);
+
+    track = pc->addTrack(video);
+    rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(
+        ssrc, cname, payloadType, rtc::H264RtpPacketizer::ClockRate);
+    packetizer = std::make_shared<rtc::H264RtpPacketizer>(
+        rtc::NalUnit::Separator::Length, rtpConfig);
+    srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
+    nackResponder = std::make_shared<rtc::RtcpNackResponder>();
+
+    /*
+     * RTP packetizer 负责 H264 -> RTP。
+     * RTCP SR 给浏览器提供 RTP 时间戳和 NTP 时间的对应关系，NACK responder 用于响应丢包重传请求。
+     */
+    packetizer->addToChain(srReporter);
+    packetizer->addToChain(nackResponder);
+    track->setMediaHandler(packetizer);
+
+    {
+        std::lock_guard<std::mutex> lock(session->mutex);
+        session->videoTrack = track;
+    }
+
+    weakSession = session;
+    track->onOpen([weakSession, id]() {
+        std::shared_ptr<WsSession> session;
+
+        session = weakSession.lock();
+        if (!session) {
+            return;
+        }
+        std::cout << "[VIDEO] session " << id << " track open" << std::endl;
+        startVideoSender(session);
+    });
+
+    track->onClosed([weakSession, id]() {
+        std::shared_ptr<WsSession> session;
+
+        session = weakSession.lock();
+        std::cout << "[VIDEO] session " << id << " track closed" << std::endl;
+        if (session) {
+            stopVideoSender(session);
+        }
+    });
+
+    std::cout << "[VIDEO] session " << id << " add H264 track mid=" << mid
+              << " file=" << session->h264FilePath
+              << " fps=" << session->videoFps << std::endl;
+}
+
+/*
  * 为一个浏览器 WebSocket 会话创建 PeerConnection。
  * 这里集中注册 SDP、ICE、DataChannel 和状态回调。
  */
@@ -394,6 +930,8 @@ void handleOffer(const std::shared_ptr<WsSession> &session, const std::string &m
 {
     std::shared_ptr<rtc::PeerConnection> pc;
     std::string sdp;
+    std::string videoMid;
+    uint8_t videoPayloadType;
     std::unique_ptr<rtc::Description> offer;
 
     if (!jsonGetString(message, "sdp", sdp) && !jsonGetString(message, "description", sdp)) {
@@ -405,6 +943,17 @@ void handleOffer(const std::shared_ptr<WsSession> &session, const std::string &m
     {
         std::lock_guard<std::mutex> lock(session->mutex);
         session->pc = pc;
+    }
+
+    /*
+     * 浏览器勾选“接收视频”后，Offer 会带 m=video。
+     * 服务端在 setRemoteDescription 前添加本地 sendonly Track，让 Answer 能携带视频媒体能力。
+     */
+    if (offerHasVideo(sdp)) {
+        videoMid = getVideoMidFromOffer(sdp);
+        videoPayloadType = getH264PayloadTypeFromOffer(sdp);
+        std::cout << "[VIDEO] selected H264 payload type=" << static_cast<int>(videoPayloadType) << std::endl;
+        addH264VideoTrack(session, pc, videoMid, videoPayloadType);
     }
 
     offer.reset(new rtc::Description(sdp, "offer"));
@@ -485,6 +1034,7 @@ void bindWebSocket(const std::shared_ptr<WsSession> &session)
 
     ws->onClosed([weakSession, id]() {
         std::shared_ptr<WsSession> session;
+        std::shared_ptr<rtc::PeerConnection> pc;
 
         session = weakSession.lock();
         std::cout << "[WS] session " << id << " closed" << std::endl;
@@ -492,13 +1042,16 @@ void bindWebSocket(const std::shared_ptr<WsSession> &session)
             return;
         }
 
+        stopVideoSender(session);
         {
             std::lock_guard<std::mutex> lock(session->mutex);
-            if (session->pc) {
-                session->pc->close();
-            }
+            pc = session->pc;
             session->dc.reset();
+            session->videoTrack.reset();
             session->pc.reset();
+        }
+        if (pc) {
+            pc->close();
         }
 
         {
@@ -522,11 +1075,50 @@ void bindWebSocket(const std::shared_ptr<WsSession> &session)
     });
 }
 
+/* 退出进程前清理所有仍在线的测试会话。 */
+void closeAllSessions()
+{
+    std::vector<std::shared_ptr<WsSession>> sessions;
+    std::shared_ptr<WsSession> session;
+    std::shared_ptr<rtc::PeerConnection> pc;
+    std::shared_ptr<rtc::WebSocket> ws;
+    std::map<int, std::shared_ptr<WsSession>>::iterator iter;
+    size_t i;
+
+    {
+        std::lock_guard<std::mutex> lock(g_sessions_mutex);
+        for (iter = g_sessions.begin(); iter != g_sessions.end(); ++iter) {
+            sessions.push_back(iter->second);
+        }
+        g_sessions.clear();
+    }
+
+    for (i = 0; i < sessions.size(); ++i) {
+        session = sessions[i];
+        stopVideoSender(session);
+        {
+            std::lock_guard<std::mutex> lock(session->mutex);
+            pc = session->pc;
+            ws = session->ws;
+            session->dc.reset();
+            session->videoTrack.reset();
+            session->pc.reset();
+            session->ws.reset();
+        }
+        if (pc) {
+            pc->close();
+        }
+        if (ws) {
+            ws->close();
+        }
+    }
+}
+
 /* 打印命令行用法。 */
 void printUsage(const char *program)
 {
-    std::cout << "Usage: " << program << " [port] [bind_address]" << std::endl;
-    std::cout << "Default: " << program << " 8000 0.0.0.0" << std::endl;
+    std::cout << "Usage: " << program << " [port] [bind_address] [h264_file] [fps]" << std::endl;
+    std::cout << "Default: " << program << " 8000 0.0.0.0 \"\" 30" << std::endl;
 }
 
 } // namespace
@@ -537,9 +1129,11 @@ int main(int argc, char **argv)
     std::shared_ptr<rtc::WebSocketServer> server;
     uint16_t port;
     std::string bindAddress;
+    int fps;
 
     port = 8000;
     bindAddress = "0.0.0.0";
+    fps = 30;
 
     if (argc > 1) {
         if (std::string(argv[1]) == "-h" || std::string(argv[1]) == "--help") {
@@ -550,6 +1144,15 @@ int main(int argc, char **argv)
     }
     if (argc > 2) {
         bindAddress = argv[2];
+    }
+    if (argc > 3) {
+        g_h264_file_path = argv[3];
+    }
+    if (argc > 4) {
+        fps = std::stoi(argv[4]);
+        if (fps > 0) {
+            g_video_fps = static_cast<uint32_t>(fps);
+        }
     }
 
     try {
@@ -573,6 +1176,8 @@ int main(int argc, char **argv)
             session = std::make_shared<WsSession>();
             session->id = id;
             session->ws = ws;
+            session->h264FilePath = g_h264_file_path;
+            session->videoFps = g_video_fps;
 
             {
                 std::lock_guard<std::mutex> lock(g_sessions_mutex);
@@ -595,15 +1200,15 @@ int main(int argc, char **argv)
                   << bindAddress << ":" << server->port() << std::endl;
         std::cout << "[INFO] browser url example: ws://" << bindAddress
                   << ":" << server->port() << "/browser" << std::endl;
+        std::cout << "[INFO] H264 file: "
+                  << (g_h264_file_path.empty() ? "(disabled)" : g_h264_file_path)
+                  << ", fps=" << g_video_fps << std::endl;
         std::cout << "[INFO] press ENTER to exit" << std::endl;
         std::cin.get();
 
         /* 退出时先停止监听，再清理所有仍在线的测试会话。 */
         server->stop();
-        {
-            std::lock_guard<std::mutex> lock(g_sessions_mutex);
-            g_sessions.clear();
-        }
+        closeAllSessions();
         rtc::Cleanup().wait();
         return 0;
     } catch (const std::exception &e) {

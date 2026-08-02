@@ -47,7 +47,7 @@ if(BUILD_TARGET STREQUAL "webrtc_ws_server_test" OR BUILD_TARGET STREQUAL "all")
         pthread
     )
     target_compile_definitions(webrtc_ws_server_test PRIVATE
-        RTC_ENABLE_MEDIA=0
+        RTC_ENABLE_MEDIA=1
         RTC_ENABLE_WEBSOCKET=1
     )
     target_compile_features(webrtc_ws_server_test PRIVATE cxx_std_17)

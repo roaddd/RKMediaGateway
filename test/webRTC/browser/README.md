@@ -7,7 +7,7 @@
 - 浏览器端 Offer 生成。
 - Answer / ICE candidate 处理。
 - DataChannel IPC 消息收发。
-- 后续视频 Track 接收预留。
+- 可选视频 Track 接收预留。
 
 启动静态页面：
 
@@ -40,6 +40,10 @@ DataChannel=open
 IPC 日志里能看到 ping/pong
 ```
 
+默认不要勾选“接收视频”。默认模式只生成 DataChannel Offer，适合验证第一阶段 IPC 通路。
+
+后续接 H264 Track 时再勾选“接收视频”，浏览器 Offer 才会包含 `m=video` 和 `recvonly`。
+
 设备端测试服务器：
 
 ```bash
@@ -55,3 +59,12 @@ ws://设备IP:8000/browser
 ```
 
 当前设备端测试服务器直接处理浏览器发来的 `offer` 和 `candidate`，不需要额外的 Python/Node 信令转发服务器。
+
+H264 单文件视频测试：
+
+```bash
+./build/output/webrtc_ws_server_test 8000 0.0.0.0 /path/to/test_720p_30fps_baseline.h264 30
+```
+
+H264 文件需要是 Annex-B 裸流格式，也就是 ffmpeg `-f h264` 生成的 `00 00 00 01` 起始码格式。
+启动后在浏览器页面勾选“接收视频”，再点击开始连接。浏览器 Offer 会携带 `m=video`，设备端会把单个 H264 文件解析成帧，Answer 添加 H264 sendonly Track，并通过 WebRTC RTP 通道循环发送给浏览器。

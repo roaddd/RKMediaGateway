@@ -47,7 +47,8 @@ body {
 }
 
 .actions {
-    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    grid-template-columns: minmax(120px, 160px) repeat(4, minmax(120px, 1fr));
+    align-items: center;
 }
 
 .status-grid {
@@ -81,12 +82,31 @@ button {
     font: inherit;
 }
 
+input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    margin: 0;
+}
+
 input {
     width: 100%;
     border: 1px solid var(--line);
     padding: 0 10px;
     color: var(--text);
     background: #fff;
+}
+
+.check-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 36px;
+    color: var(--text);
+    user-select: none;
+}
+
+.check-field span {
+    font-size: 14px;
 }
 
 button {

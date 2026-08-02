@@ -6,6 +6,8 @@
 #   ./build.sh rtsp_gateway Release
 #   ./build.sh dual_output_test Release
 #   ./build.sh gb28181_device Release
+#   ./build.sh webrtc_peerconnection_test Release
+#   ./build.sh webrtc_ws_server_test Release
 #   ./build.sh all Release
 #   ./build.sh clean
 
@@ -68,4 +70,4 @@ fi
 
 echo -e "${GREEN}=== Build succeeded ===${NC}"
 echo "Artifacts: ${BUILD_DIR}"
-ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|rtsp_gateway|dual_output_test|gb28181_device"
+ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|rtsp_gateway|dual_output_test|gb28181_device|webrtc_peerconnection_test|webrtc_ws_server_test"
