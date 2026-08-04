@@ -838,6 +838,7 @@ static int gateway_shell_get_config(void *user_data, const char *input, char *ou
         debug_command_reply_append(reply, &offset, "stream%d_enable_rtsp=%d\n", stream_idx, stream->enable_rtsp);
         debug_command_reply_append(reply, &offset, "stream%d_enable_rtmp=%d\n", stream_idx, stream->enable_rtmp);
         debug_command_reply_append(reply, &offset, "stream%d_enable_gb28181=%d\n", stream_idx, stream->enable_gb28181);
+        debug_command_reply_append(reply, &offset, "stream%d_enable_webrtc=%d\n", stream_idx, stream->enable_webrtc);
 
         snprintf(prefix, sizeof(prefix), "stream%d_dynamic_low", stream_idx);
         gateway_debug_append_encode_params(reply, &offset, prefix, &stream->dynamic_profiles.low_light);
@@ -858,6 +859,7 @@ static int gateway_shell_get_config(void *user_data, const char *input, char *ou
     debug_command_reply_append(reply, &offset, "output_enable_rtsp=%d\n", cfg->output.switches.enable_rtsp);
     debug_command_reply_append(reply, &offset, "output_enable_rtmp=%d\n", cfg->output.switches.enable_rtmp);
     debug_command_reply_append(reply, &offset, "output_enable_gb28181=%d\n", cfg->output.switches.enable_gb28181);
+    debug_command_reply_append(reply, &offset, "output_enable_webrtc=%d\n", cfg->output.switches.enable_webrtc);
     gateway_debug_append_rtsp_config(reply, &offset, "output_rtsp", &cfg->output.rtsp);
     gateway_debug_append_rtmp_config(reply, &offset, "output_rtmp", &cfg->output.rtmp);
     gateway_debug_append_gb28181_config(reply, &offset, "output_gb28181", &cfg->output.gb28181);
@@ -1479,7 +1481,6 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
 
     return 0;
 }
-
 
 
 

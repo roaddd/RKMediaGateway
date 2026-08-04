@@ -7,6 +7,7 @@
 #include "rtmp/inc/rtmpOutput.h"
 #include "rtsp/inc/rtspOutput.h"
 #include "util.h"
+#include "webRTC/inc/webRTCOutput.h"
 
 #include <inttypes.h>
 #include <stdio.h>
@@ -368,6 +369,8 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config)
         return media_output_setup_rtmp(output, &config->protocol.rtmp);
     case MEDIA_OUTPUT_TYPE_GB28181:
         return media_output_setup_gb28181(output, &config->protocol.gb28181);
+    case MEDIA_OUTPUT_TYPE_WEBRTC:
+        return media_output_setup_webrtc(output, &config->protocol.webrtc);
     default:
         LOG_ERROR("media_output_setup failed: unknown type=%d", config->type);
         return MEDIA_ERR_UNSUPPORTED;

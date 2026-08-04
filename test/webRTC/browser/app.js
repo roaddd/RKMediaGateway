@@ -240,7 +240,8 @@
 
         if (receiveVideo) {
             peer.addTransceiver("video", { direction: "recvonly" });
-            log("已启用视频接收，Offer 将包含 video recvonly m-line");
+            peer.addTransceiver("audio", { direction: "recvonly" });
+            log("已启用音视频接收，Offer 将包含 video/audio recvonly m-line");
         } else {
             log("当前为纯 DataChannel 模式，Offer 不包含视频 m-line");
         }

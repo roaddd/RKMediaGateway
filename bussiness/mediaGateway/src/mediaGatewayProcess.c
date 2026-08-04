@@ -729,7 +729,8 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
             continue;
         if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTSP &&
             ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
-            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181)
+            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181 &&
+            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_WEBRTC)
         {
             continue;
         }

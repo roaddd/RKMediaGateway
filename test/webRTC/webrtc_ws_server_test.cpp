@@ -569,7 +569,6 @@ bool parseAnnexBFrames(const std::vector<uint8_t> &data, std::vector<rtc::binary
         } else {
             naluSize = nextStartPos - naluStart;
         }
-
         while (naluSize > 0 && data[naluStart + naluSize - 1] == 0x00) {
             --naluSize;
         }
@@ -643,6 +642,10 @@ void stopVideoSender(const std::shared_ptr<WsSession> &session)
 /*
  * 循环读取 H264 测试帧并送入 Track。
  * 输入是单个 Annex-B .h264 裸流文件，启动发送线程时一次性解析成帧数组。
+ *
+ * 调用时机：
+ * - 只由 Track 的 onOpen() 回调启动。
+ * - 说明 WebRTC 媒体通道已经就绪，可以开始调用 sendFrame()。
  */
 void videoSenderLoop(std::weak_ptr<WsSession> weakSession)
 {
@@ -676,6 +679,10 @@ void videoSenderLoop(std::weak_ptr<WsSession> weakSession)
         return;
     }
 
+    /*
+     * 单个 H264 裸流文件会先完整读入并按 Annex-B 起始码切帧。
+     * 测试程序不做实时文件读取，避免磁盘 IO 干扰 RTP 发送节奏。
+     */
     loadOk = loadAnnexBFrames(filePath, fileFrames);
     if (!loadOk) {
         std::cout << "[VIDEO] invalid Annex-B H264 file: " << filePath << std::endl;
@@ -714,6 +721,10 @@ void videoSenderLoop(std::weak_ptr<WsSession> weakSession)
         sample = fileFrames[index];
 
         try {
+            /*
+             * sendFrame() 的第二个参数是该帧的媒体时间。
+             * H264 RTP packetizer 会根据 90000Hz 时钟把它转换成 RTP timestamp。
+             */
             track->sendFrame(sample, std::chrono::duration<double, std::micro>(sampleTimeUs));
             std::cout << "[VIDEO] send frame index=" << index << " bytes=" << sample.size() << std::endl;
         } catch (const std::exception &e) {
@@ -733,8 +744,12 @@ void videoSenderLoop(std::weak_ptr<WsSession> weakSession)
 }
 
 /*
- * Track open 后启动 H264 样本发送。
+ * Track open 后启动 H264 单文件发送。
  * 为了保持测试简单，这里只允许每个会话一个视频发送线程。
+ *
+ * 调用时机：
+ * - addH264VideoTrack() 注册的 track->onOpen() 回调中调用。
+ * - 重新开始前先停止旧线程，避免同一个 session 同时存在两个发送线程。
  */
 void startVideoSender(const std::shared_ptr<WsSession> &session)
 {
@@ -757,6 +772,15 @@ void startVideoSender(const std::shared_ptr<WsSession> &session)
 /*
  * 为当前 PeerConnection 添加 H264 sendonly Track。
  * 这里只做文件样本推流验证，不接摄像头、不接 MPP 编码器。
+ *
+ * 调用时机：
+ * - 浏览器 Offer 中包含 m=video 时调用。
+ * - 必须在 setRemoteDescription(offer) / setLocalDescription(answer) 前调用，
+ *   这样 libdatachannel 生成 Answer SDP 时才能把这条视频 Track 写进去。
+ *
+ * 数据职责：
+ * - 本函数只负责建立 WebRTC 视频发送通道和 RTP/RTCP 处理链。
+ * - H264 文件读取、Annex-B 分帧和循环发送由 videoSenderLoop() 完成。
  */
 void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
                        const std::shared_ptr<rtc::PeerConnection> &pc,
@@ -779,13 +803,47 @@ void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
     id = session->id;
     cname = "rkmedia-video-" + std::to_string(id);
     msid = "rkmedia-stream";
+
+    /*
+     * 构造本端视频媒体描述。
+     * mid 来自浏览器 Offer 的 video m-line，Answer 中必须保持对应，浏览器才能把 RTP 流匹配到正确的 receiver。
+     * Direction::SendOnly 表示设备端只发送视频，浏览器端只接收视频。
+     */
     video = rtc::Description::Video(mid, rtc::Description::Direction::SendOnly);
+
+    /*
+     * payloadType 必须使用浏览器 Offer 里协商出的 H264 PT。
+     * 不能固定写 96，因为浏览器经常把 96 分配给 VP8，H264 可能是 102/106/127 等。
+     */
     video.addH264Codec(payloadType);
+
+    /*
+     * SSRC 是这一路 RTP 视频流的标识。
+     * cname/msid/trackId 会进入 SDP/RTCP，用于浏览器侧识别媒体流和 Track。
+     */
     video.addSSRC(ssrc, cname, msid, cname);
 
+    /*
+     * addTrack() 把这条视频 Track 加到 PeerConnection。
+     * 这一步不会立刻开始发包，只是让后续 Answer SDP 具备 video sendonly 能力。
+     */
     track = pc->addTrack(video);
+
+    /*
+     * RTP 打包配置：
+     * - ssrc：RTP 流标识。
+     * - cname：RTCP 同步名。
+     * - payloadType：SDP 协商出的 H264 PT。
+     * - ClockRate：H264 RTP 固定使用 90000Hz 时钟。
+     */
     rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(
         ssrc, cname, payloadType, rtc::H264RtpPacketizer::ClockRate);
+
+    /*
+     * H264RtpPacketizer 负责把一帧 H264 数据拆成 RTP 包。
+     * Separator::Length 表示输入帧必须是“4 字节长度 + NALU”的格式，
+     * 所以前面的 Annex-B 裸流解析逻辑会把 00 00 00 01 起始码转换成长度前缀。
+     */
     packetizer = std::make_shared<rtc::H264RtpPacketizer>(
         rtc::NalUnit::Separator::Length, rtpConfig);
     srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
@@ -797,6 +855,12 @@ void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
      */
     packetizer->addToChain(srReporter);
     packetizer->addToChain(nackResponder);
+
+    /*
+     * 将 RTP/RTCP 处理链绑定到 Track。
+     * 后续 videoSenderLoop() 调用 track->sendFrame() 时，数据会先经过 packetizer，
+     * 再由 libdatachannel 走 SRTP/UDP 发给浏览器。
+     */
     track->setMediaHandler(packetizer);
 
     {
@@ -805,6 +869,15 @@ void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
     }
 
     weakSession = session;
+
+    /*
+     * onOpen() 调用时机：
+     * - Answer 已生成并发给浏览器。
+     * - 浏览器 setRemoteDescription(answer) 后，ICE/DTLS/SRTP 等底层传输完成。
+     * - Track 进入可发送状态。
+     *
+     * 因此不要在 addTrack() 后立刻发送 H264。应等待 onOpen()，否则早期帧可能因为通道未就绪被丢弃。
+     */
     track->onOpen([weakSession, id]() {
         std::shared_ptr<WsSession> session;
 
@@ -816,6 +889,14 @@ void addH264VideoTrack(const std::shared_ptr<WsSession> &session,
         startVideoSender(session);
     });
 
+    /*
+     * onClosed() 调用时机：
+     * - 浏览器关闭 PeerConnection 或页面断开。
+     * - ICE/DTLS 失败或服务端主动关闭 PeerConnection。
+     * - WebSocket 会话断开后清理 PeerConnection。
+     *
+     * 这里必须停止发送线程，避免线程继续对已经关闭的 Track 调用 sendFrame()。
+     */
     track->onClosed([weakSession, id]() {
         std::shared_ptr<WsSession> session;
 

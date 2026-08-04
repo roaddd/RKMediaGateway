@@ -1,5 +1,6 @@
 ﻿#include "defValue.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <map>
@@ -225,6 +226,7 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "ENABLE_RTSP").c_str(), 1);
     set_value_int((p + "ENABLE_RTMP").c_str(), 0);
     set_value_int((p + "ENABLE_GB28181").c_str(), is_main ? 1 : 0);
+    set_value_int((p + "ENABLE_WEBRTC").c_str(), 0);
 
     set_value((p + "RTSP_NAME").c_str(), is_main ? "rtsp-main" : "rtsp-sub");
     set_value((p + "RTSP_SESSION_NAME").c_str(), is_main ? "live_main" : "live_sub");
@@ -272,6 +274,12 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "GB28181_CHANNEL_ID").c_str(), "34020000001320000001");
     set_value((p + "GB28181_USER_AGENT").c_str(), "RKMediaGateway-GB28181/1.0");
     set_value_int((p + "GB28181_QUEUE_CAPACITY").c_str(), 64);
+
+    set_value((p + "WEBRTC_NAME").c_str(), is_main ? "webrtc-main" : "webrtc-sub");
+    set_value((p + "WEBRTC_BIND_ADDRESS").c_str(), "0.0.0.0");
+    set_value_int((p + "WEBRTC_PORT").c_str(), is_main ? 8000 : 8001);
+    set_value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str(), 32);
+    set_value_int((p + "WEBRTC_VIDEO_FPS").c_str(), fps);
 }
 
 static void set_audio_defaults(void) {
@@ -298,6 +306,7 @@ static void load_defaults(void) {
     set_value_int("GATEWAY_ENABLE_RTSP", 1);
     set_value_int("GATEWAY_ENABLE_RTMP", 0);
     set_value_int("GATEWAY_ENABLE_GB28181", 1);
+    set_value_int("GATEWAY_ENABLE_WEBRTC", 0);
     set_value_int("GATEWAY_FPS", 30);
     set_value_int("GATEWAY_BITRATE", 2 * 1024 * 1024);
     set_value_int("GATEWAY_GOP", 30);
@@ -599,6 +608,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->enable_rtsp = value_int((p + "ENABLE_RTSP").c_str());
     stream->enable_rtmp = value_int((p + "ENABLE_RTMP").c_str());
     stream->enable_gb28181 = value_int((p + "ENABLE_GB28181").c_str());
+    stream->enable_webrtc = value_int((p + "ENABLE_WEBRTC").c_str());
 
     stream->rtsp.name = value_string((p + "RTSP_NAME").c_str());
     stream->rtsp.session_name = value_string((p + "RTSP_SESSION_NAME").c_str());
@@ -646,6 +656,14 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->gb28181.channel_id = value_string((p + "GB28181_CHANNEL_ID").c_str());
     stream->gb28181.user_agent = value_string((p + "GB28181_USER_AGENT").c_str());
     stream->gb28181.queue_capacity = value_int((p + "GB28181_QUEUE_CAPACITY").c_str());
+
+    snprintf(stream->webrtc.name, sizeof(stream->webrtc.name), "%s",
+             value_string((p + "WEBRTC_NAME").c_str()));
+    snprintf(stream->webrtc.bind_address, sizeof(stream->webrtc.bind_address), "%s",
+             value_string((p + "WEBRTC_BIND_ADDRESS").c_str()));
+    stream->webrtc.port = value_int((p + "WEBRTC_PORT").c_str());
+    stream->webrtc.queue_capacity = value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str());
+    stream->webrtc.video_fps = value_int((p + "WEBRTC_VIDEO_FPS").c_str());
 }
 
 int def_value_init(const char *config_path) {
@@ -666,6 +684,7 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     config->output.switches.enable_rtsp = value_int("GATEWAY_ENABLE_RTSP");
     config->output.switches.enable_rtmp = value_int("GATEWAY_ENABLE_RTMP");
     config->output.switches.enable_gb28181 = value_int("GATEWAY_ENABLE_GB28181");
+    config->output.switches.enable_webrtc = value_int("GATEWAY_ENABLE_WEBRTC");
     config->video.encode.fps = value_int("GATEWAY_FPS");
     config->video.encode.bitrate = value_int("GATEWAY_BITRATE");
     config->video.encode.gop = value_int("GATEWAY_GOP");
@@ -769,4 +788,3 @@ int def_value_loaded(void) {
 const char *def_value_source_path(void) {
     return g_source_path.c_str();
 }
-

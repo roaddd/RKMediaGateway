@@ -17,7 +17,8 @@ extern "C" {
 typedef enum {
     MEDIA_OUTPUT_TYPE_RTSP = 0,    /* RTSP 服务端输出。 */
     MEDIA_OUTPUT_TYPE_RTMP = 1,    /* RTMP 推流输出。 */
-    MEDIA_OUTPUT_TYPE_GB28181 = 2  /* GB28181/SIP+RTP 设备输出。 */
+    MEDIA_OUTPUT_TYPE_GB28181 = 2, /* GB28181/SIP+RTP 设备输出。 */
+    MEDIA_OUTPUT_TYPE_WEBRTC = 3   /* WebRTC 浏览器输出。 */
 } MediaOutputType;
 
 /*
@@ -99,6 +100,20 @@ typedef struct {
 } MediaOutputGb28181Config;
 
 /**
+ * @description: WebRTC 输出配置。
+ */
+typedef struct {
+    char name[64];         /* 输出通道名称，用于日志和统计。 */
+    char bind_address[64]; /* WebSocket 信令监听地址，例如 0.0.0.0。 */
+    int port;              /* WebSocket 信令监听端口。 */
+    int queue_capacity;    /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
+    int video_fps;         /* 视频帧率，用于缺省 RTP 媒体时间。 */
+    MediaCodecType audio_codec; /* WebRTC 音频编码，当前支持 G711A/G711U。 */
+    int audio_sample_rate;      /* WebRTC 音频采样率，G711 固定 8000Hz。 */
+    int audio_channels;         /* WebRTC 音频声道数，G711 当前只支持单声道。 */
+} MediaOutputWebRtcConfig;
+
+/**
  * @description: 输出通道创建配置，按 type 选择对应协议配置块。
  */
 typedef struct {
@@ -107,6 +122,7 @@ typedef struct {
         MediaOutputRtspConfig rtsp;
         MediaOutputRtmpConfig rtmp;
         MediaOutputGb28181Config gb28181;
+        MediaOutputWebRtcConfig webrtc;
     } protocol;
 } MediaOutputConfig;
 

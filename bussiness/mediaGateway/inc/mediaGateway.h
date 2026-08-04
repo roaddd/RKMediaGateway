@@ -188,15 +188,18 @@ typedef struct {
     int enable_rtsp;                 /* 该码流是否启用 RTSP 输出。 */
     int enable_rtmp;                 /* 该码流是否启用 RTMP 输出。 */
     int enable_gb28181;              /* 该码流是否启用 GB28181 输出。 */
+    int enable_webrtc;               /* 该码流是否启用 WebRTC 浏览器输出。 */
     MediaOutputRtspConfig rtsp;      /* 该码流 RTSP 输出配置。 */
     MediaOutputRtmpConfig rtmp;      /* 该码流 RTMP 输出配置。 */
     MediaOutputGb28181Config gb28181;/* 该码流 GB28181 输出配置。 */
+    MediaOutputWebRtcConfig webrtc;  /* 该码流 WebRTC 输出配置。 */
 } MediaGatewayStreamConfig;
 
 typedef struct {
     int enable_rtsp;                 /* 是否启用 RTSP 输出链路。 */
     int enable_rtmp;                 /* 是否启用 RTMP 输出链路。 */
     int enable_gb28181;              /* 是否启用 GB28181 设备输出链路。 */
+    int enable_webrtc;               /* 是否启用 WebRTC 浏览器输出链路。 */
 } MediaGatewayOutputSwitchConfig;
 
 typedef struct {
@@ -266,6 +269,7 @@ typedef struct {
     MediaOutputRtspConfig rtsp;      /* RTSP 协议专用配置块。 */
     MediaOutputRtmpConfig rtmp;      /* RTMP 协议专用配置块。 */
     MediaOutputGb28181Config gb28181;/* GB28181/SIP+RTP 协议专用配置块。 */
+    MediaOutputWebRtcConfig webrtc;  /* WebRTC 协议专用配置块。 */
 } MediaGatewayOutputConfig;
 
 typedef struct {

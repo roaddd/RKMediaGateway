@@ -56,7 +56,7 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
     for (int i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
         const MediaGatewayStreamConfig *s = &config->video.streams[i];
-        LOG_INFO("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d) rtsp_immediate_sps_pps=%d",
+        LOG_INFO("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d webrtc=%d) rtsp_immediate_sps_pps=%d",
                  i,
                  s->name ? s->name : "unknown",
                  s->enabled,
@@ -69,6 +69,7 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
                  s->enable_rtsp,
                  s->enable_rtmp,
                  s->enable_gb28181,
+                 s->enable_webrtc,
                  s->rtsp.immediate_sps_pps_on_new_client);
     }
 }
@@ -126,6 +127,5 @@ int main(int argc, char **argv)
         debug_command_server_deinit();
     return ret;
 }
-
 
 

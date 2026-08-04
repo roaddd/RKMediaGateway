@@ -798,6 +798,19 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
     dst->gb28181.user_agent = safe_str(dst->gb28181.user_agent, "RKMediaGateway-GB28181/1.0");
     if (dst->gb28181.queue_capacity <= 0)
         dst->gb28181.queue_capacity = 64;
+
+    snprintf(dst->webrtc.name, sizeof(dst->webrtc.name), "%s", (stream_idx == 0) ? "webrtc-main" : "webrtc-sub");
+    if (src && src->webrtc.name[0] != '\0')
+        snprintf(dst->webrtc.name, sizeof(dst->webrtc.name), "%s", src->webrtc.name);
+    snprintf(dst->webrtc.bind_address, sizeof(dst->webrtc.bind_address), "%s", "0.0.0.0");
+    if (src && src->webrtc.bind_address[0] != '\0')
+        snprintf(dst->webrtc.bind_address, sizeof(dst->webrtc.bind_address), "%s", src->webrtc.bind_address);
+    if (dst->webrtc.port <= 0)
+        dst->webrtc.port = (stream_idx == 0) ? 8000 : 8001;
+    if (dst->webrtc.queue_capacity <= 0)
+        dst->webrtc.queue_capacity = 32;
+    if (dst->webrtc.video_fps <= 0)
+        dst->webrtc.video_fps = dst->fps;
 }
 
 /**
@@ -906,6 +919,26 @@ static int validate_raw_gb28181_config(const MediaOutputGb28181Config *cfg, int 
     return 0;
 }
 
+static int validate_raw_webrtc_config(const MediaOutputWebRtcConfig *cfg, int stream_idx)
+{
+    if (cfg->name[0] == '\0' ||
+        cfg->bind_address[0] == '\0' ||
+        require_positive_int("streams[].webrtc.port", cfg->port) != 0 ||
+        require_positive_int("streams[].webrtc.queue_capacity", cfg->queue_capacity) != 0 ||
+        require_positive_int("streams[].webrtc.video_fps", cfg->video_fps) != 0)
+    {
+        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d name=%s bind=%s port=%d queue=%d fps=%d",
+                  stream_idx,
+                  cfg->name,
+                  cfg->bind_address,
+                  cfg->port,
+                  cfg->queue_capacity,
+                  cfg->video_fps);
+        return -1;
+    }
+    return 0;
+}
+
 static int validate_raw_stream_config(const MediaGatewayStreamConfig *cfg,
                                       int stream_idx,
                                       int capture_source_count)
@@ -943,6 +976,8 @@ static int validate_raw_stream_config(const MediaGatewayStreamConfig *cfg,
     if (cfg->enable_rtmp && validate_raw_rtmp_config(&cfg->rtmp, stream_idx) != 0)
         return -1;
     if (cfg->enable_gb28181 && validate_raw_gb28181_config(&cfg->gb28181, stream_idx) != 0)
+        return -1;
+    if (cfg->enable_webrtc && validate_raw_webrtc_config(&cfg->webrtc, stream_idx) != 0)
         return -1;
     return 0;
 }
@@ -1099,6 +1134,7 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
     dst->output.switches.enable_rtsp = dst->output.switches.enable_rtsp ? 1 : 0;
     dst->output.switches.enable_rtmp = dst->output.switches.enable_rtmp ? 1 : 0;
     dst->output.switches.enable_gb28181 = dst->output.switches.enable_gb28181 ? 1 : 0;
+    dst->output.switches.enable_webrtc = dst->output.switches.enable_webrtc ? 1 : 0;
     if (dst->video.encode.fps <= 0)
         dst->video.encode.fps = DEFAULT_ENCODE_FPS;
     if (dst->video.encode.bitrate <= 0)
@@ -1314,6 +1350,40 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         }
         ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->gb28181_output_index[stream_idx] = ctx->output_count;
+        ctx->output_count++;
+    }
+    /* 该路流是否开启了 WebRTC */
+    if (s->enable_webrtc)
+    {
+        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: WebRTC output limit stream=%d count=%d max=%d",
+                      stream_idx,
+                      ctx->output_count,
+                      MEDIA_GATEWAY_MAX_OUTPUTS);
+            return -1;
+        }
+        memset(&output_config, 0, sizeof(output_config));
+        output_config.type = MEDIA_OUTPUT_TYPE_WEBRTC;
+        output_config.protocol.webrtc = s->webrtc;
+        if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
+        {
+            output_config.protocol.webrtc.audio_codec = ctx->config.audio.source.codec;
+            output_config.protocol.webrtc.audio_sample_rate = ctx->config.audio.source.sample_rate;
+            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.channels;
+        }
+        else
+        {
+            output_config.protocol.webrtc.audio_codec = MEDIA_CODEC_NONE;
+        }
+        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: setup WebRTC stream=%d name=%s",
+                      stream_idx,
+                      s->name ? s->name : "unknown");
+            return -1;
+        }
+        ctx->output_stream_index[ctx->output_count] = stream_idx;
         ctx->output_count++;
     }
     return 0;
