@@ -1,5 +1,6 @@
 #include "../inc/webRTCOutput.h"
 
+#include "../inc/webRTCDebug.h"
 #include "../inc/webrtcServer.h"
 
 #include <future>
@@ -24,6 +25,8 @@
 using rkmedia::webrtc::H264_FRAME_FORMAT_ANNEX_B;
 using rkmedia::webrtc::WebRtcServer;
 using rkmedia::webrtc::WebRtcServerConfig;
+using rkmedia::webrtc::web_rtc_debug_register_server;
+using rkmedia::webrtc::web_rtc_debug_unregister_server;
 using rkmedia::webrtc::WebRtcAudioCodec;
 using rkmedia::webrtc::WebRtcAudioFrame;
 using rkmedia::webrtc::WebRtcVideoFrame;
@@ -36,8 +39,8 @@ typedef struct {
     WebRtcServer *server;           /* C++ WebRTC 服务对象。 */
 } WebRtcOutputImpl;
 
-static std::mutex g_rtc_lifecycle_mutex;
-static int g_rtc_lifecycle_ref_count = 0;
+static std::mutex g_rtc_lifecycle_mutex; /* 保护 libdatachannel 全局生命周期引用计数。 */
+static int g_rtc_lifecycle_ref_count = 0; /* 当前持有 rtc::InitLogger/Preload 生命周期的输出数量。 */
 
 /* 安全复制字符串到固定长度缓冲区，保证以 '\0' 结束。 */
 static void copy_string_field(char *dst, size_t dst_size, const char *src)
@@ -190,6 +193,9 @@ static int webrtc_output_start(MediaOutput *output)
         webrtc_output_release_rtc();
         return MEDIA_ERR;
     }
+    if (web_rtc_debug_register_server(impl->server) != MEDIA_OK) {
+        LOG_WARN("[WEBRTC] debug command not registered name=%s", impl->config.name);
+    }
 
     return MEDIA_OK;
 }
@@ -265,6 +271,28 @@ static void webrtc_output_disconnect(MediaOutput *output)
     (void)output;
 }
 
+/*
+ * 将 WebRtcServer 合并后的 IDR 请求暴露给通用 mediaOutput 层。
+ * 真正调用 MPP 编码器由 mediaGateway 统一完成，WebRTC 模块不直接依赖编码器实现。
+ */
+int media_output_webrtc_consume_external_idr_request(MediaOutput *output)
+{
+    WebRtcOutputImpl *impl;
+
+    if (!output || output->type != MEDIA_OUTPUT_TYPE_WEBRTC || !output->impl) {
+        LOG_ERROR("[WEBRTC] consume IDR request failed: output=%p type=%d impl=%p",
+                  (void *)output,
+                  output ? output->type : -1,
+                  output ? output->impl : NULL);
+        return 0;
+    }
+    impl = (WebRtcOutputImpl *)output->impl;
+    if (!impl->server) {
+        return 0;
+    }
+    return impl->server->consumeVideoKeyframeRequest() ? 1 : 0;
+}
+
 /* 停止 WebRTC 输出服务并释放 C++ 对象。 */
 static void webrtc_output_stop(MediaOutput *output)
 {
@@ -279,6 +307,7 @@ static void webrtc_output_stop(MediaOutput *output)
 
     impl = (WebRtcOutputImpl *)output->impl;
     if (impl->server) {
+        web_rtc_debug_unregister_server(impl->server);
         impl->server->stop();
         delete impl->server;
         impl->server = NULL;

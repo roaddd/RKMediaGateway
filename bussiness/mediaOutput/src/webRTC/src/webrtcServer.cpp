@@ -9,6 +9,9 @@
 namespace rkmedia {
 namespace webrtc {
 
+/* PLI/FIR 触发的 IDR 最小间隔，兼顾关键帧恢复速度和编码器码率稳定性。 */
+static const std::chrono::milliseconds WEBRTC_PLI_IDR_MIN_INTERVAL(1000);
+
 WebRtcServer::WebRtcServer()
 {
     nextSessionId_ = 1;
@@ -30,6 +33,10 @@ bool WebRtcServer::start(const WebRtcServerConfig &config)
 
     config_ = config;
     try {
+        /* 目前每个输出通道都会创建一个webSocketServer和webRTCServer */
+        /**
+         * 后面做公网 WebSocketClient 注册模式，最好是一个统一信令层，而不是每个输出通道都自己起一个 server
+         */
         wsServer = std::make_shared<communication::WebSocketServer>();
     } catch (const std::exception &e) {
         LOG_ERROR("[WEBRTC] create websocket server failed: %s", e.what());
@@ -103,12 +110,17 @@ int WebRtcServer::sendVideoFrame(const WebRtcVideoFrame &frame)
             LOG_WARN("[WEBRTC] send video ignored: server not running");
             return 0;
         }
+        ++mediaCounters_.inputVideoFrames;
+        mediaCounters_.inputVideoBytes += frame.size;
         for (iter = sessions_.begin(); iter != sessions_.end(); ++iter) {
             sessions.push_back(iter->second);
         }
     }
 
     if (sessions.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        ++mediaCounters_.videoNoReadySession;
         LOG_DEBUG("[WEBRTC] send video ignored: no browser session");
         return 0;
     }
@@ -116,6 +128,14 @@ int WebRtcServer::sendVideoFrame(const WebRtcVideoFrame &frame)
     for (i = 0; i < sessions.size(); ++i) {
         if (sessions[i]->sendVideoFrame(frame)) {
             ++sentCount;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        mediaCounters_.videoBroadcastTargets += static_cast<uint64_t>(sentCount);
+        if (sentCount <= 0) {
+            ++mediaCounters_.videoNoReadySession;
         }
     }
 
@@ -141,12 +161,17 @@ int WebRtcServer::sendAudioFrame(const WebRtcAudioFrame &frame)
             LOG_WARN("[WEBRTC] send audio ignored: server not running");
             return 0;
         }
+        ++mediaCounters_.inputAudioFrames;
+        mediaCounters_.inputAudioBytes += frame.size;
         for (iter = sessions_.begin(); iter != sessions_.end(); ++iter) {
             sessions.push_back(iter->second);
         }
     }
 
     if (sessions.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        ++mediaCounters_.audioNoReadySession;
         LOG_DEBUG("[WEBRTC] send audio ignored: no browser session");
         return 0;
     }
@@ -154,6 +179,14 @@ int WebRtcServer::sendAudioFrame(const WebRtcAudioFrame &frame)
     for (i = 0; i < sessions.size(); ++i) {
         if (sessions[i]->sendAudioFrame(frame)) {
             ++sentCount;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        mediaCounters_.audioBroadcastTargets += static_cast<uint64_t>(sentCount);
+        if (sentCount <= 0) {
+            ++mediaCounters_.audioNoReadySession;
         }
     }
 
@@ -165,6 +198,92 @@ int WebRtcServer::sessionCount() const
     std::lock_guard<std::mutex> lock(mutex_);
 
     return static_cast<int>(sessions_.size());
+}
+
+/*
+ * 消费待发送给 MPP 编码器的一次性 IDR 请求。
+ * 新客户端请求会立即消费；PLI/FIR 若处于限频窗口，则保留为延迟请求，
+ * 到达最小间隔后由下一轮编码自动消费，保证恢复不会因单次 PLI 被永久忽略。
+ */
+bool WebRtcServer::consumeVideoKeyframeRequest()
+{
+    std::chrono::steady_clock::time_point now;
+    bool pliRequestDue;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    now = std::chrono::steady_clock::now();
+    /*
+     * pendingPliKeyframeRequest 只会在已有 IDR 请求时间且仍处于限频窗口时置位，
+     * 因此其为 true 时 hasLastVideoIdrRequestTime 必然为 true，可以直接比较时间间隔。
+     */
+    pliRequestDue = keyframeState_.pendingPliKeyframeRequest &&
+                    now - keyframeState_.lastVideoIdrRequestTime >= WEBRTC_PLI_IDR_MIN_INTERVAL;
+
+    /* 立即请求优先：新会话或未受限 PLI 都应在下一帧编码前直接请求 IDR。 */
+    if (keyframeState_.pendingVideoKeyframeRequest) {
+        keyframeState_.pendingVideoKeyframeRequest = false;
+        /* 即将生成的同一帧 IDR 同时满足此前延迟的 PLI，无需再次请求。 */
+        keyframeState_.pendingPliKeyframeRequest = false;
+        /* 限频基准取“实际交给 MPP 请求 IDR”的时刻，而不是收到 PLI 的时刻。 */
+        keyframeState_.lastVideoIdrRequestTime = now;
+        keyframeState_.hasLastVideoIdrRequestTime = true;
+        return true;
+    } else if (pliRequestDue) {
+        /* 限频窗口结束，消费合并后的一个 PLI 请求；多个 PLI 只产生一个 IDR。 */
+        keyframeState_.pendingPliKeyframeRequest = false;
+        keyframeState_.lastVideoIdrRequestTime = now;
+        keyframeState_.hasLastVideoIdrRequestTime = true;
+        return true;
+    }
+    return false;
+}
+
+/*
+ * 生成 WebRTC server 统计快照。
+ * 调用时机：shell 调试命令查询 WebRTC 状态时调用；先复制 session 指针，再逐个读取 session 快照，避免长时间持有 server 锁。
+ */
+void WebRtcServer::getStats(WebRtcServerStats &stats) const
+{
+    std::vector<std::shared_ptr<WebRtcSession>> sessions;
+    std::map<int, std::shared_ptr<WebRtcSession>>::const_iterator iter;
+    size_t i;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        stats.name = config_.name;
+        stats.bindAddress = config_.bindAddress;
+        stats.port = config_.port;
+        stats.running = running_;
+        stats.videoFps = config_.videoFps;
+        stats.audioCodec = config_.audioCodec;
+        stats.audioSampleRate = config_.audioSampleRate;
+        stats.audioChannels = config_.audioChannels;
+        stats.inputVideoFrames = mediaCounters_.inputVideoFrames;
+        stats.inputVideoBytes = mediaCounters_.inputVideoBytes;
+        stats.inputAudioFrames = mediaCounters_.inputAudioFrames;
+        stats.inputAudioBytes = mediaCounters_.inputAudioBytes;
+        stats.videoBroadcastTargets = mediaCounters_.videoBroadcastTargets;
+        stats.audioBroadcastTargets = mediaCounters_.audioBroadcastTargets;
+        stats.videoNoReadySession = mediaCounters_.videoNoReadySession;
+        stats.audioNoReadySession = mediaCounters_.audioNoReadySession;
+        stats.pendingVideoKeyframeRequest = keyframeState_.pendingVideoKeyframeRequest;
+        stats.pendingPliKeyframeRequest = keyframeState_.pendingPliKeyframeRequest;
+        stats.videoKeyframeRequests = keyframeState_.videoKeyframeRequests;
+        stats.videoPliReceived = keyframeState_.videoPliReceived;
+        stats.videoPliAccepted = keyframeState_.videoPliAccepted;
+        stats.videoPliDeferred = keyframeState_.videoPliDeferred;
+        stats.sessions.clear();
+
+        for (iter = sessions_.begin(); iter != sessions_.end(); ++iter) {
+            sessions.push_back(iter->second);
+        }
+    }
+
+    stats.sessions.resize(sessions.size());
+    for (i = 0; i < sessions.size(); ++i) {
+        sessions[i]->getStats(stats.sessions[i]);
+    }
 }
 
 /*
@@ -194,6 +313,9 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
             connection,
             [this](int sessionId) {
                 removeSession(sessionId);
+            },
+            [this](int sessionId, WebRtcKeyframeRequestReason reason) {
+                requestVideoKeyframe(sessionId, reason);
             });
         sessions_[id] = session;
     }
@@ -203,6 +325,73 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
              connection->remoteAddress().c_str(),
              connection->path().c_str());
     session->start();
+}
+
+/*
+ * 处理 WebRtcSession 的关键帧请求。
+ * 新 video Track 打开时立即请求 IDR，保证新浏览器不必等下一个 GOP；浏览器 PLI/FIR
+ * 则按 1 秒最小间隔限频。限频内的 PLI 不丢失，而是合并成一个延迟请求。
+ */
+void WebRtcServer::requestVideoKeyframe(int sessionId, WebRtcKeyframeRequestReason reason)
+{
+    std::chrono::steady_clock::time_point now;
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!running_) {
+        LOG_WARN("[WEBRTC] session=%d keyframe request ignored: server not running", sessionId);
+        return;
+    }
+
+    now = std::chrono::steady_clock::now();
+    switch (reason) {
+    case WEBRTC_KEYFRAME_REQUEST_PLI:
+        /*
+         * PLI/FIR 表示已建立会话的浏览器解码参考链丢失。
+         * 此类请求必须限频，避免网络异常时浏览器连续反馈造成 I 帧风暴。
+         */
+        ++keyframeState_.videoPliReceived;
+        if (keyframeState_.pendingVideoKeyframeRequest) {
+            /* 已有 IDR 会在下一帧编码前请求，本次 PLI 由该 IDR 一并满足。 */
+            ++keyframeState_.videoPliDeferred;
+            return;
+        }
+        if (keyframeState_.hasLastVideoIdrRequestTime &&
+            now - keyframeState_.lastVideoIdrRequestTime < WEBRTC_PLI_IDR_MIN_INTERVAL) {
+            /* 不立即再强制 I 帧，保留一个待执行标记；consume() 到时会自动触发。 */
+            keyframeState_.pendingPliKeyframeRequest = true;
+            ++keyframeState_.videoPliDeferred;
+            return;
+        }
+        keyframeState_.pendingVideoKeyframeRequest = true;
+        /* 当前不在限频窗口，PLI 可以直接驱动下一轮编码输出 IDR。 */
+        ++keyframeState_.videoKeyframeRequests;
+        ++keyframeState_.videoPliAccepted;
+        LOG_INFO("[WEBRTC] session=%d PLI received, request IDR", sessionId);
+        return;
+
+    case WEBRTC_KEYFRAME_REQUEST_NEW_SESSION:
+        /*
+         * 新 video Track 不能从当前 GOP 的 P/B 帧开始解码，必须尽快获得 IDR。
+         * 多个新会话共用同一个待请求 IDR；该 IDR 也能一并满足已延迟的 PLI。
+         */
+        if (keyframeState_.pendingVideoKeyframeRequest) {
+            /* 多个浏览器同时打开时复用同一个即将生成的 IDR，避免接入高峰产生 I 帧风暴。 */
+            return;
+        }
+        keyframeState_.pendingVideoKeyframeRequest = true;
+        /* 新客户端优先于此前的延迟 PLI，下一帧 IDR 可同时满足两种需求。 */
+        keyframeState_.pendingPliKeyframeRequest = false;
+        ++keyframeState_.videoKeyframeRequests;
+        LOG_INFO("[WEBRTC] session=%d video ready, request IDR", sessionId);
+        return;
+
+    default:
+        /* 防止后续扩展枚举但遗漏调度策略时，错误地按新会话路径请求 IDR。 */
+        LOG_ERROR("[WEBRTC] session=%d keyframe request ignored: unsupported reason=%d",
+                  sessionId,
+                  static_cast<int>(reason));
+        return;
+    }
 }
 
 /* 从会话表移除指定会话，浏览器断开或 PeerConnection 关闭后调用。 */

@@ -539,7 +539,9 @@ int media_output_consume_external_idr_request(MediaOutput *output)
         return media_output_rtsp_consume_external_idr_request(output);
     if (output->type == MEDIA_OUTPUT_TYPE_GB28181)
         return media_output_gb28181_consume_external_idr_request(output);
-    return MEDIA_OK;
+    if (output->type == MEDIA_OUTPUT_TYPE_WEBRTC)
+        return media_output_webrtc_consume_external_idr_request(output);
+    return 0;
 }
 
 /**

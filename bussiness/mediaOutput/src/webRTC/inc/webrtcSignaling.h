@@ -14,11 +14,11 @@ namespace webrtc {
  * 当前只覆盖浏览器测试页需要的 offer/answer/candidate/close 字段，不引入额外 JSON 库。
  */
 struct SignalingMessage {
-    std::string type;
-    std::string sdp;
-    std::string candidate;
-    std::string mid;
-    std::string cmd;
+    std::string type;      /* 信令类型，如 offer、answer、candidate 或 close。 */
+    std::string sdp;       /* offer/answer 携带的 SDP 内容。 */
+    std::string candidate; /* trickle ICE candidate 的文本描述。 */
+    std::string mid;       /* candidate 所属 SDP m-line 的 a=mid 值。 */
+    std::string cmd;       /* DataChannel IPC 命令，如 ping、get_status。 */
 };
 
 std::string signaling_json_escape(const std::string &value);

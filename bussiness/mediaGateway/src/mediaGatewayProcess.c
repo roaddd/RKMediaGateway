@@ -363,18 +363,19 @@ static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx)
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         return;
 
-    output_idx = ctx->gb28181_output_index[stream_idx];
-    if (output_idx >= 0 && output_idx < ctx->output_count)
+    /*
+     * 按码流遍历所有输出通道，而不是只检查 RTSP 和 GB28181。
+     * WebRTC 新 video Track 就绪后也会请求 IDR；统一扫描可避免
+     * 为每种新协议在 MediaGatewayCtx 中维护一套专用 output 索引。
+     */
+    for (output_idx = 0; output_idx < ctx->output_count; ++output_idx)
     {
-        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx]))
+        if (ctx->output_stream_index[output_idx] != stream_idx) {
+            continue;
+        }
+        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
             need_idr = 1;
-    }
-
-    output_idx = ctx->rtsp_output_index[stream_idx];
-    if (output_idx >= 0 && output_idx < ctx->output_count)
-    {
-        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx]))
-            need_idr = 1;
+        }
     }
 
     if (need_idr)
@@ -526,7 +527,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                                         dmabuf_fd,
                                                         dmabuf_size,
                                                         &dmabuf_direct_reason);
-
+    /* 如果有输出通道需要请求IDR帧，则通知编码器 */
     trigger_external_idr_if_needed(ctx, stream_idx);
 
     if (!state->dmabuf_direct_logged[stream_idx])
