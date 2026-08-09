@@ -115,6 +115,16 @@ struct WebRtcServerStats {
     uint64_t videoPliReceived;              /* 所有浏览器 session 收到的 PLI/FIR 总次数。 */
     uint64_t videoPliAccepted;              /* 未被限频、可立即触发 IDR 的 PLI/FIR 次数。 */
     uint64_t videoPliDeferred;              /* 因已有或限频 IDR 而合并/延迟的 PLI/FIR 次数。 */
+    bool hasLastVideoPliTime;               /* 是否已记录最近一次浏览器 PLI/FIR 到达时刻。 */
+    bool hasLastVideoIdrRequestTime;        /* 是否已记录最近一次向上游消费的 IDR 请求时刻。 */
+    bool hasLastVideoIdrInputTime;          /* 是否已记录最近一次编码完成并输入 WebRTC 的 IDR 时刻。 */
+    uint64_t lastVideoPliAgeMs;             /* 最近一次 PLI/FIR 到当前查询时刻的间隔，单位毫秒。 */
+    uint64_t lastVideoIdrRequestAgeMs;      /* 最近一次 IDR 请求到当前查询时刻的间隔，单位毫秒。 */
+    uint64_t lastVideoIdrInputAgeMs;        /* 最近一次编码 IDR 输入到当前查询时刻的间隔，单位毫秒。 */
+    bool hasLastPliToIdrRequestDelay;       /* 是否已完成一次 PLI/FIR 到 IDR 请求的同链路耗时统计。 */
+    bool hasLastIdrRequestToInputDelay;     /* 是否已完成一次 IDR 请求到编码 IDR 输入的同链路耗时统计。 */
+    uint64_t lastPliToIdrRequestMs;         /* 最近一次同链路 PLI/FIR 到 IDR 请求的间隔，单位毫秒。 */
+    uint64_t lastIdrRequestToInputMs;       /* 最近一次同链路 IDR 请求到编码 IDR 输入的间隔，单位毫秒。 */
     std::vector<WebRtcSessionStats> sessions; /* 当前仍在 WebRtcServer 管理中的会话明细。 */
 };
 

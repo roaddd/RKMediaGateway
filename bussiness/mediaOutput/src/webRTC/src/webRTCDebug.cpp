@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <mutex>
+#include <stdio.h>
 #include <vector>
 
 #include "commonDef.h"
@@ -19,6 +20,32 @@ static bool g_web_rtc_debug_command_registered = false; /* getWebRTC shell 命�
 static const char *debug_bool_text(bool value)
 {
     return value ? "yes" : "no";
+}
+
+/* 将最近事件距当前的间隔格式化为毫秒文本；未发生时显示 N/A。 */
+static void debug_format_event_age(char *text, size_t textSize, bool valid, uint64_t valueMs)
+{
+    if (!text || textSize == 0) {
+        return;
+    }
+    if (!valid) {
+        snprintf(text, textSize, "%s", "N/A");
+        return;
+    }
+    snprintf(text, textSize, "%llums", static_cast<unsigned long long>(valueMs));
+}
+
+/* 将同一条关键帧恢复链路的阶段耗时格式化；尚未形成完整链路时显示 N/A。 */
+static void debug_format_keyframe_delay(char *text, size_t textSize, bool valid, uint64_t valueMs)
+{
+    if (!text || textSize == 0) {
+        return;
+    }
+    if (!valid) {
+        snprintf(text, textSize, "%s", "N/A");
+        return;
+    }
+    snprintf(text, textSize, "%llums", static_cast<unsigned long long>(valueMs));
 }
 
 /* 将 WebRTC 音频编码类型转换成调试命令输出文本。 */
@@ -71,6 +98,33 @@ static void debug_print_media_summary(char *reply,
                                       size_t *offset,
                                       const WebRtcServerStats &stats)
 {
+    char pliAge[32] = {0};
+    char idrRequestAge[32] = {0};
+    char idrInputAge[32] = {0};
+    char pliToRequest[32] = {0};
+    char requestToInput[32] = {0};
+
+    debug_format_event_age(pliAge,
+                           sizeof(pliAge),
+                           stats.hasLastVideoPliTime,
+                           stats.lastVideoPliAgeMs);
+    debug_format_event_age(idrRequestAge,
+                           sizeof(idrRequestAge),
+                           stats.hasLastVideoIdrRequestTime,
+                           stats.lastVideoIdrRequestAgeMs);
+    debug_format_event_age(idrInputAge,
+                           sizeof(idrInputAge),
+                           stats.hasLastVideoIdrInputTime,
+                           stats.lastVideoIdrInputAgeMs);
+    debug_format_keyframe_delay(pliToRequest,
+                                sizeof(pliToRequest),
+                                stats.hasLastPliToIdrRequestDelay,
+                                stats.lastPliToIdrRequestMs);
+    debug_format_keyframe_delay(requestToInput,
+                                sizeof(requestToInput),
+                                stats.hasLastIdrRequestToInputDelay,
+                                stats.lastIdrRequestToInputMs);
+
     debug_command_reply_append(reply,
                                offset,
                                "\n  media summary\n"
@@ -78,6 +132,8 @@ static void debug_print_media_summary(char *reply,
                                "    video broadcast : targets=%llu no_ready=%llu\n"
                                "    video keyframe : pending=%s pli_pending=%s requests=%llu\n"
                                "    video pli      : rx=%llu accepted=%llu deferred=%llu\n"
+                               "    video timing   : last_pli=%s last_idr_request=%s last_idr_input=%s\n"
+                               "                     pli_to_request=%s request_to_idr_input=%s\n"
                                "    audio input     : frames=%llu bytes=%llu\n"
                                "    audio broadcast : targets=%llu no_ready=%llu\n",
                                static_cast<unsigned long long>(stats.inputVideoFrames),
@@ -90,6 +146,11 @@ static void debug_print_media_summary(char *reply,
                                static_cast<unsigned long long>(stats.videoPliReceived),
                                static_cast<unsigned long long>(stats.videoPliAccepted),
                                static_cast<unsigned long long>(stats.videoPliDeferred),
+                               pliAge,
+                               idrRequestAge,
+                               idrInputAge,
+                               pliToRequest,
+                               requestToInput,
                                static_cast<unsigned long long>(stats.inputAudioFrames),
                                static_cast<unsigned long long>(stats.inputAudioBytes),
                                static_cast<unsigned long long>(stats.audioBroadcastTargets),

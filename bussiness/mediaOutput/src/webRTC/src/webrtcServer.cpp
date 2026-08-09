@@ -100,6 +100,7 @@ int WebRtcServer::sendVideoFrame(const WebRtcVideoFrame &frame)
 {
     std::vector<std::shared_ptr<WebRtcSession>> sessions;
     std::map<int, std::shared_ptr<WebRtcSession>>::iterator iter;
+    std::chrono::steady_clock::time_point now;
     size_t i;
     int sentCount;
 
@@ -112,6 +113,20 @@ int WebRtcServer::sendVideoFrame(const WebRtcVideoFrame &frame)
         }
         ++mediaCounters_.inputVideoFrames;
         mediaCounters_.inputVideoBytes += frame.size;
+        if (frame.keyFrame) {
+            /* 此时 MPP 已经产出 IDR 且媒体帧进入 WebRTC，作为请求到编码完成的终点。 */
+            now = std::chrono::steady_clock::now();
+            keyframeState_.lastVideoIdrInputTime = now;
+            keyframeState_.hasLastVideoIdrInputTime = true;
+            if (keyframeState_.waitingVideoIdrInput) {
+                keyframeState_.lastIdrRequestToInputMs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        now - keyframeState_.waitingVideoIdrRequestTime)
+                        .count());
+                keyframeState_.hasLastIdrRequestToInputDelay = true;
+                keyframeState_.waitingVideoIdrInput = false;
+            }
+        }
         for (iter = sessions_.begin(); iter != sessions_.end(); ++iter) {
             sessions.push_back(iter->second);
         }
@@ -224,18 +239,38 @@ bool WebRtcServer::consumeVideoKeyframeRequest()
         keyframeState_.pendingVideoKeyframeRequest = false;
         /* 即将生成的同一帧 IDR 同时满足此前延迟的 PLI，无需再次请求。 */
         keyframeState_.pendingPliKeyframeRequest = false;
-        /* 限频基准取“实际交给 MPP 请求 IDR”的时刻，而不是收到 PLI 的时刻。 */
-        keyframeState_.lastVideoIdrRequestTime = now;
-        keyframeState_.hasLastVideoIdrRequestTime = true;
+        recordVideoIdrRequestConsumed(now);
         return true;
     } else if (pliRequestDue) {
         /* 限频窗口结束，消费合并后的一个 PLI 请求；多个 PLI 只产生一个 IDR。 */
         keyframeState_.pendingPliKeyframeRequest = false;
-        keyframeState_.lastVideoIdrRequestTime = now;
-        keyframeState_.hasLastVideoIdrRequestTime = true;
+        recordVideoIdrRequestConsumed(now);
+        ++keyframeState_.videoKeyframeRequests;
+        LOG_INFO("[WEBRTC] PLI rate limit elapsed, request IDR");
         return true;
     }
     return false;
+}
+
+/*
+ * 记录一次外部 IDR 请求已被 mediaGateway 消费。
+ * 调用方已持有 mutex_；mediaGateway 随后会在同一帧处理周期内调用 mpp_encoder_request_idr。
+ */
+void WebRtcServer::recordVideoIdrRequestConsumed(const std::chrono::steady_clock::time_point &now)
+{
+    keyframeState_.lastVideoIdrRequestTime = now;
+    keyframeState_.hasLastVideoIdrRequestTime = true;
+    keyframeState_.waitingVideoIdrRequestTime = now;
+    keyframeState_.waitingVideoIdrInput = true;
+
+    if (keyframeState_.hasPendingPliTriggerTime) {
+        keyframeState_.lastPliToIdrRequestMs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - keyframeState_.pendingPliTriggerTime)
+                .count());
+        keyframeState_.hasLastPliToIdrRequestDelay = true;
+        keyframeState_.hasPendingPliTriggerTime = false;
+    }
 }
 
 /*
@@ -246,11 +281,13 @@ void WebRtcServer::getStats(WebRtcServerStats &stats) const
 {
     std::vector<std::shared_ptr<WebRtcSession>> sessions;
     std::map<int, std::shared_ptr<WebRtcSession>>::const_iterator iter;
+    std::chrono::steady_clock::time_point now;
     size_t i;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
+        now = std::chrono::steady_clock::now();
         stats.name = config_.name;
         stats.bindAddress = config_.bindAddress;
         stats.port = config_.port;
@@ -273,6 +310,28 @@ void WebRtcServer::getStats(WebRtcServerStats &stats) const
         stats.videoPliReceived = keyframeState_.videoPliReceived;
         stats.videoPliAccepted = keyframeState_.videoPliAccepted;
         stats.videoPliDeferred = keyframeState_.videoPliDeferred;
+        stats.hasLastVideoPliTime = keyframeState_.hasLastVideoPliTime;
+        stats.hasLastVideoIdrRequestTime = keyframeState_.hasLastVideoIdrRequestTime;
+        stats.hasLastVideoIdrInputTime = keyframeState_.hasLastVideoIdrInputTime;
+        stats.lastVideoPliAgeMs = stats.hasLastVideoPliTime
+                                      ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                      now - keyframeState_.lastVideoPliTime)
+                                                                      .count())
+                                      : 0;
+        stats.lastVideoIdrRequestAgeMs = stats.hasLastVideoIdrRequestTime
+                                             ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                             now - keyframeState_.lastVideoIdrRequestTime)
+                                                                             .count())
+                                             : 0;
+        stats.lastVideoIdrInputAgeMs = stats.hasLastVideoIdrInputTime
+                                           ? static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                           now - keyframeState_.lastVideoIdrInputTime)
+                                                                           .count())
+                                           : 0;
+        stats.hasLastPliToIdrRequestDelay = keyframeState_.hasLastPliToIdrRequestDelay;
+        stats.hasLastIdrRequestToInputDelay = keyframeState_.hasLastIdrRequestToInputDelay;
+        stats.lastPliToIdrRequestMs = keyframeState_.lastPliToIdrRequestMs;
+        stats.lastIdrRequestToInputMs = keyframeState_.lastIdrRequestToInputMs;
         stats.sessions.clear();
 
         for (iter = sessions_.begin(); iter != sessions_.end(); ++iter) {
@@ -350,6 +409,14 @@ void WebRtcServer::requestVideoKeyframe(int sessionId, WebRtcKeyframeRequestReas
          * 此类请求必须限频，避免网络异常时浏览器连续反馈造成 I 帧风暴。
          */
         ++keyframeState_.videoPliReceived;
+        /* 记录浏览器 PLI/FIR 抵达本模块的时刻，用于量化反馈到 IDR 的恢复链路。 */
+        keyframeState_.lastVideoPliTime = now;
+        keyframeState_.hasLastVideoPliTime = true;
+        if (!keyframeState_.hasPendingPliTriggerTime) {
+            /* 多个 PLI 合并为同一次 IDR 时，统计从首个触发 PLI 开始计算恢复时间。 */
+            keyframeState_.pendingPliTriggerTime = now;
+            keyframeState_.hasPendingPliTriggerTime = true;
+        }
         if (keyframeState_.pendingVideoKeyframeRequest) {
             /* 已有 IDR 会在下一帧编码前请求，本次 PLI 由该 IDR 一并满足。 */
             ++keyframeState_.videoPliDeferred;

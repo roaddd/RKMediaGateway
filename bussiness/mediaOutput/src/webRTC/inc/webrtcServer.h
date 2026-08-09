@@ -33,7 +33,19 @@ struct WebRtcKeyframeRequestState {
     bool pendingVideoKeyframeRequest = false; /* 新客户端或未限频 PLI 触发的立即 IDR 请求。 */
     bool pendingPliKeyframeRequest = false;   /* 被 PLI 限频合并后，等待限频窗口结束的 IDR 请求。 */
     bool hasLastVideoIdrRequestTime = false;  /* lastVideoIdrRequestTime 是否已经有有效记录。 */
+    bool hasLastVideoPliTime = false;         /* lastVideoPliTime 是否已经有有效记录。 */
+    bool hasLastVideoIdrInputTime = false;    /* lastVideoIdrInputTime 是否已经有有效记录。 */
+    bool hasPendingPliTriggerTime = false;    /* 当前待消费 IDR 是否关联至少一个 PLI/FIR。 */
+    bool waitingVideoIdrInput = false;        /* 已向上游消费 IDR 请求，正在等待对应编码 IDR 输入。 */
+    bool hasLastPliToIdrRequestDelay = false; /* 最近一次 PLI/FIR 到 IDR 请求的同链路耗时是否有效。 */
+    bool hasLastIdrRequestToInputDelay = false; /* 最近一次 IDR 请求到编码 IDR 输入的同链路耗时是否有效。 */
     std::chrono::steady_clock::time_point lastVideoIdrRequestTime; /* 最近一次请求 MPP 输出 IDR 的单调时钟时刻。 */
+    std::chrono::steady_clock::time_point lastVideoPliTime;        /* 最近一次收到浏览器 PLI/FIR 的单调时钟时刻。 */
+    std::chrono::steady_clock::time_point lastVideoIdrInputTime;   /* 最近一次编码 IDR 进入 WebRTC 的单调时钟时刻。 */
+    std::chrono::steady_clock::time_point pendingPliTriggerTime;   /* 当前待消费 IDR 关联的首个 PLI/FIR 到达时刻。 */
+    std::chrono::steady_clock::time_point waitingVideoIdrRequestTime; /* 当前等待编码 IDR 的请求时刻。 */
+    uint64_t lastPliToIdrRequestMs = 0;      /* 最近一次同链路 PLI/FIR 到 IDR 请求的耗时，单位毫秒。 */
+    uint64_t lastIdrRequestToInputMs = 0;    /* 最近一次同链路 IDR 请求到编码 IDR 输入的耗时，单位毫秒。 */
     uint64_t videoKeyframeRequests = 0;       /* 已进入立即请求队列的 IDR 请求次数。 */
     uint64_t videoPliReceived = 0;            /* 所有浏览器 session 上报的 PLI/FIR 总次数。 */
     uint64_t videoPliAccepted = 0;            /* 未命中限频、可立即请求 IDR 的 PLI/FIR 次数。 */
@@ -61,6 +73,7 @@ private:
     void handleClient(const std::shared_ptr<communication::WebSocketConnection> &connection);
     void removeSession(int id);
     void requestVideoKeyframe(int sessionId, WebRtcKeyframeRequestReason reason);
+    void recordVideoIdrRequestConsumed(const std::chrono::steady_clock::time_point &now);
 
 private:
     WebRtcServerConfig config_; /* 启动时保存的监听、音视频格式等配置。 */
