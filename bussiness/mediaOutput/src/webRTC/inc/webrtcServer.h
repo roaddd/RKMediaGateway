@@ -67,6 +67,7 @@ public:
     int sendAudioFrame(const WebRtcAudioFrame &frame);
     int sessionCount() const;
     bool consumeVideoKeyframeRequest();
+    bool setSessionPliTestIdrSuppression(int sessionId, bool enabled);
     void getStats(WebRtcServerStats &stats) const;
 
 private:

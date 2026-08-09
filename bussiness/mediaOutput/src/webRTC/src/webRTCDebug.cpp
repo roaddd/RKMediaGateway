@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <mutex>
 #include <stdio.h>
+#include <string.h>
 #include <vector>
 
 #include "commonDef.h"
@@ -14,7 +15,8 @@ namespace webrtc {
 
 static std::mutex g_web_rtc_debug_mutex; /* 保护调试命令注册状态和 server 列表。 */
 static std::vector<WebRtcServer *> g_web_rtc_debug_servers; /* 已注册到 getWebRTC 的运行中 server。 */
-static bool g_web_rtc_debug_command_registered = false; /* getWebRTC shell 命令是否已注册。 */
+static bool g_web_rtc_status_command_registered = false; /* getWebRTC shell 命令是否已注册。 */
+static bool g_web_rtc_pli_test_command_registered = false; /* testWebRTCPLI shell 命令是否已注册。 */
 
 /* 将 bool 值转换成调试命令里更直观的 yes/no 文本。 */
 static const char *debug_bool_text(bool value)
@@ -292,6 +294,58 @@ static void debug_print_session_counter_table(char *reply,
     }
 }
 
+/* 打印 PLI 测试的 session 级状态，便于确认 IDR 是否已抑制、是否由 PLI 或超时恢复。 */
+static void debug_print_pli_test_table(char *reply,
+                                       size_t *offset,
+                                       const std::vector<WebRtcSessionStats> &sessions)
+{
+    size_t i;
+    bool hasTestRecord;
+
+    hasTestRecord = false;
+    for (i = 0; i < sessions.size(); ++i) {
+        if (sessions[i].pliTestSuppressingIdr || sessions[i].pliTestStarts > 0) {
+            hasTestRecord = true;
+            break;
+        }
+    }
+    if (!hasTestRecord) {
+        return;
+    }
+
+    debug_command_reply_append(reply,
+                               offset,
+                               "\n  PLI test\n"
+                               "    %-4s %-12s %12s %14s %14s %12s\n"
+                               "    %-4s %-12s %12s %14s %14s %12s\n",
+                               "id",
+                               "state",
+                               "starts",
+                               "idr_suppressed",
+                               "pli_recovered",
+                               "timeouts",
+                               "----",
+                               "------------",
+                               "------------",
+                               "--------------",
+                               "--------------",
+                               "------------");
+    for (i = 0; i < sessions.size(); ++i) {
+        if (!sessions[i].pliTestSuppressingIdr && sessions[i].pliTestStarts == 0) {
+            continue;
+        }
+        debug_command_reply_append(reply,
+                                   offset,
+                                   "    %-4d %-12s %12llu %14llu %14llu %12llu\n",
+                                   sessions[i].id,
+                                   sessions[i].pliTestSuppressingIdr ? "WAIT_PLI" : "IDLE",
+                                   static_cast<unsigned long long>(sessions[i].pliTestStarts),
+                                   static_cast<unsigned long long>(sessions[i].pliTestSuppressedIdr),
+                                   static_cast<unsigned long long>(sessions[i].pliTestPliRecovered),
+                                   static_cast<unsigned long long>(sessions[i].pliTestTimeouts));
+    }
+}
+
 /*
  * getWebRTC shell 命令处理函数。
  * 调用时机：用户执行 rkmgw getWebRTC 时由 debugCommandServer 调用，函数只读取快照并格式化文本。
@@ -337,8 +391,77 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
         debug_print_media_summary(output, &offset, stats);
         debug_print_session_state_table(output, &offset, stats.sessions);
         debug_print_session_counter_table(output, &offset, stats.sessions);
+        debug_print_pli_test_table(output, &offset, stats.sessions);
     }
 
+    return MEDIA_OK;
+}
+
+/*
+ * testWebRTCPLI <server_id> <session_id> <on|off>
+ * on 会持续抑制指定 session 的 IDR，直到收到该 session 的 PLI/FIR 或 15 秒超时。
+ */
+static int debug_handle_test_webrtc_pli(void *user_data, const char *input, char *output)
+{
+    WebRtcServer *server;
+    std::unique_lock<std::mutex> lock(g_web_rtc_debug_mutex, std::defer_lock);
+    char action[8] = {0};
+    size_t offset;
+    long serverIndex;
+    long sessionId;
+    int enabled;
+    int parseCount;
+
+    (void)user_data;
+    offset = 0;
+    server = NULL;
+    serverIndex = -1;
+    sessionId = -1;
+    enabled = 0;
+    parseCount = 0;
+    output[0] = '\0';
+    debug_command_reply_append(output, &offset, "cmd=testWebRTCPLI\n");
+
+    if (!input) {
+        debug_command_reply_append(output,
+                                   &offset,
+                                   "ret=-1\nusage=testWebRTCPLI <server_id> <session_id> <on|off>\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    parseCount = sscanf(input, "%ld %ld %7s", &serverIndex, &sessionId, action);
+    if (parseCount != 3 || serverIndex < 0 || sessionId <= 0 ||
+        (strcmp(action, "on") != 0 && strcmp(action, "off") != 0)) {
+        debug_command_reply_append(output,
+                                   &offset,
+                                   "ret=-1\nusage=testWebRTCPLI <server_id> <session_id> <on|off>\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    enabled = strcmp(action, "on") == 0;
+
+    lock.lock();
+    if (static_cast<size_t>(serverIndex) >= g_web_rtc_debug_servers.size() ||
+        !g_web_rtc_debug_servers[serverIndex]) {
+        debug_command_reply_append(output,
+                                   &offset,
+                                   "ret=-1\nerror=server_id %ld not found\n",
+                                   serverIndex);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    server = g_web_rtc_debug_servers[serverIndex];
+    if (!server->setSessionPliTestIdrSuppression(static_cast<int>(sessionId), enabled)) {
+        debug_command_reply_append(output,
+                                   &offset,
+                                   "ret=-1\nerror=session %ld is unavailable or video track is not ready\n",
+                                   sessionId);
+        return MEDIA_ERR_NOT_READY;
+    }
+
+    debug_command_reply_append(output,
+                               &offset,
+                               "ret=0\nserver_id=%ld\nsession_id=%ld\nstate=%s\n",
+                               serverIndex,
+                               sessionId,
+                               enabled ? "WAIT_PLI" : "IDLE");
     return MEDIA_OK;
 }
 
@@ -347,17 +470,23 @@ static int debug_ensure_command_registered()
 {
     int ret;
 
-    if (g_web_rtc_debug_command_registered) {
-        return MEDIA_OK;
+    if (!g_web_rtc_status_command_registered) {
+        ret = regDebugCmd("getWebRTC", debug_handle_get_webrtc, NULL);
+        if (ret != MEDIA_OK) {
+            LOG_WARN("[WEBRTC] register shell command getWebRTC failed ret=%d", ret);
+            return ret;
+        }
+        g_web_rtc_status_command_registered = true;
     }
 
-    ret = regDebugCmd("getWebRTC", debug_handle_get_webrtc, NULL);
-    if (ret != MEDIA_OK) {
-        LOG_WARN("[WEBRTC] register shell command getWebRTC failed ret=%d", ret);
-        return ret;
+    if (!g_web_rtc_pli_test_command_registered) {
+        ret = regDebugCmd("testWebRTCPLI", debug_handle_test_webrtc_pli, NULL);
+        if (ret != MEDIA_OK) {
+            LOG_WARN("[WEBRTC] register shell command testWebRTCPLI failed ret=%d", ret);
+            return ret;
+        }
+        g_web_rtc_pli_test_command_registered = true;
     }
-
-    g_web_rtc_debug_command_registered = true;
     return MEDIA_OK;
 }
 

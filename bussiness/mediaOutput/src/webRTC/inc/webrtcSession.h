@@ -4,6 +4,7 @@
 #include "websocketServer.h"
 #include "webrtcTypes.h"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <functional>
@@ -32,6 +33,8 @@ struct WebRtcSessionTransport {
 struct WebRtcSessionRuntimeState {
     bool closed = false; /* 是否已进入关闭流程，防止重复释放资源。 */
     bool waitingForVideoKeyframe = false; /* video Track 打开后是否仍等待首个 IDR。 */
+    bool pliTestSuppressingIdr = false; /* PLI 测试期间是否持续抑制该 session 的 IDR。 */
+    std::chrono::steady_clock::time_point pliTestStartTime; /* PLI 测试开始时刻，用于超时恢复。 */
     std::string remoteAddress; /* 浏览器 WebSocket 对端地址。 */
     std::string path; /* 浏览器连接时使用的 WebSocket 路径。 */
     std::string peerState = "new"; /* PeerConnection 状态文本。 */
@@ -50,6 +53,10 @@ struct WebRtcSessionCounters {
     uint64_t videoNotReady = 0; /* video Track 未打开导致丢帧的次数。 */
     uint64_t videoWaitingKeyframeDrops = 0; /* 等待首个 IDR 时丢弃非关键帧的次数。 */
     uint64_t videoPliReceived = 0; /* 浏览器通过 RTCP PLI/FIR 请求视频关键帧的次数。 */
+    uint64_t pliTestStarts = 0; /* 启动 PLI 测试的次数。 */
+    uint64_t pliTestSuppressedIdr = 0; /* PLI 测试中故意丢弃的 IDR 数量。 */
+    uint64_t pliTestPliRecovered = 0; /* PLI/FIR 到达后自动解除 IDR 抑制的次数。 */
+    uint64_t pliTestTimeouts = 0; /* PLI 测试超时并恢复发送的次数。 */
     uint64_t videoSendFail = 0; /* 视频帧转换或发送失败次数。 */
     uint64_t audioFrames = 0; /* 成功发送到 audio Track 的音频包数量。 */
     uint64_t audioBytes = 0; /* 成功发送到 audio Track 的原始包字节数。 */
@@ -81,6 +88,7 @@ public:
     bool sendVideoFrame(const WebRtcVideoFrame &frame);
     bool isAudioReady() const;
     bool sendAudioFrame(const WebRtcAudioFrame &frame);
+    bool setPliTestIdrSuppression(bool enabled);
     void getStats(WebRtcSessionStats &stats) const;
 
 private:

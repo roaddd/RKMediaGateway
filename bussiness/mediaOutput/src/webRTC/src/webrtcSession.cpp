@@ -77,6 +77,9 @@ static const char *gathering_state_name(rtc::PeerConnection::GatheringState stat
     }
 }
 
+/* PLI 测试最多抑制 IDR 15 秒，超时后自动恢复该浏览器的视频。 */
+static const std::chrono::seconds WEBRTC_PLI_TEST_TIMEOUT(15);
+
 WebRtcSession::WebRtcSession(int id,
                              const WebRtcServerConfig &config,
                              const std::shared_ptr<communication::WebSocketConnection> &connection,
@@ -90,6 +93,7 @@ WebRtcSession::WebRtcSession(int id,
     keyframeRequestCallback_ = keyframeRequestCallback;
     state_.closed = false;
     state_.waitingForVideoKeyframe = false;
+    state_.pliTestSuppressingIdr = false;
     state_.remoteAddress = connection ? connection->remoteAddress() : "";
     state_.path = connection ? connection->path() : "";
     state_.peerState = "new";
@@ -104,6 +108,10 @@ WebRtcSession::WebRtcSession(int id,
     counters_.videoNotReady = 0;
     counters_.videoWaitingKeyframeDrops = 0;
     counters_.videoPliReceived = 0;
+    counters_.pliTestStarts = 0;
+    counters_.pliTestSuppressedIdr = 0;
+    counters_.pliTestPliRecovered = 0;
+    counters_.pliTestTimeouts = 0;
     counters_.videoSendFail = 0;
     counters_.audioFrames = 0;
     counters_.audioBytes = 0;
@@ -134,6 +142,7 @@ int WebRtcSession::id() const
 void WebRtcSession::requestVideoKeyframe(WebRtcKeyframeRequestReason reason)
 {
     WebRtcSessionKeyframeRequestCallback callback;
+    bool pliTestRecovered = false;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -145,12 +154,21 @@ void WebRtcSession::requestVideoKeyframe(WebRtcKeyframeRequestReason reason)
         /* PLI 计数归属到产生反馈的浏览器 session，便于定位异常解码端。 */
         if (reason == WEBRTC_KEYFRAME_REQUEST_PLI) {
             ++counters_.videoPliReceived;
+            /* PLI 测试等待的是该浏览器反馈；收到后立即允许后续 IDR 正常发送。 */
+            if (state_.pliTestSuppressingIdr) {
+                state_.pliTestSuppressingIdr = false;
+                ++counters_.pliTestPliRecovered;
+                pliTestRecovered = true;
+            }
         }
         /* 只在锁内复制回调，避免执行 server 逻辑时长时间占用 session 锁。 */
         callback = keyframeRequestCallback_;
     }
     if (callback) {
         callback(id_, reason);
+    }
+    if (pliTestRecovered) {
+        LOG_WARN("[WEBRTC] session=%d PLI test received PLI, resume IDR delivery", id_);
     }
 }
 
@@ -253,6 +271,44 @@ bool WebRtcSession::isVideoReady() const
     return track && track->isOpen();
 }
 
+/*
+ * 启动或取消当前浏览器 session 的 PLI 测试 IDR 抑制。
+ * 启动后仅抑制 IDR，P/B 帧和音频仍正常发送，直到 PLI/FIR 到达或超时。
+ */
+bool WebRtcSession::setPliTestIdrSuppression(bool enabled)
+{
+    std::shared_ptr<rtc::Track> track;
+    bool changed = false;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        track = transport_.videoTrack;
+        if (state_.closed || (enabled && (!track || !track->isOpen()))) {
+            return false;
+        }
+        if (enabled) {
+            state_.pliTestSuppressingIdr = true;
+            state_.pliTestStartTime = std::chrono::steady_clock::now();
+            ++counters_.pliTestStarts;
+        } else {
+            changed = state_.pliTestSuppressingIdr;
+            state_.pliTestSuppressingIdr = false;
+        }
+    }
+
+    if (enabled) {
+        LOG_WARN("[WEBRTC] session=%d PLI test started: suppress IDR until PLI or timeout=%llds",
+                 id_,
+                 static_cast<long long>(WEBRTC_PLI_TEST_TIMEOUT.count()));
+    } else if (changed) {
+        LOG_WARN("[WEBRTC] session=%d PLI test cancelled: resume IDR delivery", id_);
+        /* 手工取消时立即走统一 IDR 请求路径，避免浏览器继续等待下一个周期性 GOP。 */
+        requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT);
+    }
+    return true;
+}
+
 /* 当前音频 Track 是否已经进入可发送状态。 */
 bool WebRtcSession::isAudioReady() const
 {
@@ -294,6 +350,7 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.dataChannelOpen = dc && dc->isOpen();
     stats.videoTrackReady = videoTrack && videoTrack->isOpen();
     stats.waitingForVideoKeyframe = state_.waitingForVideoKeyframe;
+    stats.pliTestSuppressingIdr = state_.pliTestSuppressingIdr;
     stats.audioTrackReady = audioTrack && audioTrack->isOpen();
     stats.signalingRxMessages = counters_.signalingRxMessages;
     stats.signalingTxMessages = counters_.signalingTxMessages;
@@ -304,6 +361,10 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.videoNotReady = counters_.videoNotReady;
     stats.videoWaitingKeyframeDrops = counters_.videoWaitingKeyframeDrops;
     stats.videoPliReceived = counters_.videoPliReceived;
+    stats.pliTestStarts = counters_.pliTestStarts;
+    stats.pliTestSuppressedIdr = counters_.pliTestSuppressedIdr;
+    stats.pliTestPliRecovered = counters_.pliTestPliRecovered;
+    stats.pliTestTimeouts = counters_.pliTestTimeouts;
     stats.videoSendFail = counters_.videoSendFail;
     stats.audioFrames = counters_.audioFrames;
     stats.audioBytes = counters_.audioBytes;
@@ -426,13 +487,31 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
 {
     std::shared_ptr<rtc::Track> track;
     rtc::binary payload;
+    std::chrono::steady_clock::time_point now;
     bool ok;
     bool waitingForKeyframe;
+    bool suppressTestIdr;
+    bool requestTimeoutRecovery;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         track = transport_.videoTrack;
         waitingForKeyframe = state_.waitingForVideoKeyframe;
+        suppressTestIdr = false;
+        requestTimeoutRecovery = false;
+        if (state_.pliTestSuppressingIdr) {
+            now = std::chrono::steady_clock::now();
+            if (now - state_.pliTestStartTime >= WEBRTC_PLI_TEST_TIMEOUT) {
+                /* 浏览器未发送 PLI 时必须恢复，避免调试命令让该 session 永久黑屏。 */
+                state_.pliTestSuppressingIdr = false;
+                ++counters_.pliTestTimeouts;
+                requestTimeoutRecovery = !frame.keyFrame;
+            } else if (frame.keyFrame) {
+                /* 仅丢弃 IDR，持续发送 P/B 帧以诱发浏览器的解码恢复反馈。 */
+                ++counters_.pliTestSuppressedIdr;
+                suppressTestIdr = true;
+            }
+        }
     }
     if (!track || !track->isOpen()) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -440,6 +519,15 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         ++counters_.videoNotReady;
         LOG_DEBUG("[WEBRTC] session=%d video frame ignored: track not ready", id_);
         return false;
+    }
+
+    if (suppressTestIdr) {
+        LOG_WARN("[WEBRTC] session=%d PLI test suppress IDR", id_);
+        return false;
+    }
+    if (requestTimeoutRecovery) {
+        LOG_WARN("[WEBRTC] session=%d PLI test timeout, request recovery IDR", id_);
+        requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT);
     }
 
     /*

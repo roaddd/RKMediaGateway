@@ -253,6 +253,37 @@ bool WebRtcServer::consumeVideoKeyframeRequest()
 }
 
 /*
+ * 启动或取消指定浏览器 session 的 PLI 测试。
+ * 仅把会话对象副本带出 server 锁，避免在 session 内部加锁时形成嵌套锁依赖。
+ */
+bool WebRtcServer::setSessionPliTestIdrSuppression(int sessionId, bool enabled)
+{
+    std::shared_ptr<WebRtcSession> session;
+    std::map<int, std::shared_ptr<WebRtcSession>>::iterator iter;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (!running_) {
+            LOG_WARN("[WEBRTC] PLI test ignored: server not running session=%d", sessionId);
+            return false;
+        }
+        iter = sessions_.find(sessionId);
+        if (iter == sessions_.end()) {
+            LOG_WARN("[WEBRTC] PLI test failed: session=%d not found", sessionId);
+            return false;
+        }
+        session = iter->second;
+    }
+
+    if (!session->setPliTestIdrSuppression(enabled)) {
+        LOG_WARN("[WEBRTC] PLI test failed: session=%d video track not ready or closed", sessionId);
+        return false;
+    }
+    return true;
+}
+
+/*
  * 记录一次外部 IDR 请求已被 mediaGateway 消费。
  * 调用方已持有 mutex_；mediaGateway 随后会在同一帧处理周期内调用 mpp_encoder_request_idr。
  */
@@ -450,6 +481,17 @@ void WebRtcServer::requestVideoKeyframe(int sessionId, WebRtcKeyframeRequestReas
         keyframeState_.pendingPliKeyframeRequest = false;
         ++keyframeState_.videoKeyframeRequests;
         LOG_INFO("[WEBRTC] session=%d video ready, request IDR", sessionId);
+        return;
+
+    case WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT:
+        /* PLI 测试保护超时后恢复视频；语义与新会话相同，均需要下一帧可解码 IDR。 */
+        if (keyframeState_.pendingVideoKeyframeRequest) {
+            return;
+        }
+        keyframeState_.pendingVideoKeyframeRequest = true;
+        keyframeState_.pendingPliKeyframeRequest = false;
+        ++keyframeState_.videoKeyframeRequests;
+        LOG_WARN("[WEBRTC] session=%d PLI test timeout, request recovery IDR", sessionId);
         return;
 
     default:
