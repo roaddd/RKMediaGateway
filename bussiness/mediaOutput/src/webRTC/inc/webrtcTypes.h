@@ -68,7 +68,7 @@ struct WebRtcSessionStats {
     bool dataChannelOpen;           /* DataChannel 是否已经打开。 */
     bool videoTrackReady;           /* 视频 Track 是否已经可以发送 RTP。 */
     bool waitingForVideoKeyframe;   /* 视频 Track 打开后是否仍在等待首个关键帧。 */
-    bool pliTestSuppressingIdr;     /* PLI 测试是否正在抑制该 session 的 H264 IDR。 */
+    bool pliTestSuppressingVideo;   /* PLI 测试是否正在抑制该 session 的全部视频帧。 */
     bool audioTrackReady;           /* 音频 Track 是否已经可以发送 RTP。 */
     uint64_t signalingRxMessages;   /* 收到的 WebSocket 信令消息数量。 */
     uint64_t signalingTxMessages;   /* 发出的 WebSocket 信令消息数量。 */
@@ -80,8 +80,8 @@ struct WebRtcSessionStats {
     uint64_t videoWaitingKeyframeDrops; /* 等待首个关键帧期间丢弃的非关键帧次数。 */
     uint64_t videoPliReceived;           /* 当前浏览器 session 发出的 PLI/FIR 请求次数。 */
     uint64_t pliTestStarts;              /* 对当前 session 启动 PLI 测试的次数。 */
-    uint64_t pliTestSuppressedIdr;       /* PLI 测试期间故意不发送的 H264 IDR 数量。 */
-    uint64_t pliTestPliRecovered;        /* PLI/FIR 到达后自动解除 IDR 抑制的次数。 */
+    uint64_t pliTestSuppressedVideoFrames; /* PLI 测试期间故意不发送的视频帧数量。 */
+    uint64_t pliTestPliRecovered;        /* PLI/FIR 到达后自动解除视频抑制的次数。 */
     uint64_t pliTestTimeouts;            /* PLI 测试超时并自动恢复的次数。 */
     uint64_t videoSendFail;         /* 视频帧转换或发送失败次数。 */
     uint64_t audioFrames;           /* 成功发送到音频 Track 的帧数。 */

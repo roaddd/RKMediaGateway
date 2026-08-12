@@ -198,6 +198,50 @@ video {
     background: #111827;
 }
 
+.keyframe-test {
+    display: grid;
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 12px;
+    align-items: stretch;
+    margin-top: 10px;
+}
+
+.keyframe-test button {
+    height: auto;
+    min-height: 58px;
+}
+
+.keyframe-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #f8fafc;
+}
+
+.keyframe-metrics > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 9px 10px;
+}
+
+.keyframe-metrics > div + div {
+    border-left: 1px solid var(--line);
+}
+
+.keyframe-metrics span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.keyframe-metrics strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
 .send-row {
     display: grid;
     grid-template-columns: 1fr 72px;
@@ -230,5 +274,15 @@ pre {
     .content,
     .sdp-grid {
         grid-template-columns: 1fr;
+    }
+
+    .keyframe-test,
+    .keyframe-metrics {
+        grid-template-columns: 1fr;
+    }
+
+    .keyframe-metrics > div + div {
+        border-top: 1px solid var(--line);
+        border-left: 0;
     }
 }

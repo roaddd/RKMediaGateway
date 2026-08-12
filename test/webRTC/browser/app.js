@@ -28,12 +28,24 @@
         ipcLog: document.getElementById("ipcLog"),
         remoteVideo: document.getElementById("remoteVideo"),
         videoHint: document.getElementById("videoHint"),
+        requestKeyFrameBtn: document.getElementById("requestKeyFrameBtn"),
+        keyFrameRequestState: document.getElementById("keyFrameRequestState"),
+        keyFrameArrivalLatency: document.getElementById("keyFrameArrivalLatency"),
+        keyFrameRenderLatency: document.getElementById("keyFrameRenderLatency"),
     };
 
     let ws = null;
     let pc = null;
     let dc = null;
     let pendingLocalCandidates = [];
+    let keyFrameWorker = null;
+    let keyFramePort = null;
+    let videoReceiver = null;
+    let renderedFrameCallbackId = 0;
+    let keyFrameRequestSequence = 0;
+    let pendingKeyFrameRequest = null;
+    let keyFrameRequestTimeoutId = 0;
+    const renderedVideoFrames = new Map();
 
     function now() {
         return new Date().toLocaleTimeString("zh-CN", { hour12: false });
@@ -60,6 +72,7 @@
     function updateButtons() {
         const wsOpen = ws && ws.readyState === WebSocket.OPEN;
         const dcOpen = dc && dc.readyState === "open";
+        const keyFrameReady = keyFramePort && videoReceiver && videoReceiver.track.readyState === "live";
 
         els.wsConnectBtn.disabled = wsOpen;
         els.wsCloseBtn.disabled = !ws;
@@ -68,6 +81,208 @@
         els.statusBtn.disabled = !dcOpen;
         els.ipcInput.disabled = !dcOpen;
         els.sendIpcBtn.disabled = !dcOpen;
+        els.requestKeyFrameBtn.disabled = !keyFrameReady || !!pendingKeyFrameRequest;
+    }
+
+    /* 判断当前浏览器是否支持接收端 WebRTC Encoded Transform。 */
+    function supportsKeyFrameRequest() {
+        return typeof Worker === "function" &&
+            typeof MessageChannel === "function" &&
+            typeof RTCRtpScriptTransform === "function";
+    }
+
+    /* 停止关键帧测试相关资源，并恢复页面初始状态。 */
+    function closeKeyFrameTest() {
+        if (keyFrameRequestTimeoutId) {
+            window.clearTimeout(keyFrameRequestTimeoutId);
+            keyFrameRequestTimeoutId = 0;
+        }
+        if (renderedFrameCallbackId && typeof els.remoteVideo.cancelVideoFrameCallback === "function") {
+            els.remoteVideo.cancelVideoFrameCallback(renderedFrameCallbackId);
+            renderedFrameCallbackId = 0;
+        }
+        if (keyFramePort) {
+            keyFramePort.close();
+            keyFramePort = null;
+        }
+        if (keyFrameWorker) {
+            keyFrameWorker.terminate();
+            keyFrameWorker = null;
+        }
+
+        videoReceiver = null;
+        pendingKeyFrameRequest = null;
+        renderedVideoFrames.clear();
+        els.keyFrameArrivalLatency.textContent = "-";
+        els.keyFrameRenderLatency.textContent = "-";
+        setText(els.keyFrameRequestState,
+            supportsKeyFrameRequest() ? "等待视频" : "浏览器不支持",
+            supportsKeyFrameRequest() ? "" : "state-bad");
+        updateButtons();
+    }
+
+    /* 使用关键帧 RTP 时间戳完成出图统计，确保统计对象确实是请求返回的关键帧。 */
+    function completeKeyFrameRender(request, renderedAt) {
+        let renderLatency;
+
+        if (!pendingKeyFrameRequest || pendingKeyFrameRequest.id !== request.id) {
+            return;
+        }
+
+        renderLatency = renderedAt - request.requestedAt;
+        els.keyFrameRenderLatency.textContent = `${renderLatency} ms`;
+        setText(els.keyFrameRequestState, "画面已恢复", "state-ok");
+        log(`关键帧恢复完成：到达=${request.arrivalLatency}ms，出图=${renderLatency}ms`);
+        window.clearTimeout(keyFrameRequestTimeoutId);
+        keyFrameRequestTimeoutId = 0;
+        pendingKeyFrameRequest = null;
+        updateButtons();
+    }
+
+    /* 持续记录 video 元素真正呈现的 WebRTC RTP 时间戳。 */
+    function startRenderedFrameMonitor() {
+        let monitor;
+
+        if (typeof els.remoteVideo.requestVideoFrameCallback !== "function") {
+            return;
+        }
+
+        monitor = () => {
+            renderedFrameCallbackId = els.remoteVideo.requestVideoFrameCallback((unusedNow, metadata) => {
+                const request = pendingKeyFrameRequest;
+                const rtpTimestamp = metadata.rtpTimestamp;
+                const renderedAt = Date.now();
+                let oldestTimestamp;
+
+                if (rtpTimestamp !== undefined) {
+                    renderedVideoFrames.set(rtpTimestamp, renderedAt);
+                    if (renderedVideoFrames.size > 30) {
+                        oldestTimestamp = renderedVideoFrames.keys().next().value;
+                        renderedVideoFrames.delete(oldestTimestamp);
+                    }
+                }
+                if (request && request.keyFrameReceived &&
+                    (request.rtpTimestamp === undefined || request.rtpTimestamp === rtpTimestamp)) {
+                    completeKeyFrameRender(request, renderedAt);
+                }
+                monitor();
+            });
+        };
+        monitor();
+    }
+
+    /* 处理 Worker 返回的请求状态和编码关键帧事件。 */
+    function handleKeyFrameWorkerMessage(event) {
+        const message = event.data || {};
+        const request = pendingKeyFrameRequest;
+        let arrivalLatency;
+        let renderedAt;
+
+        if (message.type === "request-error" || message.type === "transform-error") {
+            setText(els.keyFrameRequestState, "请求失败", "state-bad");
+            log(`关键帧请求失败：${message.error || "unknown error"}`);
+            if (keyFrameRequestTimeoutId) {
+                window.clearTimeout(keyFrameRequestTimeoutId);
+                keyFrameRequestTimeoutId = 0;
+            }
+            pendingKeyFrameRequest = null;
+            updateButtons();
+            return;
+        }
+        if (message.type === "request-complete" && request && message.requestId === request.id) {
+            setText(els.keyFrameRequestState, "等待关键帧");
+            log("浏览器已处理关键帧请求，等待设备返回关键帧");
+            return;
+        }
+        if (message.type !== "keyframe" || !request || message.requestId !== request.id) {
+            return;
+        }
+
+        arrivalLatency = Date.now() - request.requestedAt;
+        request.keyFrameReceived = true;
+        request.arrivalLatency = arrivalLatency;
+        request.rtpTimestamp = message.rtpTimestamp;
+        els.keyFrameArrivalLatency.textContent = `${arrivalLatency} ms`;
+        setText(els.keyFrameRequestState, "关键帧已到达", "state-ok");
+        log(`收到请求后的首个编码关键帧：${arrivalLatency}ms`);
+
+        renderedAt = renderedVideoFrames.get(message.rtpTimestamp);
+        if (renderedAt !== undefined) {
+            completeKeyFrameRender(request, renderedAt);
+            return;
+        }
+
+        if (typeof els.remoteVideo.requestVideoFrameCallback !== "function") {
+            els.keyFrameRenderLatency.textContent = "浏览器不支持统计";
+            window.clearTimeout(keyFrameRequestTimeoutId);
+            keyFrameRequestTimeoutId = 0;
+            pendingKeyFrameRequest = null;
+            updateButtons();
+        }
+    }
+
+    /* 为远端视频 Receiver 安装透传转换器，以便发送请求并观察关键帧。 */
+    function attachKeyFrameTest(receiver) {
+        let channel;
+
+        closeKeyFrameTest();
+        if (!supportsKeyFrameRequest()) {
+            log("当前浏览器不支持 RTCRtpScriptTransform，无法主动请求关键帧");
+            return;
+        }
+
+        try {
+            channel = new MessageChannel();
+            keyFrameWorker = new Worker("keyframe-worker.js");
+            keyFramePort = channel.port1;
+            keyFramePort.onmessage = handleKeyFrameWorkerMessage;
+            keyFramePort.start();
+            receiver.transform = new RTCRtpScriptTransform(
+                keyFrameWorker,
+                { name: "keyframe-test", port: channel.port2 },
+                [channel.port2]);
+            videoReceiver = receiver;
+            setText(els.keyFrameRequestState, "就绪", "state-ok");
+            startRenderedFrameMonitor();
+            log("关键帧请求测试接口已就绪");
+        } catch (error) {
+            log(`初始化关键帧请求测试失败：${error.name || "Error"}: ${error.message}`);
+            closeKeyFrameTest();
+            setText(els.keyFrameRequestState, "初始化失败", "state-bad");
+        }
+        updateButtons();
+    }
+
+    /* 请求浏览器向设备发送 RTCP 关键帧反馈，并启动到达、出图计时。 */
+    function requestRemoteKeyFrame() {
+        let requestId;
+
+        if (!keyFramePort || !videoReceiver || pendingKeyFrameRequest) {
+            log("关键帧请求失败：视频 Receiver 尚未就绪或已有请求正在进行");
+            return;
+        }
+
+        requestId = ++keyFrameRequestSequence;
+        pendingKeyFrameRequest = {
+            id: requestId,
+            requestedAt: Date.now(),
+            keyFrameReceived: false,
+            arrivalLatency: 0,
+        };
+        els.keyFrameArrivalLatency.textContent = "-";
+        els.keyFrameRenderLatency.textContent = "-";
+        setText(els.keyFrameRequestState, "正在请求");
+        keyFramePort.postMessage({ type: "request-keyframe", requestId });
+        log(`发送关键帧请求：request_id=${requestId}`);
+
+        keyFrameRequestTimeoutId = window.setTimeout(() => {
+            setText(els.keyFrameRequestState, "5 秒未恢复", "state-bad");
+            log("关键帧请求超时：5 秒内未观察到新的编码关键帧和恢复画面");
+            pendingKeyFrameRequest = null;
+            keyFrameRequestTimeoutId = 0;
+            updateButtons();
+        }, 5000);
+        updateButtons();
     }
 
     function signalingMessage(type, payload) {
@@ -159,6 +374,13 @@
                 els.videoHint.textContent = "已收到远端 Track";
                 log("收到远端媒体 Track");
             }
+            /*
+             * 主动创建 Offer 时已经在 addTransceiver() 后安装 Transform。
+             * 这里只为收到远端 Offer 等被动协商场景补装，避免同一 Receiver 重复赋值。
+             */
+            if (event.track.kind === "video" && videoReceiver !== event.receiver) {
+                attachKeyFrameTest(event.receiver);
+            }
         };
 
         pc.ondatachannel = (event) => {
@@ -202,6 +424,7 @@
     }
 
     function closePeerConnection() {
+        closeKeyFrameTest();
         if (dc) {
             dc.close();
             dc = null;
@@ -234,12 +457,18 @@
         const peer = createPeerConnection();
         const receiveVideo = els.receiveVideo.checked;
         let offer;
+        let videoTransceiver;
 
         bindDataChannel(peer.createDataChannel("ipc"));
         log("创建本地 DataChannel：ipc");
 
         if (receiveVideo) {
-            peer.addTransceiver("video", { direction: "recvonly" });
+            /*
+             * Transform 必须在媒体接收开始前安装。先取得 video Receiver 并挂载 Worker，
+             * 再创建 Offer，避免 ontrack 阶段赋值时接收通路已经进入运行状态。
+             */
+            videoTransceiver = peer.addTransceiver("video", { direction: "recvonly" });
+            attachKeyFrameTest(videoTransceiver.receiver);
             peer.addTransceiver("audio", { direction: "recvonly" });
             log("已启用音视频接收，Offer 将包含 video/audio recvonly m-line");
         } else {
@@ -379,6 +608,7 @@
     els.resetBtn.onclick = closePeerConnection;
     els.pingBtn.onclick = () => sendIpcObject({ cmd: "ping", ts: Date.now() });
     els.statusBtn.onclick = () => sendIpcObject({ cmd: "get_status", ts: Date.now() });
+    els.requestKeyFrameBtn.onclick = requestRemoteKeyFrame;
     els.sendIpcBtn.onclick = () => sendIpc(els.ipcInput.value);
     els.clearIpcBtn.onclick = () => {
         els.ipcLog.textContent = "";
@@ -392,5 +622,8 @@
     setText(els.iceState, "closed");
     setText(els.gatheringState, "new");
     setText(els.dcState, "closed");
+    setText(els.keyFrameRequestState,
+        supportsKeyFrameRequest() ? "等待视频" : "浏览器不支持",
+        supportsKeyFrameRequest() ? "" : "state-bad");
     updateButtons();
 })();

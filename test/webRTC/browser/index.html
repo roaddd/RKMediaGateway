@@ -62,6 +62,23 @@
                     <span id="videoHint">等待远端 Track</span>
                 </div>
                 <video id="remoteVideo" autoplay playsinline controls></video>
+                <div class="keyframe-test">
+                    <button id="requestKeyFrameBtn" type="button" disabled>发送 PLI/FIR</button>
+                    <div class="keyframe-metrics">
+                        <div>
+                            <span>请求状态</span>
+                            <strong id="keyFrameRequestState">等待视频</strong>
+                        </div>
+                        <div>
+                            <span>关键帧到达</span>
+                            <strong id="keyFrameArrivalLatency">-</strong>
+                        </div>
+                        <div>
+                            <span>画面恢复</span>
+                            <strong id="keyFrameRenderLatency">-</strong>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="panel">

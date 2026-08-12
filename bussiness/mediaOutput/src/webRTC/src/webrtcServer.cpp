@@ -256,7 +256,7 @@ bool WebRtcServer::consumeVideoKeyframeRequest()
  * 启动或取消指定浏览器 session 的 PLI 测试。
  * 仅把会话对象副本带出 server 锁，避免在 session 内部加锁时形成嵌套锁依赖。
  */
-bool WebRtcServer::setSessionPliTestIdrSuppression(int sessionId, bool enabled)
+bool WebRtcServer::setSessionPliTestVideoSuppression(int sessionId, bool enabled)
 {
     std::shared_ptr<WebRtcSession> session;
     std::map<int, std::shared_ptr<WebRtcSession>>::iterator iter;
@@ -276,7 +276,7 @@ bool WebRtcServer::setSessionPliTestIdrSuppression(int sessionId, bool enabled)
         session = iter->second;
     }
 
-    if (!session->setPliTestIdrSuppression(enabled)) {
+    if (!session->setPliTestVideoSuppression(enabled)) {
         LOG_WARN("[WEBRTC] PLI test failed: session=%d video track not ready or closed", sessionId);
         return false;
     }

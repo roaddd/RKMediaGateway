@@ -304,7 +304,7 @@ static void debug_print_pli_test_table(char *reply,
 
     hasTestRecord = false;
     for (i = 0; i < sessions.size(); ++i) {
-        if (sessions[i].pliTestSuppressingIdr || sessions[i].pliTestStarts > 0) {
+        if (sessions[i].pliTestSuppressingVideo || sessions[i].pliTestStarts > 0) {
             hasTestRecord = true;
             break;
         }
@@ -316,31 +316,31 @@ static void debug_print_pli_test_table(char *reply,
     debug_command_reply_append(reply,
                                offset,
                                "\n  PLI test\n"
-                               "    %-4s %-12s %12s %14s %14s %12s\n"
-                               "    %-4s %-12s %12s %14s %14s %12s\n",
+                               "    %-4s %-12s %12s %16s %14s %12s\n"
+                               "    %-4s %-12s %12s %16s %14s %12s\n",
                                "id",
                                "state",
                                "starts",
-                               "idr_suppressed",
+                               "video_suppressed",
                                "pli_recovered",
                                "timeouts",
                                "----",
                                "------------",
                                "------------",
-                               "--------------",
+                               "----------------",
                                "--------------",
                                "------------");
     for (i = 0; i < sessions.size(); ++i) {
-        if (!sessions[i].pliTestSuppressingIdr && sessions[i].pliTestStarts == 0) {
+        if (!sessions[i].pliTestSuppressingVideo && sessions[i].pliTestStarts == 0) {
             continue;
         }
         debug_command_reply_append(reply,
                                    offset,
-                                   "    %-4d %-12s %12llu %14llu %14llu %12llu\n",
+                                   "    %-4d %-12s %12llu %16llu %14llu %12llu\n",
                                    sessions[i].id,
-                                   sessions[i].pliTestSuppressingIdr ? "WAIT_PLI" : "IDLE",
+                                   sessions[i].pliTestSuppressingVideo ? "WAIT_PLI" : "IDLE",
                                    static_cast<unsigned long long>(sessions[i].pliTestStarts),
-                                   static_cast<unsigned long long>(sessions[i].pliTestSuppressedIdr),
+                                   static_cast<unsigned long long>(sessions[i].pliTestSuppressedVideoFrames),
                                    static_cast<unsigned long long>(sessions[i].pliTestPliRecovered),
                                    static_cast<unsigned long long>(sessions[i].pliTestTimeouts));
     }
@@ -399,7 +399,7 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
 
 /*
  * testWebRTCPLI <server_id> <session_id> <on|off>
- * on 会持续抑制指定 session 的 IDR，直到收到该 session 的 PLI/FIR 或 15 秒超时。
+ * on 会持续抑制指定 session 的全部视频帧，直到收到该 session 的 PLI/FIR 或 15 秒超时。
  */
 static int debug_handle_test_webrtc_pli(void *user_data, const char *input, char *output)
 {
@@ -448,7 +448,7 @@ static int debug_handle_test_webrtc_pli(void *user_data, const char *input, char
         return MEDIA_ERR_INVALID_PARAM;
     }
     server = g_web_rtc_debug_servers[serverIndex];
-    if (!server->setSessionPliTestIdrSuppression(static_cast<int>(sessionId), enabled)) {
+    if (!server->setSessionPliTestVideoSuppression(static_cast<int>(sessionId), enabled)) {
         debug_command_reply_append(output,
                                    &offset,
                                    "ret=-1\nerror=session %ld is unavailable or video track is not ready\n",
