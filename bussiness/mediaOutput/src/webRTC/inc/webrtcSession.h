@@ -26,7 +26,7 @@ struct WebRtcSessionTransport {
     std::shared_ptr<rtc::PeerConnection> pc; /* libdatachannel PeerConnection。 */
     std::shared_ptr<rtc::DataChannel> dc; /* 浏览器创建的 IPC DataChannel。 */
     std::shared_ptr<rtc::Track> videoTrack; /* H264 sendonly 视频 Track。 */
-    std::shared_ptr<rtc::Track> audioTrack; /* G711 sendonly 音频 Track。 */
+    std::shared_ptr<rtc::Track> audioTrack; /* G711/Opus sendonly 音频 Track。 */
 };
 
 /* 单个浏览器会话的连接状态和可读状态文本，仅在 mutex_ 保护下读写。 */
@@ -98,7 +98,7 @@ private:
     void createPeerConnection();
     void bindDataChannel(const std::shared_ptr<rtc::DataChannel> &dc);
     void addH264VideoTrack(const std::string &mid, uint8_t payloadType);
-    void addG711AudioTrack(const std::string &mid, uint8_t payloadType, WebRtcAudioCodec codec);
+    void addAudioTrack(const std::string &mid, uint8_t payloadType, WebRtcAudioCodec codec);
     void sendDescription(const rtc::Description &description);
     void sendCandidate(const rtc::Candidate &candidate);
     void handleIpcMessage(const std::string &message);

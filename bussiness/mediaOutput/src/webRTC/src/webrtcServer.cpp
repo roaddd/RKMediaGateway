@@ -159,7 +159,7 @@ int WebRtcServer::sendVideoFrame(const WebRtcVideoFrame &frame)
 
 /* 返回当前 WebRTC 会话数量。 */
 /*
- * 广播一帧 G711 音频到所有已就绪的浏览器会话。
+ * 广播一帧已编码音频到所有已就绪且编码类型匹配的浏览器会话。
  * mediaOutput 负责队列和生命周期，这里只遍历当前 session 快照，避免持锁发送。
  */
 int WebRtcServer::sendAudioFrame(const WebRtcAudioFrame &frame)

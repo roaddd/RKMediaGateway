@@ -33,6 +33,7 @@ using rkmedia::webrtc::WebRtcVideoFrame;
 using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_NONE;
 using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_PCMA;
 using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_PCMU;
+using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_OPUS;
 
 typedef struct {
     MediaOutputWebRtcConfig config; /* WebRTC 输出配置副本。 */
@@ -118,7 +119,8 @@ static void webrtc_output_normalize_config(MediaOutputWebRtcConfig *dst,
     if (src->video_fps > 0) {
         dst->video_fps = src->video_fps;
     }
-    if (src->audio_codec == MEDIA_CODEC_G711A || src->audio_codec == MEDIA_CODEC_G711U) {
+    if (src->audio_codec == MEDIA_CODEC_G711A || src->audio_codec == MEDIA_CODEC_G711U ||
+        src->audio_codec == MEDIA_CODEC_OPUS) {
         dst->audio_codec = src->audio_codec;
     }
     if (src->audio_sample_rate > 0) {
@@ -127,13 +129,19 @@ static void webrtc_output_normalize_config(MediaOutputWebRtcConfig *dst,
     if (src->audio_channels > 0) {
         dst->audio_channels = src->audio_channels;
     }
-    if (dst->audio_codec != MEDIA_CODEC_NONE &&
-        (dst->audio_sample_rate != DEFAULT_WEBRTC_AUDIO_SAMPLE_RATE ||
-         dst->audio_channels != DEFAULT_WEBRTC_AUDIO_CHANNELS)) {
+    if ((dst->audio_codec == MEDIA_CODEC_G711A || dst->audio_codec == MEDIA_CODEC_G711U) &&
+        (dst->audio_sample_rate != 8000 || dst->audio_channels != 1)) {
         LOG_WARN("[WEBRTC] disable audio: codec=%d rate=%d channels=%d, only G711 8000Hz mono is supported",
                  dst->audio_codec,
                  dst->audio_sample_rate,
                  dst->audio_channels);
+        dst->audio_codec = MEDIA_CODEC_NONE;
+    }
+    if (dst->audio_codec == MEDIA_CODEC_OPUS &&
+        (dst->audio_sample_rate != 48000 ||
+         (dst->audio_channels != 1 && dst->audio_channels != 2))) {
+        LOG_WARN("[WEBRTC] disable Opus: rate=%d channels=%d, expected 48000Hz mono/stereo",
+                 dst->audio_sample_rate, dst->audio_channels);
         dst->audio_codec = MEDIA_CODEC_NONE;
     }
 }
@@ -146,6 +154,9 @@ static WebRtcAudioCodec webrtc_output_to_audio_codec(MediaCodecType codec)
     }
     if (codec == MEDIA_CODEC_G711U) {
         return WEBRTC_AUDIO_CODEC_PCMU;
+    }
+    if (codec == MEDIA_CODEC_OPUS) {
+        return WEBRTC_AUDIO_CODEC_OPUS;
     }
     return WEBRTC_AUDIO_CODEC_NONE;
 }
@@ -239,7 +250,8 @@ static int webrtc_output_send_packet(MediaOutput *output, const MediaPacket *pac
         frame.format = H264_FRAME_FORMAT_ANNEX_B;
         sentCount = impl->server->sendVideoFrame(frame);
     } else if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO &&
-               (packet->codec == MEDIA_CODEC_G711A || packet->codec == MEDIA_CODEC_G711U)) {
+               (packet->codec == MEDIA_CODEC_G711A || packet->codec == MEDIA_CODEC_G711U ||
+                packet->codec == MEDIA_CODEC_OPUS)) {
         audioFrame.data = packet->buffer->data;
         audioFrame.size = packet->buffer->size;
         audioFrame.ptsUs = packet->pts_us;

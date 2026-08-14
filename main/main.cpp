@@ -14,21 +14,18 @@ int main(int argc, char **argv)
 {
     MediaGatewayCtx gateway;
     MediaGatewayConfig config;
-    const char *config_path = (argc > 1 && argv[1] && argv[1][0] != '\0') ? argv[1] : "media_gateway.conf";
+    const char *config_path = (argc > 1 && argv[1] && argv[1][0] != '\0') ? argv[1] : "media_gateway.toml";
     int shell_ready = 0;
     int ret = 0;
 
-    def_value_init(config_path);
+    if (def_value_init(config_path) != 0)
+    {
+        fprintf(stderr, "failed to load TOML config: %s\n", config_path);
+        return -1;
+    }
     def_value_get_media_gateway_config(&config);
     log_set_level((LogLevel)config.system.log.level);
-    if (def_value_loaded())
-    {
-        LOG_INFO("loaded config file: %s", def_value_source_path());
-    }
-    else
-    {
-        LOG_WARN("config file not found, fallback to defaults: %s", def_value_source_path());
-    }
+    LOG_INFO("loaded TOML config: %s", def_value_source_path());
 
     if (debug_command_server_init(NULL) == 0)
     {

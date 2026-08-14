@@ -1077,26 +1077,46 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
     }
     if (dst->audio.source.enabled)
     {
-        if (require_non_empty_string("audio.device_name", dst->audio.source.device_name) != 0 ||
-            require_positive_int("audio.sample_rate", dst->audio.source.sample_rate) != 0 ||
-            require_positive_int("audio.channels", dst->audio.source.channels) != 0 ||
-            require_positive_int("audio.period_frames", dst->audio.source.period_frames) != 0 ||
-            require_positive_int("audio.buffer_periods", dst->audio.source.buffer_periods) != 0 ||
-            require_positive_int("audio.source_slots", dst->audio.source.source_slots) != 0 ||
-            require_positive_int("audio.retry_ms", dst->audio.source.retry_ms) != 0 ||
-            require_positive_int("audio.max_consecutive_failures", dst->audio.source.max_consecutive_failures) != 0)
+        if (require_non_empty_string("audio.device_name", dst->audio.source.capture.device_name) != 0 ||
+            require_positive_int("audio.sample_rate", dst->audio.source.capture.sample_rate) != 0 ||
+            require_positive_int("audio.channels", dst->audio.source.capture.channels) != 0 ||
+            require_positive_int("audio.period_frames", dst->audio.source.capture.period_frames) != 0 ||
+            require_positive_int("audio.buffer_periods", dst->audio.source.capture.buffer_periods) != 0 ||
+            require_positive_int("audio.source_slots", dst->audio.source.runtime.source_slots) != 0 ||
+            require_positive_int("audio.retry_ms", dst->audio.source.runtime.retry_ms) != 0 ||
+            require_positive_int("audio.max_consecutive_failures", dst->audio.source.runtime.max_consecutive_failures) != 0)
             return -1;
-        if (dst->audio.source.format != AUDIO_SAMPLE_FORMAT_S16LE)
-            return config_error_int("audio.format", dst->audio.source.format, "is unsupported");
-        if (dst->audio.source.codec != MEDIA_CODEC_G711A &&
-            dst->audio.source.codec != MEDIA_CODEC_G711U &&
-            dst->audio.source.codec != MEDIA_CODEC_AAC)
-            return config_error_int("audio.codec", dst->audio.source.codec, "is unsupported");
-        if (dst->audio.source.codec == MEDIA_CODEC_AAC)
+        if (dst->audio.source.capture.format != AUDIO_SAMPLE_FORMAT_S16LE)
+            return config_error_int("audio.format", dst->audio.source.capture.format, "is unsupported");
+        if (dst->audio.source.encoder.codec != MEDIA_CODEC_G711A &&
+            dst->audio.source.encoder.codec != MEDIA_CODEC_G711U &&
+            dst->audio.source.encoder.codec != MEDIA_CODEC_AAC &&
+            dst->audio.source.encoder.codec != MEDIA_CODEC_OPUS)
+            return config_error_int("audio.codec", dst->audio.source.encoder.codec, "is unsupported");
+        if (dst->audio.source.encoder.codec == MEDIA_CODEC_AAC)
         {
-            if (require_positive_int("audio.aac_bitrate", dst->audio.source.aac_bitrate) != 0 ||
-                require_positive_int("audio.aac_profile", dst->audio.source.aac_profile) != 0)
+            if (require_positive_int("audio.aac_bitrate", dst->audio.source.encoder.aac.bitrate) != 0 ||
+                require_positive_int("audio.aac_profile", dst->audio.source.encoder.aac.profile) != 0)
                 return -1;
+        }
+        if (dst->audio.source.encoder.codec == MEDIA_CODEC_OPUS)
+        {
+            /* WebRTC Opus 的 RTP 时钟固定为 48 kHz；当前链路不在编码前做重采样。 */
+            if (dst->audio.source.capture.sample_rate != 48000)
+                return config_error_int("audio.sample_rate", dst->audio.source.capture.sample_rate, "must be 48000 for WebRTC Opus");
+            if (dst->audio.source.capture.channels != 1 && dst->audio.source.capture.channels != 2)
+                return config_error_int("audio.channels", dst->audio.source.capture.channels, "must be 1 or 2 for Opus");
+            /* libopus 每次只接受 2.5/5/10/20/40/60ms PCM，下面是 48 kHz 对应采样数。 */
+            if (dst->audio.source.capture.period_frames != 120 && dst->audio.source.capture.period_frames != 240 &&
+                dst->audio.source.capture.period_frames != 480 && dst->audio.source.capture.period_frames != 960 &&
+                dst->audio.source.capture.period_frames != 1920 && dst->audio.source.capture.period_frames != 2880)
+                return config_error_int("audio.period_frames", dst->audio.source.capture.period_frames, "must be 2.5/5/10/20/40/60ms at 48kHz");
+            if (require_positive_int("audio.opus_bitrate", dst->audio.source.encoder.opus.bitrate) != 0)
+                return -1;
+            if (dst->audio.source.encoder.opus.complexity < 0 || dst->audio.source.encoder.opus.complexity > 10)
+                return config_error_int("audio.opus_complexity", dst->audio.source.encoder.opus.complexity, "must be between 0 and 10");
+            if (dst->audio.source.encoder.opus.packet_loss_percent < 0 || dst->audio.source.encoder.opus.packet_loss_percent > 100)
+                return config_error_int("audio.opus_packet_loss_percent", dst->audio.source.encoder.opus.packet_loss_percent, "must be between 0 and 100");
         }
         if (dst->audio.source.bind_stream_index < 0 || dst->audio.source.bind_stream_index >= dst->video.stream_count)
             return config_error_int("audio.bind_stream_index", dst->audio.source.bind_stream_index, "must reference a configured stream");
@@ -1191,41 +1211,51 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         memset(&dst->input.capture_sources[i], 0, sizeof(dst->input.capture_sources[i]));
 
     dst->audio.source.enabled = dst->audio.source.enabled ? 1 : 0;
-    dst->audio.source.device_name = safe_str(dst->audio.source.device_name, AUDIO_CAPTURE_DEFAULT_DEVICE);
-    if (dst->audio.source.sample_rate <= 0)
-        dst->audio.source.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
-    if (dst->audio.source.channels <= 0)
-        dst->audio.source.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
-    if (dst->audio.source.format == 0)
-        dst->audio.source.format = AUDIO_SAMPLE_FORMAT_S16LE;
-    if (dst->audio.source.period_frames <= 0)
-        dst->audio.source.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
-    if (dst->audio.source.buffer_periods <= 0)
-        dst->audio.source.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
-    if (dst->audio.source.source_slots <= 0)
-        dst->audio.source.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
-    if (dst->audio.source.retry_ms <= 0)
-        dst->audio.source.retry_ms = DEFAULT_AUDIO_RETRY_MS;
-    if (dst->audio.source.max_consecutive_failures <= 0)
-        dst->audio.source.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
-    if (dst->audio.source.codec == MEDIA_CODEC_NONE)
+    dst->audio.source.capture.device_name = safe_str(dst->audio.source.capture.device_name, AUDIO_CAPTURE_DEFAULT_DEVICE);
+    if (dst->audio.source.capture.sample_rate <= 0)
+        dst->audio.source.capture.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
+    if (dst->audio.source.capture.channels <= 0)
+        dst->audio.source.capture.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
+    if (dst->audio.source.capture.format == 0)
+        dst->audio.source.capture.format = AUDIO_SAMPLE_FORMAT_S16LE;
+    if (dst->audio.source.capture.period_frames <= 0)
+        dst->audio.source.capture.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
+    if (dst->audio.source.capture.buffer_periods <= 0)
+        dst->audio.source.capture.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
+    if (dst->audio.source.runtime.source_slots <= 0)
+        dst->audio.source.runtime.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
+    if (dst->audio.source.runtime.retry_ms <= 0)
+        dst->audio.source.runtime.retry_ms = DEFAULT_AUDIO_RETRY_MS;
+    if (dst->audio.source.runtime.max_consecutive_failures <= 0)
+        dst->audio.source.runtime.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
+    if (dst->audio.source.encoder.codec == MEDIA_CODEC_NONE)
     {
-        dst->audio.source.codec = (dst->audio.source.g711_mode == G711_ENCODER_MODE_ULAW) ? MEDIA_CODEC_G711U : MEDIA_CODEC_G711A;
+        dst->audio.source.encoder.codec = (dst->audio.source.encoder.g711.mode == G711_ENCODER_MODE_ULAW) ? MEDIA_CODEC_G711U : MEDIA_CODEC_G711A;
     }
-    if (dst->audio.source.codec != MEDIA_CODEC_G711A &&
-        dst->audio.source.codec != MEDIA_CODEC_G711U &&
-        dst->audio.source.codec != MEDIA_CODEC_AAC)
+    if (dst->audio.source.encoder.codec != MEDIA_CODEC_G711A &&
+        dst->audio.source.encoder.codec != MEDIA_CODEC_G711U &&
+        dst->audio.source.encoder.codec != MEDIA_CODEC_AAC &&
+        dst->audio.source.encoder.codec != MEDIA_CODEC_OPUS)
     {
-        dst->audio.source.codec = MEDIA_CODEC_G711A;
+        dst->audio.source.encoder.codec = MEDIA_CODEC_G711A;
     }
-    if (dst->audio.source.codec == MEDIA_CODEC_G711U)
-        dst->audio.source.g711_mode = G711_ENCODER_MODE_ULAW;
-    else if (dst->audio.source.codec == MEDIA_CODEC_G711A)
-        dst->audio.source.g711_mode = G711_ENCODER_MODE_ALAW;
-    if (dst->audio.source.aac_bitrate <= 0)
-        dst->audio.source.aac_bitrate = 32000;
-    if (dst->audio.source.aac_profile <= 0)
-        dst->audio.source.aac_profile = 2;
+    if (dst->audio.source.encoder.codec == MEDIA_CODEC_G711U)
+        dst->audio.source.encoder.g711.mode = G711_ENCODER_MODE_ULAW;
+    else if (dst->audio.source.encoder.codec == MEDIA_CODEC_G711A)
+        dst->audio.source.encoder.g711.mode = G711_ENCODER_MODE_ALAW;
+    if (dst->audio.source.encoder.aac.bitrate <= 0)
+        dst->audio.source.encoder.aac.bitrate = 32000;
+    if (dst->audio.source.encoder.aac.profile <= 0)
+        dst->audio.source.encoder.aac.profile = 2;
+    if (dst->audio.source.encoder.opus.bitrate <= 0)
+        dst->audio.source.encoder.opus.bitrate = 24000;
+    if (dst->audio.source.encoder.opus.complexity < 0 || dst->audio.source.encoder.opus.complexity > 10)
+        dst->audio.source.encoder.opus.complexity = 6;
+    dst->audio.source.encoder.opus.vbr = dst->audio.source.encoder.opus.vbr ? 1 : 0;
+    dst->audio.source.encoder.opus.fec = dst->audio.source.encoder.opus.fec ? 1 : 0;
+    dst->audio.source.encoder.opus.dtx = dst->audio.source.encoder.opus.dtx ? 1 : 0;
+    if (dst->audio.source.encoder.opus.packet_loss_percent < 0 || dst->audio.source.encoder.opus.packet_loss_percent > 100)
+        dst->audio.source.encoder.opus.packet_loss_percent = 10;
     if (dst->audio.source.bind_stream_index < 0 || dst->audio.source.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS)
         dst->audio.source.bind_stream_index = DEFAULT_AUDIO_BIND_STREAM_INDEX;
 
@@ -1280,10 +1310,10 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         output_config.protocol.rtsp.feedback_holder = &ctx->network_feedback_holder;
         if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
         {
-            output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.codec;
-            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.sample_rate;
-            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.channels;
-            output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.aac_profile;
+            output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.encoder.codec;
+            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
+            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.capture.channels;
+            output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.encoder.aac.profile;
         }
         else
         {
@@ -1368,9 +1398,9 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         output_config.protocol.webrtc = s->webrtc;
         if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
         {
-            output_config.protocol.webrtc.audio_codec = ctx->config.audio.source.codec;
-            output_config.protocol.webrtc.audio_sample_rate = ctx->config.audio.source.sample_rate;
-            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.channels;
+            output_config.protocol.webrtc.audio_codec = ctx->config.audio.source.encoder.codec;
+            output_config.protocol.webrtc.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
+            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.capture.channels;
         }
         else
         {
@@ -1689,34 +1719,35 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
     AudioCaptureConfig audio_capture_config = {0};
     G711EncoderConfig g711_config = {0};
     AacEncoderConfig aac_config = {0};
+    OpusEncoderConfig opus_config = {0};
 
     if (ctx->config.audio.source.enabled)
     {
-        audio_capture_config.device_name = ctx->config.audio.source.device_name;
-        audio_capture_config.sample_rate = ctx->config.audio.source.sample_rate;
-        audio_capture_config.channels = ctx->config.audio.source.channels;
-        audio_capture_config.format = ctx->config.audio.source.format;
-        audio_capture_config.period_frames = ctx->config.audio.source.period_frames;
-        audio_capture_config.buffer_periods = ctx->config.audio.source.buffer_periods;
+        audio_capture_config.device_name = ctx->config.audio.source.capture.device_name;
+        audio_capture_config.sample_rate = ctx->config.audio.source.capture.sample_rate;
+        audio_capture_config.channels = ctx->config.audio.source.capture.channels;
+        audio_capture_config.format = ctx->config.audio.source.capture.format;
+        audio_capture_config.period_frames = ctx->config.audio.source.capture.period_frames;
+        audio_capture_config.buffer_periods = ctx->config.audio.source.capture.buffer_periods;
         if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0)
         {
             LOG_ERROR("init audio capture failed: device=%s rate=%d channels=%d",
-                      ctx->config.audio.source.device_name ? ctx->config.audio.source.device_name : "unknown",
-                      ctx->config.audio.source.sample_rate,
-                      ctx->config.audio.source.channels);
+                      ctx->config.audio.source.capture.device_name ? ctx->config.audio.source.capture.device_name : "unknown",
+                      ctx->config.audio.source.capture.sample_rate,
+                      ctx->config.audio.source.capture.channels);
             return -1;
         }
         ctx->audio_capture_ready = 1;
-        ctx->config.audio.source.sample_rate = ctx->audio_capture.config.sample_rate;
-        ctx->config.audio.source.period_frames = ctx->audio_capture.config.period_frames;
+        ctx->config.audio.source.capture.sample_rate = ctx->audio_capture.config.sample_rate;
+        ctx->config.audio.source.capture.period_frames = ctx->audio_capture.config.period_frames;
 
-        if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
+        if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
         {
             memset(&aac_config, 0, sizeof(aac_config));
             aac_config.sample_rate = ctx->audio_capture.config.sample_rate;
             aac_config.channels = ctx->audio_capture.config.channels;
-            aac_config.bitrate = ctx->config.audio.source.aac_bitrate;
-            aac_config.profile = ctx->config.audio.source.aac_profile;
+            aac_config.bitrate = ctx->config.audio.source.encoder.aac.bitrate;
+            aac_config.profile = ctx->config.audio.source.encoder.aac.profile;
             aac_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
             if (aac_encoder_init(&ctx->aac_encoder, &aac_config) != 0)
             {
@@ -1724,10 +1755,26 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
                 return -1;
             }
         }
+        else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
+        {
+            opus_config.sample_rate = ctx->audio_capture.config.sample_rate;
+            opus_config.channels = ctx->audio_capture.config.channels;
+            opus_config.bitrate = ctx->config.audio.source.encoder.opus.bitrate;
+            opus_config.complexity = ctx->config.audio.source.encoder.opus.complexity;
+            opus_config.enable_vbr = ctx->config.audio.source.encoder.opus.vbr;
+            opus_config.enable_fec = ctx->config.audio.source.encoder.opus.fec;
+            opus_config.enable_dtx = ctx->config.audio.source.encoder.opus.dtx;
+            opus_config.packet_loss_percent = ctx->config.audio.source.encoder.opus.packet_loss_percent;
+            if (opus_audio_encoder_init(&ctx->opus_encoder, &opus_config) != 0)
+            {
+                LOG_ERROR("init opus encoder failed");
+                return -1;
+            }
+        }
         else
         {
             memset(&g711_config, 0, sizeof(g711_config));
-            g711_config.mode = ctx->config.audio.source.g711_mode;
+            g711_config.mode = ctx->config.audio.source.encoder.g711.mode;
             g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
             g711_config.channels = ctx->audio_capture.config.channels;
             g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
@@ -1904,9 +1951,9 @@ static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources
     {
         if (audio_frame_source_init(&res->audio_source,
                                     &ctx->audio_capture,
-                                    ctx->config.audio.source.source_slots,
-                                    ctx->config.audio.source.retry_ms,
-                                    ctx->config.audio.source.max_consecutive_failures) != 0)
+                                    ctx->config.audio.source.runtime.source_slots,
+                                    ctx->config.audio.source.runtime.retry_ms,
+                                    ctx->config.audio.source.runtime.max_consecutive_failures) != 0)
         {
             LOG_ERROR("media_gateway_run failed: init audio frame source");
             return -1;
@@ -1987,7 +2034,7 @@ static int drain_audio_source_once(MediaGatewayCtx *ctx,
     if (!res->audio_source_started)
         return 0;
 
-    while (audio_drain_count < ctx->config.audio.source.source_slots)
+    while (audio_drain_count < ctx->config.audio.source.runtime.source_slots)
     {
         audio_slot_index = -1;
         /* 从音频采集线程队列里面获取最旧帧 */
@@ -2894,8 +2941,10 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     }
     if (ctx->audio_encoder_ready)
     {
-        if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
+        if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
             aac_encoder_deinit(&ctx->aac_encoder);
+        else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
+            opus_audio_encoder_deinit(&ctx->opus_encoder);
         else
             g711_encoder_deinit(&ctx->audio_encoder);
         ctx->audio_encoder_ready = 0;

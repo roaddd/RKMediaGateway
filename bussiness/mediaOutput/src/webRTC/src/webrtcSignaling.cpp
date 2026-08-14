@@ -470,16 +470,17 @@ bool signaling_select_h264_payload_type(const std::string &sdp, uint8_t &selecte
 }
 
 /*
- * 从浏览器 Offer 中选择 G711 音频 payload type。
+ * 从浏览器 Offer 中选择当前配置的 G711/Opus 音频 payload type。
  * 调用时机：收到 Offer 后、添加音频 Track 前。
  * 选择原则：
  * 1. 设备端当前编码为 G711A 时只接受 PCMA/8000；
  * 2. 设备端当前编码为 G711U 时只接受 PCMU/8000；
- * 3. 不使用固定 PT 兜底，必须以浏览器实际 Offer 为准。
+ * 3. 设备端当前编码为 Opus 时只接受 opus/48000/2；
+ * 4. 不使用固定 PT 兜底，必须以浏览器实际 Offer 为准。
  */
-bool signaling_select_g711_payload_type(const std::string &sdp,
-                                        WebRtcAudioCodec codec,
-                                        uint8_t &payloadType)
+bool signaling_select_audio_payload_type(const std::string &sdp,
+                                         WebRtcAudioCodec codec,
+                                         uint8_t &payloadType)
 {
     std::string section;
     std::istringstream lines;
@@ -492,7 +493,7 @@ bool signaling_select_g711_payload_type(const std::string &sdp,
     payloadType = 0;
     section = get_audio_section(sdp);
     if (section.empty()) {
-        LOG_ERROR("[WEBRTC][SIGNALING] select G711 payload type failed: audio section missing");
+        LOG_ERROR("[WEBRTC][SIGNALING] select audio payload type failed: audio section missing");
         return false;
     }
 
@@ -500,8 +501,11 @@ bool signaling_select_g711_payload_type(const std::string &sdp,
         codecToken = " PCMA/8000";
     } else if (codec == WEBRTC_AUDIO_CODEC_PCMU) {
         codecToken = " PCMU/8000";
+    } else if (codec == WEBRTC_AUDIO_CODEC_OPUS) {
+        /* WebRTC SDP 始终以 48 kHz RTP 时钟和双声道能力描述 Opus。 */
+        codecToken = " opus/48000/2";
     } else {
-        LOG_ERROR("[WEBRTC][SIGNALING] select G711 payload type failed: unsupported codec=%d",
+        LOG_ERROR("[WEBRTC][SIGNALING] select audio payload type failed: unsupported codec=%d",
                   static_cast<int>(codec));
         return false;
     }
@@ -532,7 +536,7 @@ bool signaling_select_g711_payload_type(const std::string &sdp,
         return true;
     }
 
-    LOG_ERROR("[WEBRTC][SIGNALING] select G711 payload type failed: codec=%d section_bytes=%zu",
+    LOG_ERROR("[WEBRTC][SIGNALING] select audio payload type failed: codec=%d section_bytes=%zu",
               static_cast<int>(codec),
               section.size());
     return false;

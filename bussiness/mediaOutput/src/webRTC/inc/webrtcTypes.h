@@ -17,7 +17,8 @@ enum H264FrameFormat {
 enum WebRtcAudioCodec {
     WEBRTC_AUDIO_CODEC_NONE = 0, /* 不启用 WebRTC 音频 Track。 */
     WEBRTC_AUDIO_CODEC_PCMA = 1, /* G711 A-law，对应 SDP 中的 PCMA/8000。 */
-    WEBRTC_AUDIO_CODEC_PCMU = 2  /* G711 mu-law，对应 SDP 中的 PCMU/8000。 */
+    WEBRTC_AUDIO_CODEC_PCMU = 2, /* G711 mu-law，对应 SDP 中的 PCMU/8000。 */
+    WEBRTC_AUDIO_CODEC_OPUS = 3  /* Opus，对应 SDP 中的 opus/48000/2。 */
 };
 
 /* WebRTC 视频关键帧请求的来源，用于区分新会话首帧与浏览器解码恢复。 */
@@ -32,9 +33,9 @@ struct WebRtcServerConfig {
     std::string bindAddress; /* WebSocket 信令监听地址。 */
     uint16_t port;           /* WebSocket 信令监听端口。 */
     uint32_t videoFps;       /* 视频帧率，用于缺省 RTP 媒体时间递增。 */
-    WebRtcAudioCodec audioCodec; /* 浏览器音频 Track 使用的 G711 编码类型。 */
-    uint32_t audioSampleRate;     /* 音频采样率，PCMA/PCMU 固定使用 8000Hz。 */
-    uint32_t audioChannels;       /* 音频声道数，PCMA/PCMU 当前只支持单声道。 */
+    WebRtcAudioCodec audioCodec; /* 浏览器音频 Track 使用的 G711/Opus 编码类型。 */
+    uint32_t audioSampleRate;     /* 输入编码采样率：G711=8000，Opus=48000。 */
+    uint32_t audioChannels;       /* 输入编码声道数：G711=mono，Opus=mono/stereo。 */
 };
 
 struct WebRtcVideoFrame {
@@ -46,7 +47,7 @@ struct WebRtcVideoFrame {
 };
 
 struct WebRtcAudioFrame {
-    const uint8_t *data;    /* 编码后的 G711 音频数据地址。 */
+    const uint8_t *data;    /* 编码后的 G711 或裸 Opus packet 数据地址。 */
     size_t size;            /* 编码后音频数据字节数。 */
     uint64_t ptsUs;         /* 媒体时间戳，单位微秒。 */
     WebRtcAudioCodec codec; /* 当前音频帧编码类型，必须和协商出的 Track 一致。 */

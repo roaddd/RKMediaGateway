@@ -783,7 +783,7 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;
 
-    if (ctx->config.audio.source.codec == MEDIA_CODEC_AAC)
+    if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
     {
         if (aac_encoder_encode_s16le(&ctx->aac_encoder,
                                      (const int16_t *)frame->data,
@@ -799,6 +799,21 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
         }
         if (audio_len == 0)
             return 0;
+    }
+    else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
+    {
+        /* 输出为单个裸 Opus packet，WebRTC 层可直接放入一个 RTP payload。 */
+        if (opus_audio_encoder_encode_s16le(&ctx->opus_encoder,
+                                            (const int16_t *)frame->data,
+                                            frame->samples_per_channel,
+                                            &audio_data,
+                                            &audio_len,
+                                            &codec) != 0)
+        {
+            LOG_ERROR("process_gateway_audio failed: opus encode frame=%" PRIu64, frame->frame_id);
+            return -1;
+        }
+        audio_pts_us = frame->pts_us;
     }
     else
     {

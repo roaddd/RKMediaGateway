@@ -1,193 +1,29 @@
-﻿# =========================
-# RKMediaGateway 多路流配置
-# =========================
+﻿# RKMediaGateway TOML configuration
+# Values are grouped by subsystem; integers retain the existing enum meanings.
+
+[gateway]
 
 # 网关公共配置
 # GATEWAY_LOW_LATENCY_MODE: 是否启用低延迟模式，1 表示减少编码和输出缓存。
-GATEWAY_LOW_LATENCY_MODE=1
+low_latency_mode = 1
+
 # GATEWAY_STATS_INTERVAL_SEC: 运行统计日志打印周期，单位秒。
-GATEWAY_STATS_INTERVAL_SEC=5
+stats_interval_sec = 5
+
 # GATEWAY_CAPTURE_RETRY_MS: 视频采集失败后的重试间隔，单位毫秒。
-GATEWAY_CAPTURE_RETRY_MS=5
+capture_retry_ms = 5
+
 # GATEWAY_MAX_CONSECUTIVE_FAILURES: 视频采集连续失败达到该次数后认为采集源异常。
-GATEWAY_MAX_CONSECUTIVE_FAILURES=30
+max_consecutive_failures = 30
+
 # GATEWAY_RECORD_FILE_PATH: 本地录像文件路径，留空表示不录像。
-GATEWAY_RECORD_FILE_PATH=
+record_file_path = ""
+
 # GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES: 本地录像每写入多少帧执行一次 flush。
-GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES=30
+record_flush_interval_frames = 30
+
 # GATEWAY_CONFIG_FILE_PATH: 配置文件路径，用于加载配置和日志展示。
-GATEWAY_CONFIG_FILE_PATH=media_gateway.conf
-# LOG_LEVEL: 0=debug, 1=info, 2=warn, 3=error
-LOG_LEVEL=2
-
-# -------------------------
-# Dynamic frame-rate policy
-# -------------------------
-# AE-driven policy: bright=60fps, normal=30fps, low-light=15fps.
-# DYNAMIC_FPS_ENABLE: 是否启用亮度/AE 感知帧率策略。
-DYNAMIC_FPS_ENABLE=1
-# DYNAMIC_FPS_NORMAL_FPS: 正常光照场景目标帧率。
-DYNAMIC_FPS_NORMAL_FPS=30
-# DYNAMIC_FPS_LOW_LIGHT_FPS: 低照场景目标帧率。
-DYNAMIC_FPS_LOW_LIGHT_FPS=15
-# DYNAMIC_FPS_BRIGHT_FPS: 亮光场景目标帧率。
-DYNAMIC_FPS_BRIGHT_FPS=60
-# DYNAMIC_FPS_MIN_SWITCH_INTERVAL_MS: 两次帧率切换的最小间隔，单位毫秒。
-DYNAMIC_FPS_MIN_SWITCH_INTERVAL_MS=30000
-# DYNAMIC_FPS_EVALUATE_INTERVAL_MS: 亮度/AE 策略评估周期，单位毫秒。
-DYNAMIC_FPS_EVALUATE_INTERVAL_MS=1000
-# DYNAMIC_FPS_BRIGHT_CONFIRM_MS: 亮光候选场景确认时间，单位毫秒。
-DYNAMIC_FPS_BRIGHT_CONFIRM_MS=1000
-# DYNAMIC_FPS_LOW_LIGHT_CONFIRM_MS: 低照候选场景确认时间，单位毫秒。
-DYNAMIC_FPS_LOW_LIGHT_CONFIRM_MS=15000
-# DYNAMIC_FPS_BRIGHT_MAX_EXPOSURE_US: 亮光判定允许的最大曝光时间，单位微秒。
-DYNAMIC_FPS_BRIGHT_MAX_EXPOSURE_US=8000
-# DYNAMIC_FPS_BRIGHT_MAX_ANALOG_GAIN: 亮光判定允许的最大模拟增益。
-DYNAMIC_FPS_BRIGHT_MAX_ANALOG_GAIN=2.0
-# DYNAMIC_FPS_BRIGHT_MIN_MEAN_LUMA: 亮光判定要求的最小平均亮度。
-DYNAMIC_FPS_BRIGHT_MIN_MEAN_LUMA=58
-# DYNAMIC_FPS_LOW_LIGHT_MIN_EXPOSURE_RATIO: 低照判定要求的曝光/帧周期最小比例。
-DYNAMIC_FPS_LOW_LIGHT_MIN_EXPOSURE_RATIO=0.85
-# DYNAMIC_FPS_LOW_LIGHT_MIN_ANALOG_GAIN: 低照判定要求的最小模拟增益。
-DYNAMIC_FPS_LOW_LIGHT_MIN_ANALOG_GAIN=4.0
-# DYNAMIC_FPS_LOW_LIGHT_MAX_MEAN_LUMA: 低照判定允许的最大平均亮度。
-DYNAMIC_FPS_LOW_LIGHT_MAX_MEAN_LUMA=42
-# DYNAMIC_FPS_AE_SCENE_CONFIRM_MS: AE 三态默认确认时间，单位毫秒。
-DYNAMIC_FPS_AE_SCENE_CONFIRM_MS=3000
-
-# -------------------------
-# ISP / RKAIQ lifecycle
-# -------------------------
-# ISP_ENABLE:
-#   0 disables RKAIQ and keeps the existing plain V4L2 capture path.
-#   1 starts RKAIQ before V4L2 STREAMON, then stops it after V4L2 deinit.
-# ISP_SENSOR_NAME can be empty; RKAIQ will try to resolve it from ISP_VIDEO_DEVICE.
-# ISP_WORKING_MODE: 0=normal, 16=HDR2, 32=HDR3 for common RKAIQ SDKs.
-# ISP_FALLBACK_ON_ERROR=1 lets the gateway continue when RKAIQ init fails.
-# ISP_ENABLE: 是否启动 RKAIQ/ISP 控制链路。
-ISP_ENABLE=1
-# ISP_SENSOR_NAME: ISP 传感器名称，留空时按视频设备推断。
-ISP_SENSOR_NAME=
-# ISP_VIDEO_DEVICE: ISP 关联的视频设备节点。
-ISP_VIDEO_DEVICE=/dev/video0
-# ISP_IQ_DIR: RKAIQ IQ 文件目录。
-ISP_IQ_DIR=/etc/iqfiles
-# ISP_FORCE_IQ_FILE: 强制指定 IQ 文件，留空表示自动匹配。
-ISP_FORCE_IQ_FILE=
-# ISP_WIDTH: ISP 输入宽度。
-ISP_WIDTH=2112
-# ISP_HEIGHT: ISP 输入高度。
-ISP_HEIGHT=1568
-# ISP_WORKING_MODE: ISP 工作模式，0=normal，16=HDR2，32=HDR3。
-ISP_WORKING_MODE=0
-# ISP_KEEP_EXTERNAL_HW_STATE: 是否保留外部已配置的硬件状态。
-ISP_KEEP_EXTERNAL_HW_STATE=0
-# ISP_FALLBACK_ON_ERROR: ISP 初始化失败时是否退回普通 V4L2 采集。
-ISP_FALLBACK_ON_ERROR=1
-
-# -------------------------
-# ISP health diagnostics
-# -------------------------
-# ISP_HEALTH_CHECK_ENABLE enables health state evaluation in [ISP_STAT].
-# ISP_META_TIMEOUT_MS marks metas callback stalled after this interval.
-# ISP_MAX_ERROR_COUNT marks ISP unhealthy after this many RKAIQ error callbacks.
-# ISP_RESTART_ON_FAULT is reserved for a future coordinated V4L2/RKAIQ restart path.
-# ISP_HEALTH_CHECK_ENABLE: 是否启用 ISP 健康检查。
-ISP_HEALTH_CHECK_ENABLE=1
-# ISP_META_TIMEOUT_MS: meta 回调超时时间，单位毫秒。
-ISP_META_TIMEOUT_MS=2000
-# ISP_MAX_ERROR_COUNT: ISP 错误回调累计阈值。
-ISP_MAX_ERROR_COUNT=3
-# ISP_RESTART_ON_FAULT: ISP 异常后是否自动重启，当前预留。
-ISP_RESTART_ON_FAULT=0
-
-# -------------------------
-# ISP low-light scene optimization
-# -------------------------
-# Enables automatic night/low-light optimization based on RKAIQ AE env_lux/mean_luma.
-# Enter/exit thresholds use hysteresis to avoid frequent toggling near the boundary.
-# In low light, the gateway can raise exposure/gain, increase NR, lower sharpness,
-# and boost encoder bitrate to absorb sensor noise complexity.
-# ISP_LOW_LIGHT_ENABLE: ISP 低照优化参数：enable。
-ISP_LOW_LIGHT_ENABLE=0
-# ISP_LOW_LIGHT_ENTER_LUX: ISP 低照优化参数：enter lux。
-ISP_LOW_LIGHT_ENTER_LUX=20
-# ISP_LOW_LIGHT_EXIT_LUX: ISP 低照优化参数：exit lux。
-ISP_LOW_LIGHT_EXIT_LUX=35
-# ISP_LOW_LIGHT_ENTER_MEAN_LUMA: ISP 低照优化参数：enter mean luma。
-ISP_LOW_LIGHT_ENTER_MEAN_LUMA=35
-# ISP_LOW_LIGHT_EXIT_MEAN_LUMA: ISP 低照优化参数：exit mean luma。
-ISP_LOW_LIGHT_EXIT_MEAN_LUMA=48
-# ISP_LOW_LIGHT_EXPOSURE_GAIN: ISP 低照优化参数：exposure gain。
-ISP_LOW_LIGHT_EXPOSURE_GAIN=-1
-# ISP_LOW_LIGHT_EXPOSURE_TIME: ISP 低照优化参数：exposure time。
-ISP_LOW_LIGHT_EXPOSURE_TIME=-1
-# ISP_LOW_LIGHT_NR_STRENGTH: ISP 低照优化参数：nr strength。
-ISP_LOW_LIGHT_NR_STRENGTH=70
-# ISP_LOW_LIGHT_SHARPNESS: ISP 低照优化参数：sharpness。
-ISP_LOW_LIGHT_SHARPNESS=35
-# ISP_LOW_LIGHT_NORMAL_NR_STRENGTH: ISP 低照优化参数：normal nr strength。
-ISP_LOW_LIGHT_NORMAL_NR_STRENGTH=-1
-# ISP_LOW_LIGHT_NORMAL_SHARPNESS: ISP 低照优化参数：normal sharpness。
-ISP_LOW_LIGHT_NORMAL_SHARPNESS=-1
-# ISP_LOW_LIGHT_BITRATE_BOOST_PERCENT: ISP 低照优化参数：bitrate boost percent。
-ISP_LOW_LIGHT_BITRATE_BOOST_PERCENT=25
-# ISP_LOW_LIGHT_QP_DELTA: ISP 低照优化参数：qp delta。
-ISP_LOW_LIGHT_QP_DELTA=-3
-# ISP_LOW_LIGHT_MIN_SWITCH_INTERVAL_MS: ISP 低照优化参数：min switch interval ms。
-ISP_LOW_LIGHT_MIN_SWITCH_INTERVAL_MS=5000
-
-# -------------------------
-# ISP runtime image controls
-# -------------------------
-# ISP_CONTROL_ENABLE:
-#   0 keeps IQ/3A defaults unchanged.
-#   1 applies the fields below after RKAIQ start.
-# Integer controls use -1 to skip. Exposure/WB float values use <=0 to skip.
-# OP mode values follow RKAIQ opMode_t: 0=auto, 1=manual, 2=semi-auto.
-# ISP_POWER_LINE_FREQ: -1=skip, 0=disabled, 1=50Hz, 2=60Hz.
-# ISP_CONTROL_ENABLE: ISP 图像控制参数：control enable。
-ISP_CONTROL_ENABLE=0
-# ISP_BRIGHTNESS: ISP 图像控制参数：brightness。
-ISP_BRIGHTNESS=-1
-# ISP_CONTRAST: ISP 图像控制参数：contrast。
-ISP_CONTRAST=-1
-# ISP_SATURATION: ISP 图像控制参数：saturation。
-ISP_SATURATION=-1
-# ISP_HUE: ISP 图像控制参数：hue。
-ISP_HUE=-1
-# ISP_SHARPNESS: ISP 图像控制参数：sharpness。
-ISP_SHARPNESS=-1
-# ISP_EXPOSURE_MODE: ISP 图像控制参数：exposure mode。
-ISP_EXPOSURE_MODE=-1
-# ISP_EXPOSURE_TIME: ISP 图像控制参数：exposure time。
-ISP_EXPOSURE_TIME=-1
-# ISP_EXPOSURE_GAIN: ISP 图像控制参数：exposure gain。
-ISP_EXPOSURE_GAIN=-1
-# ISP_WB_MODE: ISP 图像控制参数：wb mode。
-ISP_WB_MODE=-1
-# ISP_WB_CT: ISP 图像控制参数：wb ct。
-ISP_WB_CT=0
-# ISP_WB_RGAIN: ISP 图像控制参数：wb rgain。
-ISP_WB_RGAIN=-1
-# ISP_WB_GRGAIN: ISP 图像控制参数：wb grgain。
-ISP_WB_GRGAIN=-1
-# ISP_WB_GBGAIN: ISP 图像控制参数：wb gbgain。
-ISP_WB_GBGAIN=-1
-# ISP_WB_BGAIN: ISP 图像控制参数：wb bgain。
-ISP_WB_BGAIN=-1
-# ISP_ANTI_FLICKER_ENABLE: ISP 图像控制参数：anti flicker enable。
-ISP_ANTI_FLICKER_ENABLE=-1
-# ISP_POWER_LINE_FREQ: ISP 图像控制参数：power line freq。
-ISP_POWER_LINE_FREQ=-1
-# ISP_NR_MODE: ISP 图像控制参数：nr mode。
-ISP_NR_MODE=-1
-# ISP_ANR_STRENGTH: ISP 图像控制参数：anr strength。
-ISP_ANR_STRENGTH=-1
-# ISP_DEHAZE_MODE: ISP 图像控制参数：dehaze mode。
-ISP_DEHAZE_MODE=-1
-# ISP_DEHAZE_STRENGTH: ISP 图像控制参数：dehaze strength。
-ISP_DEHAZE_STRENGTH=-1
+config_file_path = "media_gateway.toml"
 
 # 性能测试埋点配置
 # GATEWAY_BENCH_ENABLE:
@@ -197,507 +33,972 @@ ISP_DEHAZE_STRENGTH=-1
 # GATEWAY_BENCH_PRINT_INTERVAL_SEC:
 #   [BENCH_SUMMARY] 汇总日志打印周期，单位秒；不影响逐帧 [BENCH_FRAME] 日志。
 # GATEWAY_BENCH_ENABLE: 是否开启性能埋点日志。
-GATEWAY_BENCH_ENABLE=1
-# GATEWAY_BENCH_SAMPLE_EVERY: 逐帧性能日志采样间隔。
-GATEWAY_BENCH_SAMPLE_EVERY=30
-# GATEWAY_BENCH_PRINT_INTERVAL_SEC: 性能汇总日志打印周期，单位秒。
-GATEWAY_BENCH_PRINT_INTERVAL_SEC=5
+bench_enable = 1
 
-# -------------------------
+# GATEWAY_BENCH_SAMPLE_EVERY: 逐帧性能日志采样间隔。
+bench_sample_every = 30
+
+# GATEWAY_BENCH_PRINT_INTERVAL_SEC: 性能汇总日志打印周期，单位秒。
+bench_print_interval_sec = 5
+
 # 采集源
-# -------------------------
 # 第一阶段采用 main_path/self_path 双采集源设计：
 #   CAPTURE_MAIN_* 通常绑定 rkisp main_path，例如 /dev/video0，推荐 1920x1080。
 #   CAPTURE_SUB_*  通常绑定 rkisp self_path，例如 /dev/video1，推荐 1280x720。
 # STREAM_*_SOURCE_INDEX 用于把码流绑定到采集源：0=main_path，1=self_path。
 # GATEWAY_CAPTURE_SOURCE_COUNT: 采集源数量。
-GATEWAY_CAPTURE_SOURCE_COUNT=2
+capture_source_count = 2
 
+# GATEWAY_STREAM_COUNT: 视频码流数量。
+stream_count = 2
+
+# 网关级默认输出及视频编码参数
+# GATEWAY_ENABLE_RTSP: 是否启用 RTSP 输出。
+enable_rtsp = 1
+
+# GATEWAY_ENABLE_RTMP: 是否启用 RTMP 输出。
+enable_rtmp = 0
+
+# GATEWAY_ENABLE_GB28181: 是否启用 GB28181 输出。
+enable_gb28181 = 1
+
+# GATEWAY_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
+enable_webrtc = 1
+
+# GATEWAY_FPS: 帧率。
+fps = 30
+
+# GATEWAY_BITRATE: 码率，单位 bit/s。
+bitrate = 2097152
+
+# GATEWAY_GOP: GOP 长度。
+gop = 30
+
+# GATEWAY_RC_MODE: 码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 1
+
+# GATEWAY_H264_PROFILE: H.264 profile，例如 100=High。
+h264_profile = 100
+
+# GATEWAY_H264_LEVEL: H.264 level。
+h264_level = 42
+
+# GATEWAY_H264_CABAC_EN: 是否启用 H.264 CABAC。
+h264_cabac_en = 1
+
+# GATEWAY_QP_INIT: 初始 QP。
+qp_init = 30
+
+# GATEWAY_QP_MIN: P/B 帧最小 QP。
+qp_min = 22
+
+# GATEWAY_QP_MAX: P/B 帧最大 QP。
+qp_max = 44
+
+# GATEWAY_QP_MIN_I: I 帧最小 QP。
+qp_min_i = 20
+
+# GATEWAY_QP_MAX_I: I 帧最大 QP。
+qp_max_i = 40
+
+# GATEWAY_QP_MAX_STEP: 相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[log]
+# LOG_LEVEL: 0=debug, 1=info, 2=warn, 3=error
+level = 2
+
+[dynamic_fps]
+# Dynamic frame-rate policy
+# AE-driven policy: bright=60fps, normal=30fps, low-light=15fps.
+# DYNAMIC_FPS_ENABLE: 是否启用亮度/AE 感知帧率策略。
+enable = 1
+
+# DYNAMIC_FPS_NORMAL_FPS: 正常光照场景目标帧率。
+normal_fps = 30
+
+# DYNAMIC_FPS_LOW_LIGHT_FPS: 低照场景目标帧率。
+low_light_fps = 15
+
+# DYNAMIC_FPS_BRIGHT_FPS: 亮光场景目标帧率。
+bright_fps = 60
+
+# DYNAMIC_FPS_MIN_SWITCH_INTERVAL_MS: 两次帧率切换的最小间隔，单位毫秒。
+min_switch_interval_ms = 30000
+
+# DYNAMIC_FPS_EVALUATE_INTERVAL_MS: 亮度/AE 策略评估周期，单位毫秒。
+evaluate_interval_ms = 1000
+
+# DYNAMIC_FPS_BRIGHT_CONFIRM_MS: 亮光候选场景确认时间，单位毫秒。
+bright_confirm_ms = 1000
+
+# DYNAMIC_FPS_LOW_LIGHT_CONFIRM_MS: 低照候选场景确认时间，单位毫秒。
+low_light_confirm_ms = 15000
+
+# DYNAMIC_FPS_BRIGHT_MAX_EXPOSURE_US: 亮光判定允许的最大曝光时间，单位微秒。
+bright_max_exposure_us = 8000
+
+# DYNAMIC_FPS_BRIGHT_MAX_ANALOG_GAIN: 亮光判定允许的最大模拟增益。
+bright_max_analog_gain = 2.0
+
+# DYNAMIC_FPS_BRIGHT_MIN_MEAN_LUMA: 亮光判定要求的最小平均亮度。
+bright_min_mean_luma = 58
+
+# DYNAMIC_FPS_LOW_LIGHT_MIN_EXPOSURE_RATIO: 低照判定要求的曝光/帧周期最小比例。
+low_light_min_exposure_ratio = 0.85
+
+# DYNAMIC_FPS_LOW_LIGHT_MIN_ANALOG_GAIN: 低照判定要求的最小模拟增益。
+low_light_min_analog_gain = 4.0
+
+# DYNAMIC_FPS_LOW_LIGHT_MAX_MEAN_LUMA: 低照判定允许的最大平均亮度。
+low_light_max_mean_luma = 42
+
+# DYNAMIC_FPS_AE_SCENE_CONFIRM_MS: AE 三态默认确认时间，单位毫秒。
+ae_scene_confirm_ms = 3000
+
+[isp]
+# ISP / RKAIQ lifecycle
+# ISP_ENABLE:
+#   0 disables RKAIQ and keeps the existing plain V4L2 capture path.
+#   1 starts RKAIQ before V4L2 STREAMON, then stops it after V4L2 deinit.
+# ISP_SENSOR_NAME can be empty; RKAIQ will try to resolve it from ISP_VIDEO_DEVICE.
+# ISP_WORKING_MODE: 0=normal, 16=HDR2, 32=HDR3 for common RKAIQ SDKs.
+# ISP_FALLBACK_ON_ERROR=1 lets the gateway continue when RKAIQ init fails.
+# ISP_ENABLE: 是否启动 RKAIQ/ISP 控制链路。
+enable = 1
+
+# ISP_SENSOR_NAME: ISP 传感器名称，留空时按视频设备推断。
+sensor_name = ""
+
+# ISP_VIDEO_DEVICE: ISP 关联的视频设备节点。
+video_device = "/dev/video0"
+
+# ISP_IQ_DIR: RKAIQ IQ 文件目录。
+iq_dir = "/etc/iqfiles"
+
+# ISP_FORCE_IQ_FILE: 强制指定 IQ 文件，留空表示自动匹配。
+force_iq_file = ""
+
+# ISP_WIDTH: ISP 输入宽度。
+width = 2112
+
+# ISP_HEIGHT: ISP 输入高度。
+height = 1568
+
+# ISP_WORKING_MODE: ISP 工作模式，0=normal，16=HDR2，32=HDR3。
+working_mode = 0
+
+# ISP_KEEP_EXTERNAL_HW_STATE: 是否保留外部已配置的硬件状态。
+keep_external_hw_state = 0
+
+# ISP_FALLBACK_ON_ERROR: ISP 初始化失败时是否退回普通 V4L2 采集。
+fallback_on_error = 1
+
+# ISP health diagnostics
+# ISP_HEALTH_CHECK_ENABLE enables health state evaluation in [ISP_STAT].
+# ISP_META_TIMEOUT_MS marks metas callback stalled after this interval.
+# ISP_MAX_ERROR_COUNT marks ISP unhealthy after this many RKAIQ error callbacks.
+# ISP_RESTART_ON_FAULT is reserved for a future coordinated V4L2/RKAIQ restart path.
+# ISP_HEALTH_CHECK_ENABLE: 是否启用 ISP 健康检查。
+health_check_enable = 1
+
+# ISP_META_TIMEOUT_MS: meta 回调超时时间，单位毫秒。
+meta_timeout_ms = 2000
+
+# ISP_MAX_ERROR_COUNT: ISP 错误回调累计阈值。
+max_error_count = 3
+
+# ISP_RESTART_ON_FAULT: ISP 异常后是否自动重启，当前预留。
+restart_on_fault = 0
+
+# ISP runtime image controls
+# ISP_CONTROL_ENABLE:
+#   0 keeps IQ/3A defaults unchanged.
+#   1 applies the fields below after RKAIQ start.
+# Integer controls use -1 to skip. Exposure/WB float values use <=0 to skip.
+# OP mode values follow RKAIQ opMode_t: 0=auto, 1=manual, 2=semi-auto.
+# ISP_POWER_LINE_FREQ: -1=skip, 0=disabled, 1=50Hz, 2=60Hz.
+# ISP_CONTROL_ENABLE: ISP 图像控制参数：control enable。
+control_enable = 0
+
+# ISP_BRIGHTNESS: ISP 图像控制参数：brightness。
+brightness = -1
+
+# ISP_CONTRAST: ISP 图像控制参数：contrast。
+contrast = -1
+
+# ISP_SATURATION: ISP 图像控制参数：saturation。
+saturation = -1
+
+# ISP_HUE: ISP 图像控制参数：hue。
+hue = -1
+
+# ISP_SHARPNESS: ISP 图像控制参数：sharpness。
+sharpness = -1
+
+# ISP_EXPOSURE_MODE: ISP 图像控制参数：exposure mode。
+exposure_mode = -1
+
+# ISP_EXPOSURE_TIME: ISP 图像控制参数：exposure time。
+exposure_time = -1
+
+# ISP_EXPOSURE_GAIN: ISP 图像控制参数：exposure gain。
+exposure_gain = -1
+
+# ISP_WB_MODE: ISP 图像控制参数：wb mode。
+wb_mode = -1
+
+# ISP_WB_CT: ISP 图像控制参数：wb ct。
+wb_ct = 0
+
+# ISP_WB_RGAIN: ISP 图像控制参数：wb rgain。
+wb_rgain = -1
+
+# ISP_WB_GRGAIN: ISP 图像控制参数：wb grgain。
+wb_grgain = -1
+
+# ISP_WB_GBGAIN: ISP 图像控制参数：wb gbgain。
+wb_gbgain = -1
+
+# ISP_WB_BGAIN: ISP 图像控制参数：wb bgain。
+wb_bgain = -1
+
+# ISP_ANTI_FLICKER_ENABLE: ISP 图像控制参数：anti flicker enable。
+anti_flicker_enable = -1
+
+# ISP_POWER_LINE_FREQ: ISP 图像控制参数：power line freq。
+power_line_freq = -1
+
+# ISP_NR_MODE: ISP 图像控制参数：nr mode。
+nr_mode = -1
+
+# ISP_ANR_STRENGTH: ISP 图像控制参数：anr strength。
+anr_strength = -1
+
+# ISP_DEHAZE_MODE: ISP 图像控制参数：dehaze mode。
+dehaze_mode = -1
+
+# ISP_DEHAZE_STRENGTH: ISP 图像控制参数：dehaze strength。
+dehaze_strength = -1
+
+[isp.low_light]
+# ISP low-light scene optimization
+# Enables automatic night/low-light optimization based on RKAIQ AE env_lux/mean_luma.
+# Enter/exit thresholds use hysteresis to avoid frequent toggling near the boundary.
+# In low light, the gateway can raise exposure/gain, increase NR, lower sharpness,
+# and boost encoder bitrate to absorb sensor noise complexity.
+# ISP_LOW_LIGHT_ENABLE: ISP 低照优化参数：enable。
+enable = 0
+
+# ISP_LOW_LIGHT_ENTER_LUX: ISP 低照优化参数：enter lux。
+enter_lux = 20
+
+# ISP_LOW_LIGHT_EXIT_LUX: ISP 低照优化参数：exit lux。
+exit_lux = 35
+
+# ISP_LOW_LIGHT_ENTER_MEAN_LUMA: ISP 低照优化参数：enter mean luma。
+enter_mean_luma = 35
+
+# ISP_LOW_LIGHT_EXIT_MEAN_LUMA: ISP 低照优化参数：exit mean luma。
+exit_mean_luma = 48
+
+# ISP_LOW_LIGHT_EXPOSURE_GAIN: ISP 低照优化参数：exposure gain。
+exposure_gain = -1
+
+# ISP_LOW_LIGHT_EXPOSURE_TIME: ISP 低照优化参数：exposure time。
+exposure_time = -1
+
+# ISP_LOW_LIGHT_NR_STRENGTH: ISP 低照优化参数：nr strength。
+nr_strength = 70
+
+# ISP_LOW_LIGHT_SHARPNESS: ISP 低照优化参数：sharpness。
+sharpness = 35
+
+# ISP_LOW_LIGHT_NORMAL_NR_STRENGTH: ISP 低照优化参数：normal nr strength。
+normal_nr_strength = -1
+
+# ISP_LOW_LIGHT_NORMAL_SHARPNESS: ISP 低照优化参数：normal sharpness。
+normal_sharpness = -1
+
+# ISP_LOW_LIGHT_BITRATE_BOOST_PERCENT: ISP 低照优化参数：bitrate boost percent。
+bitrate_boost_percent = 25
+
+# ISP_LOW_LIGHT_QP_DELTA: ISP 低照优化参数：qp delta。
+qp_delta = -3
+
+# ISP_LOW_LIGHT_MIN_SWITCH_INTERVAL_MS: ISP 低照优化参数：min switch interval ms。
+min_switch_interval_ms = 5000
+
+[capture.main]
 # CAPTURE_MAIN_ENABLE: 是否启用该对象。
-CAPTURE_MAIN_ENABLE=1
+enable = 1
+
 # CAPTURE_MAIN_NAME: 名称，用于日志和通道标识。
-CAPTURE_MAIN_NAME=main_path
+name = "main_path"
+
 # CAPTURE_MAIN_DEVICE: 设备节点。
-CAPTURE_MAIN_DEVICE=/dev/video0
+device = "/dev/video0"
+
 # CAPTURE_MAIN_WIDTH: 宽度。
-CAPTURE_MAIN_WIDTH=1920
+width = 1920
+
 # CAPTURE_MAIN_HEIGHT: 高度。
-CAPTURE_MAIN_HEIGHT=1080
+height = 1080
+
 # CAPTURE_MAIN_PIXELFORMAT: 像素格式，十进制 V4L2 fourcc。
-CAPTURE_MAIN_PIXELFORMAT=842094158
+pixelformat = 842094158
+
 # CAPTURE_MAIN_BUFFER_COUNT: 缓冲区数量。
-CAPTURE_MAIN_BUFFER_COUNT=4
+buffer_count = 4
 
+[capture.sub]
 # CAPTURE_SUB_ENABLE: 是否启用该对象。
-CAPTURE_SUB_ENABLE=1
-# CAPTURE_SUB_NAME: 名称，用于日志和通道标识。
-CAPTURE_SUB_NAME=self_path
-# CAPTURE_SUB_DEVICE: 设备节点。
-CAPTURE_SUB_DEVICE=/dev/video1
-# CAPTURE_SUB_WIDTH: 宽度。
-CAPTURE_SUB_WIDTH=1280
-# CAPTURE_SUB_HEIGHT: 高度。
-CAPTURE_SUB_HEIGHT=720
-# CAPTURE_SUB_PIXELFORMAT: 像素格式，十进制 V4L2 fourcc。
-CAPTURE_SUB_PIXELFORMAT=842094158
-# CAPTURE_SUB_BUFFER_COUNT: 缓冲区数量。
-CAPTURE_SUB_BUFFER_COUNT=4
+enable = 1
 
-# -------------------------
+# CAPTURE_SUB_NAME: 名称，用于日志和通道标识。
+name = "self_path"
+
+# CAPTURE_SUB_DEVICE: 设备节点。
+device = "/dev/video1"
+
+# CAPTURE_SUB_WIDTH: 宽度。
+width = 1280
+
+# CAPTURE_SUB_HEIGHT: 高度。
+height = 720
+
+# CAPTURE_SUB_PIXELFORMAT: 像素格式，十进制 V4L2 fourcc。
+pixelformat = 842094158
+
+# CAPTURE_SUB_BUFFER_COUNT: 缓冲区数量。
+buffer_count = 4
+
+[audio]
 # audio source
-# -------------------------
 # AUDIO_ENABLE:
 #   0 disables audio capture/encode.
 #   1 enables ALSA capture -> configured audio encoder, then sends audio to outputs bound by AUDIO_BIND_STREAM_INDEX.
 # AUDIO_FORMAT: 1 = PCM S16LE.
-# AUDIO_CODEC: 4 = G711 A-law, 5 = G711 mu-law, 2 = AAC.
+# AUDIO_CODEC: 4 = G711 A-law, 5 = G711 mu-law, 2 = AAC, 6 = Opus.
 # AUDIO_G711_MODE: 0 = G711 A-law, 1 = G711 mu-law.
 # AUDIO_AAC_PROFILE: 2 = AAC-LC.
 # AUDIO_ENABLE: 是否启用音频采集和编码。
-AUDIO_ENABLE=1
-# AUDIO_DEVICE: ALSA 音频设备名。
-AUDIO_DEVICE=default
-# AUDIO_SAMPLE_RATE: 音频采样率。
-AUDIO_SAMPLE_RATE=8000
-# AUDIO_CHANNELS: 音频通道数。
-AUDIO_CHANNELS=1
-# AUDIO_FORMAT: 音频采样格式，1=PCM S16LE。
-AUDIO_FORMAT=1
-# AUDIO_PERIOD_FRAMES: ALSA period 帧数。
-AUDIO_PERIOD_FRAMES=160
-# AUDIO_BUFFER_PERIODS: ALSA buffer 包含的 period 数。
-AUDIO_BUFFER_PERIODS=4
-# AUDIO_SOURCE_SLOTS: 音频帧源缓存槽数量。
-AUDIO_SOURCE_SLOTS=8
-# AUDIO_RETRY_MS: 音频采集失败重试间隔，单位毫秒。
-AUDIO_RETRY_MS=5
-# AUDIO_MAX_CONSECUTIVE_FAILURES: 音频连续失败阈值。
-AUDIO_MAX_CONSECUTIVE_FAILURES=30
-# AUDIO_CODEC: 音频编码格式，4=G711A，5=G711U，2=AAC。
-AUDIO_CODEC=4
-# AUDIO_G711_MODE: G711 模式，0=A-law，1=mu-law。
-AUDIO_G711_MODE=0
-# AUDIO_AAC_BITRATE: AAC 目标码率。
-AUDIO_AAC_BITRATE=32000
-# AUDIO_AAC_PROFILE: AAC profile，2=AAC-LC。
-AUDIO_AAC_PROFILE=2
+enable = 1
+
 # AUDIO_BIND_STREAM_INDEX: 音频绑定的视频流索引。
-AUDIO_BIND_STREAM_INDEX=0
+bind_stream_index = 0
 
-# GATEWAY_STREAM_COUNT: 视频码流数量。
-GATEWAY_STREAM_COUNT=2
+[audio.capture]
+# AUDIO_DEVICE: ALSA 音频设备名。
+device = "default"
 
-# -------------------------
+# AUDIO_SAMPLE_RATE: 音频采样率。
+sample_rate = 48000
+
+# AUDIO_CHANNELS: 音频通道数。
+channels = 1
+
+# AUDIO_FORMAT: 音频采样格式，1=PCM S16LE。
+format = 1
+
+# AUDIO_PERIOD_FRAMES: 一个 ALSA period 包含的 PCM 帧数。
+period_frames = 960
+
+# AUDIO_BUFFER_PERIODS: ALSA 缓冲区包含的 period 数量。
+buffer_periods = 4
+
+[audio.runtime]
+# AUDIO_SOURCE_SLOTS: 音频帧源缓存槽数量。
+source_slots = 8
+
+# AUDIO_RETRY_MS: 音频采集失败重试间隔，单位毫秒。
+retry_ms = 5
+
+# AUDIO_MAX_CONSECUTIVE_FAILURES: 音频连续失败阈值。
+max_consecutive_failures = 30
+
+[audio.encoder]
+# AUDIO_CODEC: 音频编码格式，4=G711A，5=G711U，2=AAC，6=Opus。
+codec = 6
+
+[audio.encoder.g711]
+# AUDIO_G711_MODE: G711 模式，0=A-law，1=mu-law。
+mode = 0
+
+[audio.encoder.aac]
+# AUDIO_AAC_BITRATE: AAC 目标码率。
+bitrate = 32000
+
+# AUDIO_AAC_PROFILE: AAC profile，2=AAC-LC。
+profile = 2
+
+[audio.encoder.opus]
+# Opus/WebRTC 推荐：AUDIO_SAMPLE_RATE=48000、AUDIO_PERIOD_FRAMES=960（20ms）。
+bitrate = 24000
+
+complexity = 6
+
+vbr = 1
+
+fec = 1
+
+dtx = 0
+
+packet_loss_percent = 10
+
+[stream.main]
 # main 码流
-# -------------------------
 # STREAM_MAIN_ENABLE: 是否启用该对象。
-STREAM_MAIN_ENABLE=1
+enable = 1
+
 # STREAM_MAIN_NAME: 名称，用于日志和通道标识。
-STREAM_MAIN_NAME=main
+name = "main"
+
 # STREAM_MAIN_SOURCE_INDEX: 绑定的采集源索引，0=main_path，1=self_path。
-STREAM_MAIN_SOURCE_INDEX=0
+source_index = 0
+
 # STREAM_MAIN_WIDTH: 宽度。
-STREAM_MAIN_WIDTH=1920
+width = 1920
+
 # STREAM_MAIN_HEIGHT: 高度。
-STREAM_MAIN_HEIGHT=1080
+height = 1080
+
 # STREAM_MAIN_FPS: 帧率。
-STREAM_MAIN_FPS=30
+fps = 30
+
 # STREAM_MAIN_BITRATE: 码率，单位 bit/s。
-STREAM_MAIN_BITRATE=6291456
+bitrate = 6291456
+
 # STREAM_MAIN_GOP: GOP 长度。
-STREAM_MAIN_GOP=30
+gop = 30
+
 # STREAM_MAIN_RC_MODE: 码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_MAIN_RC_MODE=1 # 0=VBR, 1=CBR, 2=FIXQP, 3=AVBR
+rc_mode = 1
+
 # STREAM_MAIN_H264_PROFILE: H.264 profile，例如 100=High。
-STREAM_MAIN_H264_PROFILE=100
+h264_profile = 100
+
 # STREAM_MAIN_H264_LEVEL: H.264 level。
-STREAM_MAIN_H264_LEVEL=42
+h264_level = 42
+
 # STREAM_MAIN_H264_CABAC_EN: 是否启用 H.264 CABAC。
-STREAM_MAIN_H264_CABAC_EN=1
+h264_cabac_en = 1
+
 # STREAM_MAIN_QP_INIT: 初始 QP。
-STREAM_MAIN_QP_INIT=30
+qp_init = 30
+
 # STREAM_MAIN_QP_MIN: P/B 帧最小 QP。
-STREAM_MAIN_QP_MIN=22
+qp_min = 22
+
 # STREAM_MAIN_QP_MAX: P/B 帧最大 QP。
-STREAM_MAIN_QP_MAX=44
+qp_max = 44
+
 # STREAM_MAIN_QP_MIN_I: I 帧最小 QP。
-STREAM_MAIN_QP_MIN_I=20
+qp_min_i = 20
+
 # STREAM_MAIN_QP_MAX_I: I 帧最大 QP。
-STREAM_MAIN_QP_MAX_I=40
+qp_max_i = 40
+
 # STREAM_MAIN_QP_MAX_STEP: 相邻帧 QP 最大变化步长。
-STREAM_MAIN_QP_MAX_STEP=8
-# 主码流动态帧率档位：setFps 会按目标 FPS 整体切换 fps/bitrate/gop/rc/QP。
-# STREAM_MAIN_DYNAMIC_LOW_FPS: 低照档位帧率。
-STREAM_MAIN_DYNAMIC_LOW_FPS=15
-# STREAM_MAIN_DYNAMIC_LOW_BITRATE: 低照档位码率，单位 bit/s。
-STREAM_MAIN_DYNAMIC_LOW_BITRATE=3145728
-# STREAM_MAIN_DYNAMIC_LOW_GOP: 低照档位GOP 长度。
-STREAM_MAIN_DYNAMIC_LOW_GOP=15
-# STREAM_MAIN_DYNAMIC_LOW_RC_MODE: 低照档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_MAIN_DYNAMIC_LOW_RC_MODE=1
-# STREAM_MAIN_DYNAMIC_LOW_QP_INIT: 低照档位初始 QP。
-STREAM_MAIN_DYNAMIC_LOW_QP_INIT=30
-# STREAM_MAIN_DYNAMIC_LOW_QP_MIN: 低照档位P/B 帧最小 QP。
-STREAM_MAIN_DYNAMIC_LOW_QP_MIN=22
-# STREAM_MAIN_DYNAMIC_LOW_QP_MAX: 低照档位P/B 帧最大 QP。
-STREAM_MAIN_DYNAMIC_LOW_QP_MAX=44
-# STREAM_MAIN_DYNAMIC_LOW_QP_MIN_I: 低照档位I 帧最小 QP。
-STREAM_MAIN_DYNAMIC_LOW_QP_MIN_I=20
-# STREAM_MAIN_DYNAMIC_LOW_QP_MAX_I: 低照档位I 帧最大 QP。
-STREAM_MAIN_DYNAMIC_LOW_QP_MAX_I=40
-# STREAM_MAIN_DYNAMIC_LOW_QP_MAX_STEP: 低照档位相邻帧 QP 最大变化步长。
-STREAM_MAIN_DYNAMIC_LOW_QP_MAX_STEP=8
-# STREAM_MAIN_DYNAMIC_NORMAL_FPS: 正常档位帧率。
-STREAM_MAIN_DYNAMIC_NORMAL_FPS=30
-# STREAM_MAIN_DYNAMIC_NORMAL_BITRATE: 正常档位码率，单位 bit/s。
-STREAM_MAIN_DYNAMIC_NORMAL_BITRATE=6291456
-# STREAM_MAIN_DYNAMIC_NORMAL_GOP: 正常档位GOP 长度。
-STREAM_MAIN_DYNAMIC_NORMAL_GOP=30
-# STREAM_MAIN_DYNAMIC_NORMAL_RC_MODE: 正常档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_MAIN_DYNAMIC_NORMAL_RC_MODE=1
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_INIT: 正常档位初始 QP。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_INIT=30
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN: 正常档位P/B 帧最小 QP。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN=22
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX: 正常档位P/B 帧最大 QP。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX=44
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN_I: 正常档位I 帧最小 QP。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN_I=20
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_I: 正常档位I 帧最大 QP。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_I=40
-# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_STEP: 正常档位相邻帧 QP 最大变化步长。
-STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_STEP=8
-# STREAM_MAIN_DYNAMIC_BRIGHT_FPS: 亮光档位帧率。
-STREAM_MAIN_DYNAMIC_BRIGHT_FPS=60
-# STREAM_MAIN_DYNAMIC_BRIGHT_BITRATE: 亮光档位码率，单位 bit/s。
-STREAM_MAIN_DYNAMIC_BRIGHT_BITRATE=12582912
-# STREAM_MAIN_DYNAMIC_BRIGHT_GOP: 亮光档位GOP 长度。
-STREAM_MAIN_DYNAMIC_BRIGHT_GOP=60
-# STREAM_MAIN_DYNAMIC_BRIGHT_RC_MODE: 亮光档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_MAIN_DYNAMIC_BRIGHT_RC_MODE=1
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_INIT: 亮光档位初始 QP。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_INIT=30
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN: 亮光档位P/B 帧最小 QP。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN=22
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX: 亮光档位P/B 帧最大 QP。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX=44
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN_I: 亮光档位I 帧最小 QP。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN_I=20
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_I: 亮光档位I 帧最大 QP。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_I=40
-# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_STEP: 亮光档位相邻帧 QP 最大变化步长。
-STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_STEP=8
+qp_max_step = 8
 
 # STREAM_MAIN_ENABLE_RTSP: 是否启用 RTSP 输出。
-STREAM_MAIN_ENABLE_RTSP=1
+enable_rtsp = 1
+
 # STREAM_MAIN_ENABLE_RTMP: 是否启用 RTMP 输出。
-STREAM_MAIN_ENABLE_RTMP=0
+enable_rtmp = 0
+
 # STREAM_MAIN_ENABLE_GB28181: 是否启用 GB28181 输出。
-STREAM_MAIN_ENABLE_GB28181=0
+enable_gb28181 = 0
+
 # STREAM_MAIN_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
-STREAM_MAIN_ENABLE_WEBRTC=1
+enable_webrtc = 1
 
+[stream.main.dynamic.low]
+# 主码流动态帧率档位：setFps 会按目标 FPS 整体切换 fps/bitrate/gop/rc/QP。
+# STREAM_MAIN_DYNAMIC_LOW_FPS: 低照档位帧率。
+fps = 15
+
+# STREAM_MAIN_DYNAMIC_LOW_BITRATE: 低照档位码率，单位 bit/s。
+bitrate = 3145728
+
+# STREAM_MAIN_DYNAMIC_LOW_GOP: 低照档位GOP 长度。
+gop = 15
+
+# STREAM_MAIN_DYNAMIC_LOW_RC_MODE: 低照档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 1
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_INIT: 低照档位初始 QP。
+qp_init = 30
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_MIN: 低照档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_MAX: 低照档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_MIN_I: 低照档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_MAX_I: 低照档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_MAIN_DYNAMIC_LOW_QP_MAX_STEP: 低照档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.main.dynamic.normal]
+# STREAM_MAIN_DYNAMIC_NORMAL_FPS: 正常档位帧率。
+fps = 30
+
+# STREAM_MAIN_DYNAMIC_NORMAL_BITRATE: 正常档位码率，单位 bit/s。
+bitrate = 6291456
+
+# STREAM_MAIN_DYNAMIC_NORMAL_GOP: 正常档位GOP 长度。
+gop = 30
+
+# STREAM_MAIN_DYNAMIC_NORMAL_RC_MODE: 正常档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 1
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_INIT: 正常档位初始 QP。
+qp_init = 30
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN: 正常档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX: 正常档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_MIN_I: 正常档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_I: 正常档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_MAIN_DYNAMIC_NORMAL_QP_MAX_STEP: 正常档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.main.dynamic.bright]
+# STREAM_MAIN_DYNAMIC_BRIGHT_FPS: 亮光档位帧率。
+fps = 60
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_BITRATE: 亮光档位码率，单位 bit/s。
+bitrate = 12582912
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_GOP: 亮光档位GOP 长度。
+gop = 60
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_RC_MODE: 亮光档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 1
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_INIT: 亮光档位初始 QP。
+qp_init = 30
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN: 亮光档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX: 亮光档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MIN_I: 亮光档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_I: 亮光档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_MAIN_DYNAMIC_BRIGHT_QP_MAX_STEP: 亮光档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.main.rtsp]
 # STREAM_MAIN_RTSP_NAME: 名称，用于日志和通道标识。
-STREAM_MAIN_RTSP_NAME=rtsp-main
+name = "rtsp-main"
+
 # STREAM_MAIN_RTSP_SESSION_NAME: RTSP 会话名。
-STREAM_MAIN_RTSP_SESSION_NAME=live_main
+session_name = "live_main"
+
 # STREAM_MAIN_RTSP_SERVER_IP: 服务器 IP。
-STREAM_MAIN_RTSP_SERVER_IP=0.0.0.0
+server_ip = "0.0.0.0"
+
 # STREAM_MAIN_RTSP_SERVER_PORT: 服务器端口。
-STREAM_MAIN_RTSP_SERVER_PORT=8554
+server_port = 8554
+
 # STREAM_MAIN_RTSP_AUTH_ENABLE: 是否启用认证。
-STREAM_MAIN_RTSP_AUTH_ENABLE=0
+auth_enable = 0
+
 # STREAM_MAIN_RTSP_USER: 认证用户名。
-STREAM_MAIN_RTSP_USER=admin
+user = "admin"
+
 # STREAM_MAIN_RTSP_PASSWORD: 认证密码。
-STREAM_MAIN_RTSP_PASSWORD=123456
+password = 123456
+
 # STREAM_MAIN_RTSP_QUEUE_CAPACITY: 输出队列容量。
-STREAM_MAIN_RTSP_QUEUE_CAPACITY=32
+queue_capacity = 32
+
 # STREAM_MAIN_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT: 新 RTSP 客户端连接后是否立即发送 SPS/PPS。
-STREAM_MAIN_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=0
+immediate_sps_pps_on_new_client = 0
 
+[stream.main.rtmp]
 # STREAM_MAIN_RTMP_NAME: 名称，用于日志和通道标识。
-STREAM_MAIN_RTMP_NAME=rtmp-main
+name = "rtmp-main"
+
 # STREAM_MAIN_RTMP_PUBLISH_URL: RTMP 推流地址。
-STREAM_MAIN_RTMP_PUBLISH_URL=
+publish_url = ""
+
 # STREAM_MAIN_RTMP_QUEUE_CAPACITY: 输出队列容量。
-STREAM_MAIN_RTMP_QUEUE_CAPACITY=64
+queue_capacity = 64
+
 # STREAM_MAIN_RTMP_RECONNECT_INTERVAL_MS: 重连间隔，单位毫秒。
-STREAM_MAIN_RTMP_RECONNECT_INTERVAL_MS=1000
+reconnect_interval_ms = 1000
+
 # STREAM_MAIN_RTMP_CONNECT_TIMEOUT_MS: 连接超时时间，单位毫秒。
-STREAM_MAIN_RTMP_CONNECT_TIMEOUT_MS=3000
+connect_timeout_ms = 3000
+
 # STREAM_MAIN_RTMP_AUDIO_ENABLED: 是否携带音频。
-STREAM_MAIN_RTMP_AUDIO_ENABLED=0
+audio_enabled = 0
+
 # STREAM_MAIN_RTMP_VIDEO_WIDTH: 视频元数据宽度。
-STREAM_MAIN_RTMP_VIDEO_WIDTH=1920
+video_width = 1920
+
 # STREAM_MAIN_RTMP_VIDEO_HEIGHT: 视频元数据高度。
-STREAM_MAIN_RTMP_VIDEO_HEIGHT=1080
+video_height = 1080
+
 # STREAM_MAIN_RTMP_VIDEO_FPS: 视频元数据帧率。
-STREAM_MAIN_RTMP_VIDEO_FPS=30
+video_fps = 30
+
 # STREAM_MAIN_RTMP_VIDEO_BITRATE: 视频元数据码率。
-STREAM_MAIN_RTMP_VIDEO_BITRATE=2097152
+video_bitrate = 2097152
+
 # STREAM_MAIN_RTMP_VIDEO_CODEC_NAME: 视频编码名称。
-STREAM_MAIN_RTMP_VIDEO_CODEC_NAME=H264
+video_codec_name = "H264"
+
 # STREAM_MAIN_RTMP_ENCODER_NAME: 编码器名称。
-STREAM_MAIN_RTMP_ENCODER_NAME=RKMediaGateway
+encoder_name = "RKMediaGateway"
 
+[stream.main.webrtc]
 # STREAM_MAIN_WEBRTC_NAME: WebRTC 输出名称，用于日志和通道标识。
-STREAM_MAIN_WEBRTC_NAME=webrtc-main
+name = "webrtc-main"
+
 # STREAM_MAIN_WEBRTC_BIND_ADDRESS: WebSocket 信令服务监听地址。
-STREAM_MAIN_WEBRTC_BIND_ADDRESS=0.0.0.0
+bind_address = "0.0.0.0"
+
 # STREAM_MAIN_WEBRTC_PORT: WebSocket 信令服务端口，浏览器连接 ws://设备IP:端口/browser。
-STREAM_MAIN_WEBRTC_PORT=8000
+port = 8000
+
 # STREAM_MAIN_WEBRTC_QUEUE_CAPACITY: WebRTC 输出队列容量。
-STREAM_MAIN_WEBRTC_QUEUE_CAPACITY=32
+queue_capacity = 32
+
 # STREAM_MAIN_WEBRTC_VIDEO_FPS: WebRTC RTP 视频时间戳使用的帧率。
-STREAM_MAIN_WEBRTC_VIDEO_FPS=30
+video_fps = 30
 
+[stream.main.gb28181]
 # STREAM_MAIN_GB28181_NAME: 名称，用于日志和通道标识。
-STREAM_MAIN_GB28181_NAME=gb28181-main
-# STREAM_MAIN_GB28181_SERVER_IP: 服务器 IP。
-STREAM_MAIN_GB28181_SERVER_IP=192.168.1.1
-# STREAM_MAIN_GB28181_SERVER_PORT: 服务器端口。
-STREAM_MAIN_GB28181_SERVER_PORT=5060
-# STREAM_MAIN_GB28181_SERVER_DOMAIN: GB28181 服务器域。
-STREAM_MAIN_GB28181_SERVER_DOMAIN=3402000000
-# STREAM_MAIN_GB28181_SERVER_ID: GB28181 服务器 ID。
-STREAM_MAIN_GB28181_SERVER_ID=34020000002000000001
-# STREAM_MAIN_GB28181_DEVICE_ID: GB28181 设备 ID。
-STREAM_MAIN_GB28181_DEVICE_ID=34020000001320000001
-# STREAM_MAIN_GB28181_DEVICE_DOMAIN: GB28181 设备域。
-STREAM_MAIN_GB28181_DEVICE_DOMAIN=3402000000
-# STREAM_MAIN_GB28181_DEVICE_PASSWORD: GB28181 设备密码。
-STREAM_MAIN_GB28181_DEVICE_PASSWORD=12345678
-# STREAM_MAIN_GB28181_BIND_IP: 本地绑定 IP。
-STREAM_MAIN_GB28181_BIND_IP=0.0.0.0
-# STREAM_MAIN_GB28181_LOCAL_SIP_PORT: 本地 SIP 端口。
-STREAM_MAIN_GB28181_LOCAL_SIP_PORT=5060
-# STREAM_MAIN_GB28181_CONTACT_IP: SIP Contact IP。
-STREAM_MAIN_GB28181_CONTACT_IP=192.168.1.100
-# STREAM_MAIN_GB28181_MEDIA_IP: RTP 媒体 IP。
-STREAM_MAIN_GB28181_MEDIA_IP=192.168.1.100
-# STREAM_MAIN_GB28181_MEDIA_PORT: RTP 媒体端口。
-STREAM_MAIN_GB28181_MEDIA_PORT=30000
-# STREAM_MAIN_GB28181_REGISTER_EXPIRES: 注册有效期，单位秒。
-STREAM_MAIN_GB28181_REGISTER_EXPIRES=3600
-# STREAM_MAIN_GB28181_KEEPALIVE_INTERVAL: 保活周期，单位秒。
-STREAM_MAIN_GB28181_KEEPALIVE_INTERVAL=60
-# STREAM_MAIN_GB28181_REGISTER_RETRY_INTERVAL: 注册失败重试间隔，单位秒。
-STREAM_MAIN_GB28181_REGISTER_RETRY_INTERVAL=5
-# STREAM_MAIN_GB28181_DEVICE_NAME: GB28181 设备名称。
-STREAM_MAIN_GB28181_DEVICE_NAME=RK3568 Camera
-# STREAM_MAIN_GB28181_MANUFACTURER: GB28181 厂商。
-STREAM_MAIN_GB28181_MANUFACTURER=Topeet
-# STREAM_MAIN_GB28181_MODEL: GB28181 型号。
-STREAM_MAIN_GB28181_MODEL=RKMediaGateway
-# STREAM_MAIN_GB28181_FIRMWARE: GB28181 固件版本。
-STREAM_MAIN_GB28181_FIRMWARE=1.0.0
-# STREAM_MAIN_GB28181_CHANNEL_ID: GB28181 通道 ID。
-STREAM_MAIN_GB28181_CHANNEL_ID=34020000001320000001
-# STREAM_MAIN_GB28181_USER_AGENT: SIP User-Agent。
-STREAM_MAIN_GB28181_USER_AGENT=RKMediaGateway-GB28181/1.0
-# STREAM_MAIN_GB28181_QUEUE_CAPACITY: 输出队列容量。
-STREAM_MAIN_GB28181_QUEUE_CAPACITY=64
+name = "gb28181-main"
 
-# -------------------------
+# STREAM_MAIN_GB28181_SERVER_IP: 服务器 IP。
+server_ip = "192.168.1.1"
+
+# STREAM_MAIN_GB28181_SERVER_PORT: 服务器端口。
+server_port = 5060
+
+# STREAM_MAIN_GB28181_SERVER_DOMAIN: GB28181 服务器域。
+server_domain = 3402000000
+
+# STREAM_MAIN_GB28181_SERVER_ID: GB28181 服务器 ID。
+server_id = 34020000002000000001
+
+# STREAM_MAIN_GB28181_DEVICE_ID: GB28181 设备 ID。
+device_id = 34020000001320000001
+
+# STREAM_MAIN_GB28181_DEVICE_DOMAIN: GB28181 设备域。
+device_domain = 3402000000
+
+# STREAM_MAIN_GB28181_DEVICE_PASSWORD: GB28181 设备密码。
+device_password = 12345678
+
+# STREAM_MAIN_GB28181_BIND_IP: 本地绑定 IP。
+bind_ip = "0.0.0.0"
+
+# STREAM_MAIN_GB28181_LOCAL_SIP_PORT: 本地 SIP 端口。
+local_sip_port = 5060
+
+# STREAM_MAIN_GB28181_CONTACT_IP: SIP Contact IP。
+contact_ip = "192.168.1.100"
+
+# STREAM_MAIN_GB28181_MEDIA_IP: RTP 媒体 IP。
+media_ip = "192.168.1.100"
+
+# STREAM_MAIN_GB28181_MEDIA_PORT: RTP 媒体端口。
+media_port = 30000
+
+# STREAM_MAIN_GB28181_REGISTER_EXPIRES: 注册有效期，单位秒。
+register_expires = 3600
+
+# STREAM_MAIN_GB28181_KEEPALIVE_INTERVAL: 保活周期，单位秒。
+keepalive_interval = 60
+
+# STREAM_MAIN_GB28181_REGISTER_RETRY_INTERVAL: 注册失败重试间隔，单位秒。
+register_retry_interval = 5
+
+# STREAM_MAIN_GB28181_DEVICE_NAME: GB28181 设备名称。
+device_name = "RK3568 Camera"
+
+# STREAM_MAIN_GB28181_MANUFACTURER: GB28181 厂商。
+manufacturer = "Topeet"
+
+# STREAM_MAIN_GB28181_MODEL: GB28181 型号。
+model = "RKMediaGateway"
+
+# STREAM_MAIN_GB28181_FIRMWARE: GB28181 固件版本。
+firmware = "1.0.0"
+
+# STREAM_MAIN_GB28181_CHANNEL_ID: GB28181 通道 ID。
+channel_id = 34020000001320000001
+
+# STREAM_MAIN_GB28181_USER_AGENT: SIP User-Agent。
+user_agent = "RKMediaGateway-GB28181/1.0"
+
+# STREAM_MAIN_GB28181_QUEUE_CAPACITY: 输出队列容量。
+queue_capacity = 64
+
+[stream.sub]
 # sub 码流
-# -------------------------
 # STREAM_SUB_ENABLE: 是否启用该对象。
-STREAM_SUB_ENABLE=1
+enable = 1
+
 # STREAM_SUB_NAME: 名称，用于日志和通道标识。
-STREAM_SUB_NAME=sub
+name = "sub"
+
 # STREAM_SUB_SOURCE_INDEX: 绑定的采集源索引，0=main_path，1=self_path。
-STREAM_SUB_SOURCE_INDEX=1
+source_index = 1
+
 # STREAM_SUB_WIDTH: 宽度。
-STREAM_SUB_WIDTH=1280
+width = 1280
+
 # STREAM_SUB_HEIGHT: 高度。
-STREAM_SUB_HEIGHT=720
+height = 720
+
 # STREAM_SUB_FPS: 帧率。
-STREAM_SUB_FPS=30
+fps = 30
+
 # STREAM_SUB_BITRATE: 码率，单位 bit/s。
-STREAM_SUB_BITRATE=1048576
+bitrate = 1048576
+
 # STREAM_SUB_GOP: GOP 长度。
-STREAM_SUB_GOP=30
+gop = 30
+
 # STREAM_SUB_RC_MODE: 码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_SUB_RC_MODE=0
+rc_mode = 0
+
 # STREAM_SUB_H264_PROFILE: H.264 profile，例如 100=High。
-STREAM_SUB_H264_PROFILE=100
+h264_profile = 100
+
 # STREAM_SUB_H264_LEVEL: H.264 level。
-STREAM_SUB_H264_LEVEL=40
+h264_level = 40
+
 # STREAM_SUB_H264_CABAC_EN: 是否启用 H.264 CABAC。
-STREAM_SUB_H264_CABAC_EN=1
+h264_cabac_en = 1
+
 # STREAM_SUB_QP_INIT: 初始 QP。
-STREAM_SUB_QP_INIT=30
+qp_init = 30
+
 # STREAM_SUB_QP_MIN: P/B 帧最小 QP。
-STREAM_SUB_QP_MIN=22
+qp_min = 22
+
 # STREAM_SUB_QP_MAX: P/B 帧最大 QP。
-STREAM_SUB_QP_MAX=44
+qp_max = 44
+
 # STREAM_SUB_QP_MIN_I: I 帧最小 QP。
-STREAM_SUB_QP_MIN_I=20
+qp_min_i = 20
+
 # STREAM_SUB_QP_MAX_I: I 帧最大 QP。
-STREAM_SUB_QP_MAX_I=40
+qp_max_i = 40
+
 # STREAM_SUB_QP_MAX_STEP: 相邻帧 QP 最大变化步长。
-STREAM_SUB_QP_MAX_STEP=8
-# 子码流动态帧率档位：保持与主码流相同的三档策略，但使用子码流码率。
-# STREAM_SUB_DYNAMIC_LOW_FPS: 低照档位帧率。
-STREAM_SUB_DYNAMIC_LOW_FPS=15
-# STREAM_SUB_DYNAMIC_LOW_BITRATE: 低照档位码率，单位 bit/s。
-STREAM_SUB_DYNAMIC_LOW_BITRATE=524288
-# STREAM_SUB_DYNAMIC_LOW_GOP: 低照档位GOP 长度。
-STREAM_SUB_DYNAMIC_LOW_GOP=15
-# STREAM_SUB_DYNAMIC_LOW_RC_MODE: 低照档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_SUB_DYNAMIC_LOW_RC_MODE=0
-# STREAM_SUB_DYNAMIC_LOW_QP_INIT: 低照档位初始 QP。
-STREAM_SUB_DYNAMIC_LOW_QP_INIT=30
-# STREAM_SUB_DYNAMIC_LOW_QP_MIN: 低照档位P/B 帧最小 QP。
-STREAM_SUB_DYNAMIC_LOW_QP_MIN=22
-# STREAM_SUB_DYNAMIC_LOW_QP_MAX: 低照档位P/B 帧最大 QP。
-STREAM_SUB_DYNAMIC_LOW_QP_MAX=44
-# STREAM_SUB_DYNAMIC_LOW_QP_MIN_I: 低照档位I 帧最小 QP。
-STREAM_SUB_DYNAMIC_LOW_QP_MIN_I=20
-# STREAM_SUB_DYNAMIC_LOW_QP_MAX_I: 低照档位I 帧最大 QP。
-STREAM_SUB_DYNAMIC_LOW_QP_MAX_I=40
-# STREAM_SUB_DYNAMIC_LOW_QP_MAX_STEP: 低照档位相邻帧 QP 最大变化步长。
-STREAM_SUB_DYNAMIC_LOW_QP_MAX_STEP=8
-# STREAM_SUB_DYNAMIC_NORMAL_FPS: 正常档位帧率。
-STREAM_SUB_DYNAMIC_NORMAL_FPS=30
-# STREAM_SUB_DYNAMIC_NORMAL_BITRATE: 正常档位码率，单位 bit/s。
-STREAM_SUB_DYNAMIC_NORMAL_BITRATE=1048576
-# STREAM_SUB_DYNAMIC_NORMAL_GOP: 正常档位GOP 长度。
-STREAM_SUB_DYNAMIC_NORMAL_GOP=30
-# STREAM_SUB_DYNAMIC_NORMAL_RC_MODE: 正常档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_SUB_DYNAMIC_NORMAL_RC_MODE=0
-# STREAM_SUB_DYNAMIC_NORMAL_QP_INIT: 正常档位初始 QP。
-STREAM_SUB_DYNAMIC_NORMAL_QP_INIT=30
-# STREAM_SUB_DYNAMIC_NORMAL_QP_MIN: 正常档位P/B 帧最小 QP。
-STREAM_SUB_DYNAMIC_NORMAL_QP_MIN=22
-# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX: 正常档位P/B 帧最大 QP。
-STREAM_SUB_DYNAMIC_NORMAL_QP_MAX=44
-# STREAM_SUB_DYNAMIC_NORMAL_QP_MIN_I: 正常档位I 帧最小 QP。
-STREAM_SUB_DYNAMIC_NORMAL_QP_MIN_I=20
-# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_I: 正常档位I 帧最大 QP。
-STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_I=40
-# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_STEP: 正常档位相邻帧 QP 最大变化步长。
-STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_STEP=8
-# STREAM_SUB_DYNAMIC_BRIGHT_FPS: 亮光档位帧率。
-STREAM_SUB_DYNAMIC_BRIGHT_FPS=60
-# STREAM_SUB_DYNAMIC_BRIGHT_BITRATE: 亮光档位码率，单位 bit/s。
-STREAM_SUB_DYNAMIC_BRIGHT_BITRATE=2097152
-# STREAM_SUB_DYNAMIC_BRIGHT_GOP: 亮光档位GOP 长度。
-STREAM_SUB_DYNAMIC_BRIGHT_GOP=60
-# STREAM_SUB_DYNAMIC_BRIGHT_RC_MODE: 亮光档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-STREAM_SUB_DYNAMIC_BRIGHT_RC_MODE=0
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_INIT: 亮光档位初始 QP。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_INIT=30
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN: 亮光档位P/B 帧最小 QP。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN=22
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX: 亮光档位P/B 帧最大 QP。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX=44
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN_I: 亮光档位I 帧最小 QP。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN_I=20
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_I: 亮光档位I 帧最大 QP。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_I=40
-# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_STEP: 亮光档位相邻帧 QP 最大变化步长。
-STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_STEP=8
+qp_max_step = 8
 
 # STREAM_SUB_ENABLE_RTSP: 是否启用 RTSP 输出。
-STREAM_SUB_ENABLE_RTSP=1
+enable_rtsp = 1
+
 # STREAM_SUB_ENABLE_RTMP: 是否启用 RTMP 输出。
-STREAM_SUB_ENABLE_RTMP=0
+enable_rtmp = 0
+
 # STREAM_SUB_ENABLE_GB28181: 是否启用 GB28181 输出。
-STREAM_SUB_ENABLE_GB28181=0
+enable_gb28181 = 0
+
 # STREAM_SUB_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
-STREAM_SUB_ENABLE_WEBRTC=0
+enable_webrtc = 0
 
+[stream.sub.dynamic.low]
+# 子码流动态帧率档位：保持与主码流相同的三档策略，但使用子码流码率。
+# STREAM_SUB_DYNAMIC_LOW_FPS: 低照档位帧率。
+fps = 15
+
+# STREAM_SUB_DYNAMIC_LOW_BITRATE: 低照档位码率，单位 bit/s。
+bitrate = 524288
+
+# STREAM_SUB_DYNAMIC_LOW_GOP: 低照档位GOP 长度。
+gop = 15
+
+# STREAM_SUB_DYNAMIC_LOW_RC_MODE: 低照档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 0
+
+# STREAM_SUB_DYNAMIC_LOW_QP_INIT: 低照档位初始 QP。
+qp_init = 30
+
+# STREAM_SUB_DYNAMIC_LOW_QP_MIN: 低照档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_SUB_DYNAMIC_LOW_QP_MAX: 低照档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_SUB_DYNAMIC_LOW_QP_MIN_I: 低照档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_SUB_DYNAMIC_LOW_QP_MAX_I: 低照档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_SUB_DYNAMIC_LOW_QP_MAX_STEP: 低照档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.sub.dynamic.normal]
+# STREAM_SUB_DYNAMIC_NORMAL_FPS: 正常档位帧率。
+fps = 30
+
+# STREAM_SUB_DYNAMIC_NORMAL_BITRATE: 正常档位码率，单位 bit/s。
+bitrate = 1048576
+
+# STREAM_SUB_DYNAMIC_NORMAL_GOP: 正常档位GOP 长度。
+gop = 30
+
+# STREAM_SUB_DYNAMIC_NORMAL_RC_MODE: 正常档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 0
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_INIT: 正常档位初始 QP。
+qp_init = 30
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_MIN: 正常档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX: 正常档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_MIN_I: 正常档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_I: 正常档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_SUB_DYNAMIC_NORMAL_QP_MAX_STEP: 正常档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.sub.dynamic.bright]
+# STREAM_SUB_DYNAMIC_BRIGHT_FPS: 亮光档位帧率。
+fps = 60
+
+# STREAM_SUB_DYNAMIC_BRIGHT_BITRATE: 亮光档位码率，单位 bit/s。
+bitrate = 2097152
+
+# STREAM_SUB_DYNAMIC_BRIGHT_GOP: 亮光档位GOP 长度。
+gop = 60
+
+# STREAM_SUB_DYNAMIC_BRIGHT_RC_MODE: 亮光档位码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
+rc_mode = 0
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_INIT: 亮光档位初始 QP。
+qp_init = 30
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN: 亮光档位P/B 帧最小 QP。
+qp_min = 22
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX: 亮光档位P/B 帧最大 QP。
+qp_max = 44
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_MIN_I: 亮光档位I 帧最小 QP。
+qp_min_i = 20
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_I: 亮光档位I 帧最大 QP。
+qp_max_i = 40
+
+# STREAM_SUB_DYNAMIC_BRIGHT_QP_MAX_STEP: 亮光档位相邻帧 QP 最大变化步长。
+qp_max_step = 8
+
+[stream.sub.rtsp]
 # STREAM_SUB_RTSP_NAME: 名称，用于日志和通道标识。
-STREAM_SUB_RTSP_NAME=rtsp-sub
+name = "rtsp-sub"
+
 # STREAM_SUB_RTSP_SESSION_NAME: RTSP 会话名。
-STREAM_SUB_RTSP_SESSION_NAME=live_sub
+session_name = "live_sub"
+
 # STREAM_SUB_RTSP_SERVER_IP: 服务器 IP。
-STREAM_SUB_RTSP_SERVER_IP=0.0.0.0
+server_ip = "0.0.0.0"
+
 # STREAM_SUB_RTSP_SERVER_PORT: 服务器端口。
-STREAM_SUB_RTSP_SERVER_PORT=8554
+server_port = 8554
+
 # STREAM_SUB_RTSP_AUTH_ENABLE: 是否启用认证。
-STREAM_SUB_RTSP_AUTH_ENABLE=0
+auth_enable = 0
+
 # STREAM_SUB_RTSP_USER: 认证用户名。
-STREAM_SUB_RTSP_USER=admin
+user = "admin"
+
 # STREAM_SUB_RTSP_PASSWORD: 认证密码。
-STREAM_SUB_RTSP_PASSWORD=123456
+password = 123456
+
 # STREAM_SUB_RTSP_QUEUE_CAPACITY: 输出队列容量。
-STREAM_SUB_RTSP_QUEUE_CAPACITY=32
+queue_capacity = 32
+
 # STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT: 新 RTSP 客户端连接后是否立即发送 SPS/PPS。
-STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=0
+immediate_sps_pps_on_new_client = 0
 
+[stream.sub.rtmp]
 # STREAM_SUB_RTMP_NAME: 名称，用于日志和通道标识。
-STREAM_SUB_RTMP_NAME=rtmp-sub
+name = "rtmp-sub"
+
 # STREAM_SUB_RTMP_PUBLISH_URL: RTMP 推流地址。
-STREAM_SUB_RTMP_PUBLISH_URL=
+publish_url = ""
+
 # STREAM_SUB_RTMP_QUEUE_CAPACITY: 输出队列容量。
-STREAM_SUB_RTMP_QUEUE_CAPACITY=64
+queue_capacity = 64
+
 # STREAM_SUB_RTMP_RECONNECT_INTERVAL_MS: 重连间隔，单位毫秒。
-STREAM_SUB_RTMP_RECONNECT_INTERVAL_MS=1000
+reconnect_interval_ms = 1000
+
 # STREAM_SUB_RTMP_CONNECT_TIMEOUT_MS: 连接超时时间，单位毫秒。
-STREAM_SUB_RTMP_CONNECT_TIMEOUT_MS=3000
+connect_timeout_ms = 3000
+
 # STREAM_SUB_RTMP_AUDIO_ENABLED: 是否携带音频。
-STREAM_SUB_RTMP_AUDIO_ENABLED=0
+audio_enabled = 0
+
 # STREAM_SUB_RTMP_VIDEO_WIDTH: 视频元数据宽度。
-STREAM_SUB_RTMP_VIDEO_WIDTH=1280
+video_width = 1280
+
 # STREAM_SUB_RTMP_VIDEO_HEIGHT: 视频元数据高度。
-STREAM_SUB_RTMP_VIDEO_HEIGHT=720
+video_height = 720
+
 # STREAM_SUB_RTMP_VIDEO_FPS: 视频元数据帧率。
-STREAM_SUB_RTMP_VIDEO_FPS=30
+video_fps = 30
+
 # STREAM_SUB_RTMP_VIDEO_BITRATE: 视频元数据码率。
-STREAM_SUB_RTMP_VIDEO_BITRATE=1048576
+video_bitrate = 1048576
+
 # STREAM_SUB_RTMP_VIDEO_CODEC_NAME: 视频编码名称。
-STREAM_SUB_RTMP_VIDEO_CODEC_NAME=H264
+video_codec_name = "H264"
+
 # STREAM_SUB_RTMP_ENCODER_NAME: 编码器名称。
-STREAM_SUB_RTMP_ENCODER_NAME=RKMediaGateway
+encoder_name = "RKMediaGateway"
 
+[stream.sub.webrtc]
 # STREAM_SUB_WEBRTC_NAME: WebRTC 输出名称，用于日志和通道标识。
-STREAM_SUB_WEBRTC_NAME=webrtc-sub
-# STREAM_SUB_WEBRTC_BIND_ADDRESS: WebSocket 信令服务监听地址。
-STREAM_SUB_WEBRTC_BIND_ADDRESS=0.0.0.0
-# STREAM_SUB_WEBRTC_PORT: WebSocket 信令服务端口。
-STREAM_SUB_WEBRTC_PORT=8001
-# STREAM_SUB_WEBRTC_QUEUE_CAPACITY: WebRTC 输出队列容量。
-STREAM_SUB_WEBRTC_QUEUE_CAPACITY=32
-# STREAM_SUB_WEBRTC_VIDEO_FPS: WebRTC RTP 视频时间戳使用的帧率。
-STREAM_SUB_WEBRTC_VIDEO_FPS=30
+name = "webrtc-sub"
 
-# 兼容旧单流配置（可选，若未配置 STREAM_MAIN_* 则走这些键）
-# GATEWAY_ENABLE_RTSP: 是否启用 RTSP 输出。
-GATEWAY_ENABLE_RTSP=1
-# GATEWAY_ENABLE_RTMP: 是否启用 RTMP 输出。
-GATEWAY_ENABLE_RTMP=0
-# GATEWAY_ENABLE_GB28181: 是否启用 GB28181 输出。
-GATEWAY_ENABLE_GB28181=1
-# GATEWAY_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
-GATEWAY_ENABLE_WEBRTC=1
-# GATEWAY_FPS: 帧率。
-GATEWAY_FPS=30
-# GATEWAY_BITRATE: 码率，单位 bit/s。
-GATEWAY_BITRATE=2097152
-# GATEWAY_GOP: GOP 长度。
-GATEWAY_GOP=30
-# GATEWAY_RC_MODE: 码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
-GATEWAY_RC_MODE=1
-# GATEWAY_H264_PROFILE: H.264 profile，例如 100=High。
-GATEWAY_H264_PROFILE=100
-# GATEWAY_H264_LEVEL: H.264 level。
-GATEWAY_H264_LEVEL=42
-# GATEWAY_H264_CABAC_EN: 是否启用 H.264 CABAC。
-GATEWAY_H264_CABAC_EN=1
-# GATEWAY_QP_INIT: 初始 QP。
-GATEWAY_QP_INIT=30
-# GATEWAY_QP_MIN: P/B 帧最小 QP。
-GATEWAY_QP_MIN=22
-# GATEWAY_QP_MAX: P/B 帧最大 QP。
-GATEWAY_QP_MAX=44
-# GATEWAY_QP_MIN_I: I 帧最小 QP。
-GATEWAY_QP_MIN_I=20
-# GATEWAY_QP_MAX_I: I 帧最大 QP。
-GATEWAY_QP_MAX_I=40
-# GATEWAY_QP_MAX_STEP: 相邻帧 QP 最大变化步长。
-GATEWAY_QP_MAX_STEP=8
-# GATEWAY_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT: 新 RTSP 客户端连接后是否立即发送 SPS/PPS。
-GATEWAY_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=0
+# STREAM_SUB_WEBRTC_BIND_ADDRESS: WebSocket 信令服务监听地址。
+bind_address = "0.0.0.0"
+
+# STREAM_SUB_WEBRTC_PORT: WebSocket 信令服务端口。
+port = 8001
+
+# STREAM_SUB_WEBRTC_QUEUE_CAPACITY: WebRTC 输出队列容量。
+queue_capacity = 32
+
+# STREAM_SUB_WEBRTC_VIDEO_FPS: WebRTC RTP 视频时间戳使用的帧率。
+video_fps = 30
+

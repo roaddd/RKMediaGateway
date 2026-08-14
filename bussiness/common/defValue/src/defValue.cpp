@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <string>
@@ -27,9 +28,8 @@ static std::string trim_copy(const std::string &s) {
 /*
  * 去掉配置值后面的行内注释。
  * 支持：
- *   KEY=1 # comment
- *   KEY=1 ; comment
- * 被单引号或双引号包裹的 #/; 认为是字符串内容，不当作注释起点。
+ *   key = 1 # comment
+ * 被单引号或双引号包裹的 # 认为是字符串内容，不当作注释起点。
  */
 static std::string strip_inline_comment_copy(const std::string &s) {
     size_t i = 0;
@@ -48,7 +48,7 @@ static std::string strip_inline_comment_copy(const std::string &s) {
             continue;
         }
 
-        if (s[i] == '#' || s[i] == ';') {
+        if (s[i] == '#') {
             return trim_copy(s.substr(0, i));
         }
     }
@@ -104,61 +104,180 @@ static float value_float(const char *key) {
     return parsed;
 }
 
-static int file_has_key(const char *key) {
-    return g_file_values.find(key) != g_file_values.end();
+static std::string uppercase_key(std::string value) {
+    size_t i;
+
+    for (i = 0; i < value.size(); ++i) {
+        if (value[i] == '.' || value[i] == '-') {
+            value[i] = '_';
+        } else {
+            value[i] = (char)std::toupper((unsigned char)value[i]);
+        }
+    }
+    return value;
 }
 
-static void load_file_values(const char *config_path) {
+/*
+ * 将可读的 TOML 路径映射到现有默认值表使用的内部键名。
+ * 内部键名只是一层实现细节，配置文件不再暴露 STREAM_MAIN_* 之类的扁平前缀。
+ */
+static std::string toml_path_to_internal_key(const std::string &path) {
+    static const std::string audio_capture = "audio.capture.";
+    static const std::string audio_runtime = "audio.runtime.";
+    static const std::string audio_encoder = "audio.encoder.";
+    std::string suffix;
+
+    if (path.compare(0, audio_capture.size(), audio_capture) == 0) {
+        suffix = path.substr(audio_capture.size());
+        if (suffix == "device") suffix = "device";
+        return "AUDIO_" + uppercase_key(suffix);
+    }
+    if (path.compare(0, audio_runtime.size(), audio_runtime) == 0)
+        return "AUDIO_" + uppercase_key(path.substr(audio_runtime.size()));
+    if (path.compare(0, audio_encoder.size(), audio_encoder) == 0)
+        return "AUDIO_" + uppercase_key(path.substr(audio_encoder.size()));
+    return uppercase_key(path);
+}
+
+/* 解析 TOML 基本字符串，并处理配置中常用的转义字符。 */
+static int parse_toml_string(const std::string &input, std::string &output) {
+    size_t i;
+    char quote;
+
+    if (input.size() < 2 || (input[0] != '"' && input[0] != '\''))
+        return -1;
+    quote = input[0];
+    if (input[input.size() - 1] != quote)
+        return -1;
+    output.clear();
+    for (i = 1; i + 1 < input.size(); ++i) {
+        if (quote == '"' && input[i] == '\\') {
+            if (++i + 1 >= input.size()) return -1;
+            switch (input[i]) {
+            case 'n': output.push_back('\n'); break;
+            case 'r': output.push_back('\r'); break;
+            case 't': output.push_back('\t'); break;
+            case '"': output.push_back('"'); break;
+            case '\\': output.push_back('\\'); break;
+            default: return -1;
+            }
+        } else {
+            output.push_back(input[i]);
+        }
+    }
+    return 0;
+}
+
+/*
+ * 加载 TOML 文件。当前配置只需要 TOML 的 table、字符串、布尔值、整数和浮点数；
+ * 数组/日期等未使用类型会被明确拒绝，避免静默采用错误配置。
+ */
+static int load_toml_values(const char *config_path) {
     std::ifstream file;
     std::string line;
+    std::string section;
+    int line_number = 0;
 
     g_file_values.clear();
     g_source_path = config_path ? config_path : "";
     g_loaded = 0;
 
     if (!config_path || config_path[0] == '\0') {
-        return;
+        std::fprintf(stderr, "TOML config path is empty\n");
+        return -1;
     }
 
     file.open(config_path);
     if (!file.is_open()) {
-        return;
+        std::fprintf(stderr, "failed to open TOML config: %s\n", config_path);
+        return -1;
     }
 
     while (std::getline(file, line)) {
+        ++line_number;
+        /* UTF-8 BOM is permitted at the beginning of configuration files. */
+        if (line_number == 1 && line.size() >= 3 &&
+            (unsigned char)line[0] == 0xef &&
+            (unsigned char)line[1] == 0xbb &&
+            (unsigned char)line[2] == 0xbf) {
+            line.erase(0, 3);
+        }
         std::string trimmed = trim_copy(line);
         std::string key;
         std::string value;
+        std::string path;
+        std::string parsed_value;
         std::string::size_type eq_pos;
 
-        if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
+        if (trimmed.empty() || trimmed[0] == '#') {
+            continue;
+        }
+
+        if (trimmed[0] == '[') {
+            if (trimmed.size() < 3 || trimmed[trimmed.size() - 1] != ']' ||
+                trimmed[1] == '[' || trimmed[trimmed.size() - 2] == ']') {
+                std::fprintf(stderr, "%s:%d: invalid or unsupported TOML table\n", config_path, line_number);
+                return -1;
+            }
+            section = trim_copy(trimmed.substr(1, trimmed.size() - 2));
+            if (section.empty()) {
+                std::fprintf(stderr, "%s:%d: empty TOML table\n", config_path, line_number);
+                return -1;
+            }
             continue;
         }
 
         eq_pos = trimmed.find('=');
         if (eq_pos == std::string::npos) {
-            continue;
+            std::fprintf(stderr, "%s:%d: expected key = value\n", config_path, line_number);
+            return -1;
         }
 
         key = trim_copy(trimmed.substr(0, eq_pos));
         value = strip_inline_comment_copy(trimmed.substr(eq_pos + 1));
-        if (key.empty()) {
-            continue;
+        if (key.empty() || value.empty()) {
+            std::fprintf(stderr, "%s:%d: empty TOML key or value\n", config_path, line_number);
+            return -1;
         }
 
-        if (value.size() >= 2) {
-            char first = value[0];
-            char last = value[value.size() - 1];
-            if ((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
-                value = value.substr(1, value.size() - 2);
+        if (value[0] == '"' || value[0] == '\'') {
+            if (parse_toml_string(value, parsed_value) != 0) {
+                std::fprintf(stderr, "%s:%d: invalid TOML string\n", config_path, line_number);
+                return -1;
             }
+        } else if (value == "true") {
+            parsed_value = "1";
+        } else if (value == "false") {
+            parsed_value = "0";
+        } else {
+            char *end_ptr = NULL;
+            (void)std::strtod(value.c_str(), &end_ptr);
+            if (!end_ptr || *end_ptr != '\0') {
+                std::fprintf(stderr, "%s:%d: unsupported TOML value: %s\n",
+                             config_path, line_number, value.c_str());
+                return -1;
+            }
+            parsed_value = value;
         }
 
-        g_file_values[key] = value;
-        g_values[key] = value;
+        path = section.empty() ? key : section + "." + key;
+        key = toml_path_to_internal_key(path);
+        if (g_values.find(key) == g_values.end()) {
+            std::fprintf(stderr, "%s:%d: unknown TOML key: %s\n",
+                         config_path, line_number, path.c_str());
+            return -1;
+        }
+        if (g_file_values.find(key) != g_file_values.end()) {
+            std::fprintf(stderr, "%s:%d: duplicate TOML key: %s\n",
+                         config_path, line_number, path.c_str());
+            return -1;
+        }
+        g_file_values[key] = parsed_value;
+        g_values[key] = parsed_value;
     }
 
     g_loaded = 1;
+    return 0;
 }
 
 static void set_stream_defaults(const char *prefix,
@@ -297,6 +416,12 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_G711_MODE", G711_ENCODER_MODE_ALAW);
     set_value_int("AUDIO_AAC_BITRATE", 32000);
     set_value_int("AUDIO_AAC_PROFILE", 2);
+    set_value_int("AUDIO_OPUS_BITRATE", 24000);
+    set_value_int("AUDIO_OPUS_COMPLEXITY", 6);
+    set_value_int("AUDIO_OPUS_VBR", 1);
+    set_value_int("AUDIO_OPUS_FEC", 1);
+    set_value_int("AUDIO_OPUS_DTX", 0);
+    set_value_int("AUDIO_OPUS_PACKET_LOSS_PERCENT", 10);
     set_value_int("AUDIO_BIND_STREAM_INDEX", 0);
 }
 
@@ -326,7 +451,7 @@ static void load_defaults(void) {
     set_value_int("GATEWAY_MAX_CONSECUTIVE_FAILURES", 30);
     set_value("GATEWAY_RECORD_FILE_PATH", "");
     set_value_int("GATEWAY_RECORD_FLUSH_INTERVAL_FRAMES", 30);
-    set_value("GATEWAY_CONFIG_FILE_PATH", "media_gateway.conf");
+    set_value("GATEWAY_CONFIG_FILE_PATH", "media_gateway.toml");
     set_value_int("GATEWAY_BENCH_ENABLE", 0);
     set_value_int("GATEWAY_BENCH_SAMPLE_EVERY", 1);
     set_value_int("GATEWAY_BENCH_PRINT_INTERVAL_SEC", 1);
@@ -480,19 +605,25 @@ static void fill_capture_source(CaptureSourceConfig *source, const char *prefix)
 
 static void fill_audio_source(AudioSourceConfig *audio) {
     audio->enabled = value_int("AUDIO_ENABLE");
-    audio->device_name = value_string("AUDIO_DEVICE");
-    audio->sample_rate = value_int("AUDIO_SAMPLE_RATE");
-    audio->channels = value_int("AUDIO_CHANNELS");
-    audio->format = (AudioSampleFormat)value_int("AUDIO_FORMAT");
-    audio->period_frames = value_int("AUDIO_PERIOD_FRAMES");
-    audio->buffer_periods = value_int("AUDIO_BUFFER_PERIODS");
-    audio->source_slots = value_int("AUDIO_SOURCE_SLOTS");
-    audio->retry_ms = value_int("AUDIO_RETRY_MS");
-    audio->max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
-    audio->codec = (MediaCodecType)value_int("AUDIO_CODEC");
-    audio->g711_mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
-    audio->aac_bitrate = value_int("AUDIO_AAC_BITRATE");
-    audio->aac_profile = value_int("AUDIO_AAC_PROFILE");
+    audio->capture.device_name = value_string("AUDIO_DEVICE");
+    audio->capture.sample_rate = value_int("AUDIO_SAMPLE_RATE");
+    audio->capture.channels = value_int("AUDIO_CHANNELS");
+    audio->capture.format = (AudioSampleFormat)value_int("AUDIO_FORMAT");
+    audio->capture.period_frames = value_int("AUDIO_PERIOD_FRAMES");
+    audio->capture.buffer_periods = value_int("AUDIO_BUFFER_PERIODS");
+    audio->runtime.source_slots = value_int("AUDIO_SOURCE_SLOTS");
+    audio->runtime.retry_ms = value_int("AUDIO_RETRY_MS");
+    audio->runtime.max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
+    audio->encoder.codec = (MediaCodecType)value_int("AUDIO_CODEC");
+    audio->encoder.g711.mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
+    audio->encoder.aac.bitrate = value_int("AUDIO_AAC_BITRATE");
+    audio->encoder.aac.profile = value_int("AUDIO_AAC_PROFILE");
+    audio->encoder.opus.bitrate = value_int("AUDIO_OPUS_BITRATE");
+    audio->encoder.opus.complexity = value_int("AUDIO_OPUS_COMPLEXITY");
+    audio->encoder.opus.vbr = value_int("AUDIO_OPUS_VBR");
+    audio->encoder.opus.fec = value_int("AUDIO_OPUS_FEC");
+    audio->encoder.opus.dtx = value_int("AUDIO_OPUS_DTX");
+    audio->encoder.opus.packet_loss_percent = value_int("AUDIO_OPUS_PACKET_LOSS_PERCENT");
     audio->bind_stream_index = value_int("AUDIO_BIND_STREAM_INDEX");
 }
 
@@ -667,11 +798,17 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
 }
 
 int def_value_init(const char *config_path) {
+    std::string path = config_path ? config_path : "";
+
     load_defaults();
-    load_file_values(config_path);
-    if (config_path && config_path[0] != '\0' && !file_has_key("GATEWAY_CONFIG_FILE_PATH")) {
-        set_value("GATEWAY_CONFIG_FILE_PATH", config_path);
+    if (path.size() < 5 || path.substr(path.size() - 5) != ".toml") {
+        std::fprintf(stderr, "configuration file must use the .toml extension: %s\n",
+                     path.c_str());
+        return -1;
     }
+    if (load_toml_values(config_path) != 0)
+        return -1;
+    set_value("GATEWAY_CONFIG_FILE_PATH", config_path);
     return 0;
 }
 

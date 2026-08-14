@@ -45,12 +45,13 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->policy.light_fps.timing.evaluate_interval_ms);
     LOG_INFO("[MAIN_CFG] parsed audio enabled=%d device=%s rate=%d channels=%d period_frames=%d codec=%s bind_stream=%d",
              config->audio.source.enabled,
-             config->audio.source.device_name ? config->audio.source.device_name : "unknown",
-             config->audio.source.sample_rate,
-             config->audio.source.channels,
-             config->audio.source.period_frames,
-             config->audio.source.codec == MEDIA_CODEC_AAC ? "aac" :
-             (config->audio.source.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a"),
+             config->audio.source.capture.device_name ? config->audio.source.capture.device_name : "unknown",
+             config->audio.source.capture.sample_rate,
+             config->audio.source.capture.channels,
+             config->audio.source.capture.period_frames,
+             config->audio.source.encoder.codec == MEDIA_CODEC_AAC ? "aac" :
+             (config->audio.source.encoder.codec == MEDIA_CODEC_OPUS ? "opus" :
+             (config->audio.source.encoder.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a")),
              config->audio.source.bind_stream_index);
 
     for (int i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
@@ -78,21 +79,18 @@ int main(int argc, char **argv)
 {
     MediaGatewayCtx gateway;
     MediaGatewayConfig config;
-    const char *config_path = (argc > 1 && argv[1] && argv[1][0] != '\0') ? argv[1] : "media_gateway.conf";
+    const char *config_path = (argc > 1 && argv[1] && argv[1][0] != '\0') ? argv[1] : "media_gateway.toml";
     int shell_ready = 0;
     int ret = 0;
 
-    def_value_init(config_path);
+    if (def_value_init(config_path) != 0)
+    {
+        fprintf(stderr, "failed to load TOML config: %s\n", config_path);
+        return -1;
+    }
     def_value_get_media_gateway_config(&config);
     log_set_level((LogLevel)config.system.log.level);
-    if (def_value_loaded())
-    {
-        LOG_INFO("loaded config file: %s", def_value_source_path());
-    }
-    else
-    {
-        LOG_WARN("config file not found, fallback to defaults: %s", def_value_source_path());
-    }
+    LOG_INFO("loaded TOML config: %s", def_value_source_path());
 
     log_main_config_snapshot(&config);
 
@@ -127,5 +125,3 @@ int main(int argc, char **argv)
         debug_command_server_deinit();
     return ret;
 }
-
-

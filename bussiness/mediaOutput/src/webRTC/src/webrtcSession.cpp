@@ -581,8 +581,8 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
 
 /* WebSocket 文本消息入口，根据 type 分发到 offer/candidate/close。 */
 /*
- * 发送一帧 G711 音频。
- * 调用时机：mediaOutput 后台发送线程从音频队列取到 G711A/G711U 包后调用。
+ * 发送一帧 G711 或 Opus 音频。
+ * 调用时机：mediaOutput 后台发送线程从音频队列取到编码音频包后调用。
  * 这里不做音频重编码，只检查编码类型是否和协商出的 Track 匹配，再交给 RTP packetizer。
  */
 bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
@@ -822,16 +822,16 @@ void WebRtcSession::handleOffer(const std::string &message)
             close();
             return;
         }
-        if (!signaling_select_g711_payload_type(signaling.sdp,
-                                                config_.audioCodec,
-                                                audioPayloadType)) {
-            LOG_ERROR("[WEBRTC] session=%d offer rejected: no usable G711 payload type codec=%d",
+        if (!signaling_select_audio_payload_type(signaling.sdp,
+                                                 config_.audioCodec,
+                                                 audioPayloadType)) {
+            LOG_ERROR("[WEBRTC] session=%d offer rejected: no usable audio payload type codec=%d",
                       id_,
                       static_cast<int>(config_.audioCodec));
             close();
             return;
         }
-        addG711AudioTrack(audioMid, audioPayloadType, config_.audioCodec);
+        addAudioTrack(audioMid, audioPayloadType, config_.audioCodec);
     }
 
     offer.reset(new rtc::Description(signaling.sdp, "offer"));
@@ -1180,12 +1180,12 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
 }
 
 /*
- * 添加 G711 sendonly Track，并配置音频 RTP/RTCP 处理链。
- * 调用时机：收到浏览器 Offer 后，确认 m=audio、mid 和 PCMA/PCMU PT 都可用时调用。
+ * 添加 G711/Opus sendonly Track，并配置对应音频 RTP/RTCP 处理链。
+ * 调用时机：收到浏览器 Offer 后，确认 m=audio、mid 和目标 codec PT 都可用时调用。
  */
-void WebRtcSession::addG711AudioTrack(const std::string &mid,
-                                      uint8_t payloadType,
-                                      WebRtcAudioCodec codec)
+void WebRtcSession::addAudioTrack(const std::string &mid,
+                                  uint8_t payloadType,
+                                  WebRtcAudioCodec codec)
 {
     rtc::Description::Audio audio;
     std::shared_ptr<rtc::PeerConnection> pc;
@@ -1204,11 +1204,12 @@ void WebRtcSession::addG711AudioTrack(const std::string &mid,
         pc = transport_.pc;
     }
     if (!pc) {
-        LOG_ERROR("[WEBRTC] session=%d add G711 track failed: PeerConnection is NULL", id_);
+        LOG_ERROR("[WEBRTC] session=%d add audio track failed: PeerConnection is NULL", id_);
         return;
     }
-    if (codec != WEBRTC_AUDIO_CODEC_PCMA && codec != WEBRTC_AUDIO_CODEC_PCMU) {
-        LOG_ERROR("[WEBRTC] session=%d add G711 track failed: unsupported codec=%d",
+    if (codec != WEBRTC_AUDIO_CODEC_PCMA && codec != WEBRTC_AUDIO_CODEC_PCMU &&
+        codec != WEBRTC_AUDIO_CODEC_OPUS) {
+        LOG_ERROR("[WEBRTC] session=%d add audio track failed: unsupported codec=%d",
                   id_,
                   static_cast<int>(codec));
         return;
@@ -1225,18 +1226,32 @@ void WebRtcSession::addG711AudioTrack(const std::string &mid,
     audio = rtc::Description::Audio(mid, rtc::Description::Direction::SendOnly);
     if (codec == WEBRTC_AUDIO_CODEC_PCMA) {
         audio.addPCMACodec(payloadType);
-    } else {
+    } else if (codec == WEBRTC_AUDIO_CODEC_PCMU) {
         audio.addPCMUCodec(payloadType);
+    } else {
+        /*
+         * libdatachannel 的默认 Opus profile 固定声明 stereo=1。
+         * 根据实际编码声道数生成 fmtp，避免单声道负载被浏览器按双声道能力解释。
+         */
+        audio.addOpusCodec(payloadType,
+                           config_.audioChannels == 2
+                               ? "minptime=10;stereo=1;sprop-stereo=1;useinbandfec=1"
+                               : "minptime=10;stereo=0;sprop-stereo=0;useinbandfec=1");
     }
     audio.addSSRC(ssrc, cname, msid, cname);
     track = pc->addTrack(audio);
 
     rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(
-        ssrc, cname, payloadType, rtc::PCMARtpPacketizer::DefaultClockRate);
+        ssrc, cname, payloadType,
+        codec == WEBRTC_AUDIO_CODEC_OPUS ? rtc::OpusRtpPacketizer::DefaultClockRate
+                                        : rtc::PCMARtpPacketizer::DefaultClockRate);
     if (codec == WEBRTC_AUDIO_CODEC_PCMA) {
         packetizer = std::make_shared<rtc::PCMARtpPacketizer>(rtpConfig);
-    } else {
+    } else if (codec == WEBRTC_AUDIO_CODEC_PCMU) {
         packetizer = std::make_shared<rtc::PCMURtpPacketizer>(rtpConfig);
+    } else {
+        /* 编码器已经产出完整裸 Opus packet，AudioRtpPacketizer 每帧生成一个 RTP 包。 */
+        packetizer = std::make_shared<rtc::OpusRtpPacketizer>(rtpConfig);
     }
     srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
     nackResponder = std::make_shared<rtc::RtcpNackResponder>();
@@ -1299,7 +1314,7 @@ void WebRtcSession::addG711AudioTrack(const std::string &mid,
         transport_.audioTrack = track;
     }
 
-    LOG_INFO("[WEBRTC] session=%d add g711 track mid=%s pt=%u codec=%d",
+    LOG_INFO("[WEBRTC] session=%d add audio track mid=%s pt=%u codec=%d",
              id_,
              mid.c_str(),
              payloadType,

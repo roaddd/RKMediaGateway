@@ -12,6 +12,7 @@
 #include "audioCapture.h"
 #include "g711Encoder.h"
 #include "aacEncoder.h"
+#include "opusEncoder.h"
 #include "ispController.h"
 
 #ifdef __cplusplus
@@ -122,20 +123,50 @@ typedef struct {
 } CaptureSourceConfig;
 
 typedef struct {
-    int enabled;                     /* 是否启用音频采集与编码。 */
     const char *device_name;         /* ALSA 采集设备，例如 default/hw:0,0。 */
-    int sample_rate;                 /* 音频采样率，G711 常用 8000，AAC 可按设备能力配置。 */
-    int channels;                    /* 声道数，G711 要求 mono，AAC 支持 mono/stereo。 */
+    int sample_rate;                 /* 音频采样率，G711 常用 8000，Opus/WebRTC 使用 48000。 */
+    int channels;                    /* PCM 声道数。 */
     AudioSampleFormat format;        /* 采集 PCM 格式，当前支持 S16LE。 */
     int period_frames;               /* 每个采集周期的单声道采样数。 */
     int buffer_periods;              /* ALSA 设备缓冲周期数。 */
+} MediaGatewayAudioCaptureConfig;
+
+typedef struct {
     int source_slots;                /* audioFrameSource ring buffer 槽位数。 */
     int retry_ms;                    /* 音频采集失败后的重试间隔。 */
     int max_consecutive_failures;    /* 连续音频采集失败阈值。 */
-    MediaCodecType codec;            /* 音频编码格式：MEDIA_CODEC_G711A/G711U/AAC。 */
-    G711EncoderMode g711_mode;       /* G711 A-law / mu-law。 */
-    int aac_bitrate;                 /* AAC 目标码率，单位 bit/s。 */
-    int aac_profile;                 /* AAC object type，2 表示 AAC-LC。 */
+} MediaGatewayAudioRuntimeConfig;
+
+typedef struct {
+    G711EncoderMode mode;            /* G711 A-law / mu-law。 */
+} MediaGatewayAudioG711Config;
+
+typedef struct {
+    int bitrate;                     /* AAC 目标码率，单位 bit/s。 */
+    int profile;                     /* AAC object type，2 表示 AAC-LC。 */
+} MediaGatewayAudioAacConfig;
+
+typedef struct {
+    int bitrate;                     /* Opus 目标码率，单位 bit/s。 */
+    int complexity;                  /* Opus 编码复杂度 0..10。 */
+    int vbr;                         /* 是否启用 Opus VBR。 */
+    int fec;                         /* 是否启用 Opus 带内 FEC。 */
+    int dtx;                         /* 是否启用 Opus DTX。 */
+    int packet_loss_percent;         /* Opus 预期丢包率 0..100。 */
+} MediaGatewayAudioOpusConfig;
+
+typedef struct {
+    MediaCodecType codec;            /* 音频编码格式：G711A/G711U/AAC/OPUS。 */
+    MediaGatewayAudioG711Config g711;
+    MediaGatewayAudioAacConfig aac;
+    MediaGatewayAudioOpusConfig opus;
+} MediaGatewayAudioEncoderConfig;
+
+typedef struct {
+    int enabled;                     /* 是否启用音频采集与编码。 */
+    MediaGatewayAudioCaptureConfig capture; /* ALSA 设备及 PCM 帧参数。 */
+    MediaGatewayAudioRuntimeConfig runtime; /* 帧源队列和失败重试参数。 */
+    MediaGatewayAudioEncoderConfig encoder; /* 编码格式及各 codec 专属参数。 */
     int bind_stream_index;           /* 音频包投递到哪一路码流绑定的输出。 */
 } AudioSourceConfig;
 
@@ -411,6 +442,7 @@ typedef struct {
     AudioCaptureCtx audio_capture;               /* 音频采集上下文。 */
     G711EncoderCtx audio_encoder;                /* G711 音频编码上下文。 */
     AacEncoderCtx aac_encoder;                    /* AAC 音频编码上下文。 */
+    OpusEncoderCtx opus_encoder;                  /* Opus 音频编码上下文。 */
     MppEncoderCtx encoders[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块上下文。 */
     int stream_enabled[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流是否启用。 */
     int capture_ready[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源是否已初始化成功。 */

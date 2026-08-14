@@ -791,6 +791,9 @@ static int rtmp_output_send_packet(MediaOutput *output, const MediaPacket *packe
     }
 #if defined(ENABLE_RTMP_LIBRTMP)
     if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO) {
+        /* 传统 FLV/RTMP 没有通用 Opus SoundFormat，静默跳过以免输出线程误判断线。 */
+        if (packet->codec == MEDIA_CODEC_OPUS)
+            return MEDIA_OK;
         return rtmp_send_g711_packet(impl, packet);
     }
     if (packet->frame_type != MEDIA_FRAME_TYPE_VIDEO || packet->codec != MEDIA_CODEC_H264) {

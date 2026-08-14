@@ -60,6 +60,8 @@ static const char *debug_audio_codec_text(WebRtcAudioCodec codec)
         return "PCMA";
     case WEBRTC_AUDIO_CODEC_PCMU:
         return "PCMU";
+    case WEBRTC_AUDIO_CODEC_OPUS:
+        return "OPUS";
     default:
         return "unknown";
     }
@@ -67,7 +69,7 @@ static const char *debug_audio_codec_text(WebRtcAudioCodec codec)
 
 /*
  * 打印 WebRTC server 总览。
- * 输出按块组织，避免所有字段铺成一列后难以分辨当前字段属于哪个 server。
+
  */
 static void debug_print_server_overview(char *reply,
                                         size_t *offset,

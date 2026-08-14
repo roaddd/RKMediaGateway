@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-/* Initialize defaults, then override them with values from config_path when present. */
+/* Load the required TOML file and apply its values over the compiled defaults. */
 int def_value_init(const char *config_path);
 
 /* Fill the whole gateway config in one call. */

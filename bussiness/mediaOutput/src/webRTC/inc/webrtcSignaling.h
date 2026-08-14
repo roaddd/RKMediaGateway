@@ -30,9 +30,9 @@ bool signaling_get_video_mid(const std::string &sdp, std::string &mid);
 bool signaling_select_h264_payload_type(const std::string &sdp, uint8_t &payloadType);
 bool signaling_offer_has_video(const std::string &sdp);
 bool signaling_get_audio_mid(const std::string &sdp, std::string &mid);
-bool signaling_select_g711_payload_type(const std::string &sdp,
-                                        WebRtcAudioCodec codec,
-                                        uint8_t &payloadType);
+bool signaling_select_audio_payload_type(const std::string &sdp,
+                                         WebRtcAudioCodec codec,
+                                         uint8_t &payloadType);
 bool signaling_offer_has_audio(const std::string &sdp);
 
 } // namespace webrtc

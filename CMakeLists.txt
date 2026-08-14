@@ -10,11 +10,16 @@ if(NOT DEFINED BUILD_TARGET)
     set(BUILD_TARGET "all")
 endif()
 
+# Keep the required runtime configuration next to generated executables.
+configure_file(${PROJECT_SOURCE_DIR}/main/media_gateway.toml
+               ${CMAKE_BINARY_DIR}/media_gateway.toml COPYONLY)
+
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/aacEncoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/opusEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
@@ -55,6 +60,8 @@ set(THIRDPARTY_RKAIQ_LIB_DIR ${THIRDPARTY_RKAIQ_ROOT}/lib)
 set(THIRDPARTY_DATACHANNEL_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/datachannel)
 set(THIRDPARTY_DATACHANNEL_INC_DIR ${THIRDPARTY_DATACHANNEL_ROOT}/inc)
 set(THIRDPARTY_DATACHANNEL_LIB ${THIRDPARTY_DATACHANNEL_ROOT}/lib/libdatachannel.so.0.24.5)
+set(THIRDPARTY_OPUS_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/opus)
+set(THIRDPARTY_OPUS_LIB ${THIRDPARTY_OPUS_ROOT}/lib/libopus.a)
 set(EXOSIP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/exosip_include)
 set(OPENSSL_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/openssl_include)
 
@@ -79,7 +86,8 @@ file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
 file(GLOB G711_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/src/*.c)
-file(GLOB AAC_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/aacEncoder/src/*.c)
+file(GLOB AAC_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/aacEncoder/src/*.c)
+file(GLOB OPUS_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/opusEncoder/src/*.cpp)
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
@@ -117,6 +125,15 @@ function(target_enable_webrtc_output target_name)
         BUILD_RPATH ${THIRDPARTY_DATACHANNEL_ROOT}/lib
         INSTALL_RPATH ${THIRDPARTY_DATACHANNEL_ROOT}/lib
     )
+endfunction()
+
+# Link the bundled RK3568 libopus statically so deployment does not depend on libopus.so.
+function(target_enable_opus_encoder target_name)
+    if(NOT EXISTS ${THIRDPARTY_OPUS_LIB})
+        message(FATAL_ERROR "libopus not found: ${THIRDPARTY_OPUS_LIB}")
+    endif()
+    target_include_directories(${target_name} PRIVATE ${THIRDPARTY_OPUS_ROOT}/inc)
+    target_link_libraries(${target_name} PRIVATE ${THIRDPARTY_OPUS_LIB})
 endfunction()
 
 if(ENABLE_RKAIQ)
@@ -304,6 +321,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
         ${AAC_ENCODER_SRC}
+        ${OPUS_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -317,6 +335,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(rtsp_gateway)
+    target_enable_opus_encoder(rtsp_gateway)
     if(ENABLE_RKAIQ)
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(rtsp_gateway PRIVATE rkaiq)
@@ -360,6 +379,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
         ${AAC_ENCODER_SRC}
+        ${OPUS_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -372,6 +392,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(dual_output_test)
+    target_enable_opus_encoder(dual_output_test)
     if(ENABLE_RKAIQ)
         target_compile_definitions(dual_output_test PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(dual_output_test PRIVATE rkaiq)
@@ -409,6 +430,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${AUDIO_FRAME_SOURCE_SRC}
         ${G711_ENCODER_SRC}
         ${AAC_ENCODER_SRC}
+        ${OPUS_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -424,6 +446,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
     )
     target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(all_services)
+    target_enable_opus_encoder(all_services)
     if(ENABLE_RKAIQ)
         target_compile_definitions(all_services PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(all_services PRIVATE rkaiq)

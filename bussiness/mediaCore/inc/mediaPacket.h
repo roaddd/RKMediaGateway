@@ -19,7 +19,8 @@ typedef enum {
     MEDIA_CODEC_AAC = 2,       /* AAC 音频编码 */
     MEDIA_CODEC_PCM_S16LE = 3, /* PCM S16LE 原始音频 */
     MEDIA_CODEC_G711A = 4,     /* G.711 A-law 音频 */
-    MEDIA_CODEC_G711U = 5      /* G.711 mu-law 音频 */
+    MEDIA_CODEC_G711U = 5,     /* G.711 mu-law 音频 */
+    MEDIA_CODEC_OPUS = 6       /* Opus 音频编码 */
 } MediaCodecType;
 
 typedef struct MediaBuffer {

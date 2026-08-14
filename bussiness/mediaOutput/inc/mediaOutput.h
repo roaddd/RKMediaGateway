@@ -108,7 +108,7 @@ typedef struct {
     int port;              /* WebSocket 信令监听端口。 */
     int queue_capacity;    /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
     int video_fps;         /* 视频帧率，用于缺省 RTP 媒体时间。 */
-    MediaCodecType audio_codec; /* WebRTC 音频编码，当前支持 G711A/G711U。 */
+    MediaCodecType audio_codec; /* WebRTC 音频编码，支持 G711A/G711U/Opus。 */
     int audio_sample_rate;      /* WebRTC 音频采样率，G711 固定 8000Hz。 */
     int audio_channels;         /* WebRTC 音频声道数，G711 当前只支持单声道。 */
 } MediaOutputWebRtcConfig;

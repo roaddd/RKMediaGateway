@@ -1014,7 +1014,7 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     /* 初始化音频编码前的队列 */
     if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
     {
-        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.source_slots) != 0)
+        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.runtime.source_slots) != 0)
         {
             LOG_ERROR("pipeline init failed: audio queue");
             return -1;
