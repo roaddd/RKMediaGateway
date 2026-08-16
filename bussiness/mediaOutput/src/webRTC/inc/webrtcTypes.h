@@ -51,6 +51,8 @@ struct WebRtcAudioFrame {
     size_t size;            /* 编码后音频数据字节数。 */
     uint64_t ptsUs;         /* 媒体时间戳，单位微秒。 */
     WebRtcAudioCodec codec; /* 当前音频帧编码类型，必须和协商出的 Track 一致。 */
+    uint64_t frameId;       /* gateway 音频帧序号，用于关联链路诊断日志。 */
+    bool traceSample;       /* 是否打印本帧 sendFrame 调用耗时。 */
 };
 
 /*

@@ -13,6 +13,19 @@ extern "C" {
 #define AUDIO_FRAME_SOURCE_DEFAULT_SLOTS 8
 #define AUDIO_FRAME_SOURCE_MAX_SLOTS 32
 
+/*
+ * 音频帧在采集、帧源和编码输入队列之间流转时携带的单调时钟时间点。
+ * 各字段只用于诊断实际调度间隔，不参与音频 PTS 或 RTP 时间戳计算。
+ */
+typedef struct {
+    uint64_t capture_done_us;         /* ALSA 完成一个完整 period 的时刻。 */
+    uint64_t capture_interval_us;     /* 相邻 period 实际采集完成间隔。 */
+    uint64_t source_publish_us;       /* 采集线程发布到 AudioFrameSource ring 的时刻。 */
+    uint64_t source_acquire_us;       /* gateway 从 AudioFrameSource ring 取出的时刻。 */
+    uint64_t encode_queue_enqueue_us; /* gateway 放入音频编码 FIFO 的时刻。 */
+    uint64_t encode_queue_dequeue_us; /* 音频编码线程从 FIFO 取出的时刻。 */
+} AudioFramePathTiming;
+
 typedef struct {
     const uint8_t *data;              /* 指向 ring slot 内部数据，release 前有效。 */
     size_t size;                      /* PCM 字节数。 */
@@ -25,6 +38,7 @@ typedef struct {
     uint64_t capture_call_us;         /* 采集调用耗时。 */
     uint64_t read_us;                 /* 底层设备读取耗时。 */
     uint64_t xrun_count;              /* 采集模块累计 xrun 次数。 */
+    AudioFramePathTiming path_timing; /* 随帧传递的音频链路诊断时间点。 */
 } AudioFrame;
 
 typedef struct {

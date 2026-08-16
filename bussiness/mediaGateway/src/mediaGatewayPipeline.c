@@ -24,6 +24,13 @@
 
 #define VIDEO_COMMAND_QUEUE_CAPACITY 8
 
+static uint64_t pipeline_now_us(void)
+{
+    struct timespec ts = {0};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 static void pipeline_set_thread_name(const char *prefix, const char *name, int index)
 {
     char thread_name[16] = {0};
@@ -572,6 +579,7 @@ int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame 
     memcpy(slot->data, frame->data, need_size); 
     slot->frame = *frame;
     slot->frame.data = slot->data;
+    slot->frame.path_timing.encode_queue_enqueue_us = pipeline_now_us();
     queue->size++;
     pthread_cond_signal(&queue->cond);
     pthread_mutex_unlock(&queue->lock);
@@ -646,6 +654,7 @@ static int audio_queue_acquire_copy(AudioEncodeQueue *queue,
     memcpy(*local_data, slot->data, need_size);
     *frame = slot->frame;
     frame->data = *local_data;
+    frame->path_timing.encode_queue_dequeue_us = pipeline_now_us();
     queue->head = (queue->head + 1) % queue->capacity;
     queue->size--;
 

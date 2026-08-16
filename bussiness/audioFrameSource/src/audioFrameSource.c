@@ -19,6 +19,13 @@ static void audio_frame_source_make_abs_timeout(struct timespec *ts, int timeout
     ts->tv_nsec = nsec % 1000000000L;
 }
 
+/* 所有链路时间点统一使用 CLOCK_MONOTONIC，避免系统时间校准造成负耗时。 */
+static uint64_t audio_frame_source_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
 /* 在线程外读取 running 标志，统一加锁，避免 stop 和采集线程竞争。 */
 static int audio_frame_source_should_run(AudioFrameSource *source) {
     int running;
@@ -124,6 +131,9 @@ static int audio_frame_source_publish(AudioFrameSource *source, const AudioCaptu
     slot->frame.capture_call_us = capture_frame->capture_call_us;
     slot->frame.read_us = capture_frame->read_us;
     slot->frame.xrun_count = capture_frame->xrun_count;
+    slot->frame.path_timing.capture_done_us = capture_frame->capture_done_us;
+    slot->frame.path_timing.capture_interval_us = capture_frame->capture_interval_us;
+    slot->frame.path_timing.source_publish_us = audio_frame_source_now_us();
     slot->seq = source->next_seq++;
     slot->valid = 1;
 
@@ -297,6 +307,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     source->slots[idx].in_use = 1;
     source->slots[idx].valid = 0;
     *frame = source->slots[idx].frame; /* 只是拷贝frame结构体，音频数据没有拷贝 */
+    frame->path_timing.source_acquire_us = audio_frame_source_now_us();
     *slot_index = idx;
     audio_frame_source_update_read_slot(source);
     pthread_mutex_unlock(&source->lock);

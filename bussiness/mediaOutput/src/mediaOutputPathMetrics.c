@@ -54,9 +54,17 @@ static const char *media_output_metric_output_type_name(MediaOutputType output_t
         return "rtmp";
     case MEDIA_OUTPUT_TYPE_GB28181:
         return "gb28181";
+    case MEDIA_OUTPUT_TYPE_WEBRTC:
+        return "webrtc";
     default:
         return "unknown";
     }
+}
+
+/* 时间点缺失或时钟顺序异常时返回 0，避免无符号减法下溢污染诊断日志。 */
+static uint64_t media_output_metric_delta_us(uint64_t end_us, uint64_t start_us)
+{
+    return start_us > 0 && end_us >= start_us ? end_us - start_us : 0;
 }
 
 static const char *media_output_metric_media_name(MediaFrameType frame_type)
@@ -174,6 +182,7 @@ static void media_output_update_path_latency_window(const char *output_name,
     }
     pthread_mutex_unlock(&g_path_latency_lock);
 
+    /* 如果不到打印的时间窗口或者样本数为0，则直接返回 */
     if (!should_log || samples == 0)
         return;
 
@@ -223,6 +232,57 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
     if (!sample || !sample->packet || !sample->packet->path_metrics.sample)
         return;
     packet = sample->packet;
+
+    if (packet->frame_type == MEDIA_FRAME_TYPE_AUDIO)
+    {
+        const MediaPacketPathMetrics *metrics = &packet->path_metrics;
+
+        /*
+         * 一条采样日志覆盖整条音频链路。观察哪个阶段首先出现约 0/40ms 的短长交替，
+         * 就能判断抖动产生在 ALSA、帧源调度、编码 FIFO、输出队列还是协议发送调用。
+         */
+        LOG_INFO("[AUDIO_PATH] output=%s output_type=%s stream=%s frame_id=%" PRIu64
+                 " capture_interval_us=%" PRIu64
+                 " capture_read_us=%" PRIu64
+                 " capture_to_source_publish_us=%" PRIu64
+                 " source_ring_wait_us=%" PRIu64
+                 " source_to_encode_queue_us=%" PRIu64
+                 " encode_queue_wait_us=%" PRIu64
+                 " dequeue_to_encode_start_us=%" PRIu64
+                 " encode_us=%" PRIu64
+                 " encode_to_output_queue_us=%" PRIu64
+                 " output_queue_wait_us=%" PRIu64
+                 " send_interval_us=%" PRIu64
+                 " send_call_us=%" PRIu64
+                 " capture_to_send_start_us=%" PRIu64,
+                 sample->output_name ? sample->output_name : "unknown",
+                 media_output_metric_output_type_name(sample->output_type),
+                 metrics->stream_name ? metrics->stream_name : "unknown",
+                 packet->frame_id,
+                 metrics->audio_capture_interval_us,
+                 metrics->audio_capture_read_us,
+                 media_output_metric_delta_us(metrics->audio_source_publish_us,
+                                              metrics->audio_capture_done_us),
+                 media_output_metric_delta_us(metrics->audio_source_acquire_us,
+                                              metrics->audio_source_publish_us),
+                 media_output_metric_delta_us(metrics->audio_encode_queue_enqueue_us,
+                                              metrics->audio_source_acquire_us),
+                 media_output_metric_delta_us(metrics->audio_encode_queue_dequeue_us,
+                                              metrics->audio_encode_queue_enqueue_us),
+                 media_output_metric_delta_us(metrics->audio_encode_start_us,
+                                              metrics->audio_encode_queue_dequeue_us),
+                 metrics->encode_us,
+                 media_output_metric_delta_us(metrics->enqueue_ts_us,
+                                              metrics->audio_encode_done_us),
+                 media_output_metric_delta_us(sample->send_start_us,
+                                              metrics->enqueue_ts_us),
+                 sample->audio_send_interval_us,
+                 media_output_metric_delta_us(sample->send_done_us,
+                                              sample->send_start_us),
+                 media_output_metric_delta_us(sample->send_start_us,
+                                              metrics->audio_capture_done_us));
+        return;
+    }
 
     /*
      * 时间口径：

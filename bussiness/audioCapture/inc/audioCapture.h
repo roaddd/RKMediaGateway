@@ -39,6 +39,8 @@ typedef struct {
     uint64_t capture_call_us;    /* 完整采集调用耗时。 */
     uint64_t read_us;            /* ALSA read 阶段耗时。 */
     uint64_t xrun_count;         /* 已恢复的 ALSA underrun/overrun 次数。 */
+    uint64_t capture_done_us;    /* 本 period 采集完成的单调时钟时间戳，用于端到端链路排查。 */
+    uint64_t capture_interval_us;/* 相邻两个 period 采集完成时刻的间隔；首帧为 0。 */
 } AudioCaptureFrame;
 
 typedef struct {
@@ -52,6 +54,7 @@ typedef struct {
     uint64_t xrun_count;         /* ALSA xrun 恢复计数。 */
     uint64_t pts_anchor_us;      /* 当前连续采集段首个 PCM 帧的单调时钟 PTS。 */
     uint64_t pts_frames;         /* 从 pts_anchor_us 起累计输出的每声道采样帧数。 */
+    uint64_t last_capture_done_us; /* 上一个 period 的采集完成时刻，用于计算实际采集间隔。 */
     int pts_initialized;         /* PTS 采样时钟是否已经建立；xrun 恢复后重新锚定。 */
     int initialized;             /* 模块是否初始化完成。 */
 } AudioCaptureCtx;

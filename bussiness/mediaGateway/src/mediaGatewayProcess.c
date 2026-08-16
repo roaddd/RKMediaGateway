@@ -683,7 +683,9 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
                                 const uint8_t *audio_data,
                                 size_t audio_len,
                                 uint64_t pts_us,
-                                MediaCodecType codec)
+                                MediaCodecType codec,
+                                uint64_t encode_start_us,
+                                uint64_t encode_done_us)
 {
     MediaBuffer *buffer = NULL;
     MediaPacket packet;
@@ -723,6 +725,23 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     packet.pts_us = pts_us;
     packet.dts_us = pts_us;
     packet.is_key_frame = 0;
+    packet.path_metrics.enqueue_ts_us = media_gateway_get_now_us();
+    packet.path_metrics.encode_us = encode_done_us >= encode_start_us
+                                        ? encode_done_us - encode_start_us
+                                        : 0;
+    packet.path_metrics.stream_name = ctx->config.video.streams[stream_idx].name;
+    packet.path_metrics.sample = ctx->bench.enable &&
+                                 ctx->bench.sample_every > 0 &&
+                                 ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
+    packet.path_metrics.audio_capture_done_us = frame->path_timing.capture_done_us;
+    packet.path_metrics.audio_capture_interval_us = frame->path_timing.capture_interval_us;
+    packet.path_metrics.audio_capture_read_us = frame->read_us;
+    packet.path_metrics.audio_source_publish_us = frame->path_timing.source_publish_us;
+    packet.path_metrics.audio_source_acquire_us = frame->path_timing.source_acquire_us;
+    packet.path_metrics.audio_encode_queue_enqueue_us = frame->path_timing.encode_queue_enqueue_us;
+    packet.path_metrics.audio_encode_queue_dequeue_us = frame->path_timing.encode_queue_dequeue_us;
+    packet.path_metrics.audio_encode_start_us = encode_start_us;
+    packet.path_metrics.audio_encode_done_us = encode_done_us;
 
     for (i = 0; i < ctx->output_count; ++i)
     {
@@ -757,6 +776,8 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     size_t audio_len = 0;
     uint64_t audio_pts_us = 0;
     MediaCodecType codec = MEDIA_CODEC_NONE;
+    uint64_t encode_start_us;
+    uint64_t encode_done_us;
     int stream_idx;
     int ret;
 
@@ -783,6 +804,7 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
     if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || !ctx->stream_enabled[stream_idx])
         return 0;
 
+    encode_start_us = media_gateway_get_now_us();
     if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
     {
         if (aac_encoder_encode_s16le(&ctx->aac_encoder,
@@ -834,8 +856,17 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
         }
         audio_pts_us = frame->pts_us;
     }
+    encode_done_us = media_gateway_get_now_us();
     pthread_mutex_lock(&ctx->stats_lock);
-    ret = enqueue_audio_packet(ctx, stream_idx, frame, audio_data, audio_len, audio_pts_us, codec);
+    ret = enqueue_audio_packet(ctx,
+                               stream_idx,
+                               frame,
+                               audio_data,
+                               audio_len,
+                               audio_pts_us,
+                               codec,
+                               encode_start_us,
+                               encode_done_us);
     pthread_mutex_unlock(&ctx->stats_lock);
     return ret;
 }

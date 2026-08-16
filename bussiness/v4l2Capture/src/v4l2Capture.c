@@ -1640,6 +1640,9 @@ int v4l2_capture_frame(V4L2CaptureCtx *ctx,
     //        *frame_id, *dqbuf_ts_us);
 
     // 某些驱动的 bytesused 可能大于初始预估值，这里按需扩容，避免越界。
+    /**
+     * todo:2026-08-16, frame_cache有扩容，那么映射到应用空间的mmap的buf_len会变吗，如果不会变，那这里扩容是不是就没必要了。
+     */
     if ((int)planes[0].bytesused > ctx->frame_cache_len) {
         uint8_t *new_cache = (uint8_t *)realloc(ctx->frame_cache, planes[0].bytesused);
         if (!new_cache) {

@@ -37,6 +37,15 @@ typedef struct {
     uint64_t encode_us;        /* 编码阶段总耗时，单位微秒，用于路径延时日志。 */
     const char *stream_name;   /* 所属码流名称，仅引用配置中的静态字符串。 */
     int sample;                /* 是否打印本包的路径延时采样日志。 */
+    uint64_t audio_capture_done_us;         /* ALSA period 采集完成时刻。 */
+    uint64_t audio_capture_interval_us;     /* 相邻 period 实际采集完成间隔。 */
+    uint64_t audio_capture_read_us;         /* 本 period 的 ALSA read 总耗时。 */
+    uint64_t audio_source_publish_us;       /* 发布到音频帧源 ring 的时刻。 */
+    uint64_t audio_source_acquire_us;       /* gateway 从帧源 ring 取出的时刻。 */
+    uint64_t audio_encode_queue_enqueue_us; /* 进入音频编码 FIFO 的时刻。 */
+    uint64_t audio_encode_queue_dequeue_us; /* 编码线程从音频 FIFO 取出的时刻。 */
+    uint64_t audio_encode_start_us;         /* 音频编码调用开始时刻。 */
+    uint64_t audio_encode_done_us;          /* 音频编码调用完成时刻。 */
 } MediaPacketPathMetrics;
 
 typedef struct {

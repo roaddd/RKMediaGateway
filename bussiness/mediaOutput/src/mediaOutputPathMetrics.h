@@ -18,6 +18,7 @@ typedef struct {
     const MediaPacket *packet;       /* 已完成发送的媒体包。 */
     uint64_t send_start_us;          /* 输出通道开始发送该包的时间戳。 */
     uint64_t send_done_us;           /* 输出通道完成发送该包的时间戳。 */
+    uint64_t audio_send_interval_us; /* 同一输出线程相邻音频包开始发送的实际间隔；首包为 0。 */
 } MediaOutputPathLatencySample;
 
 void media_output_log_path_latency(const MediaOutputPathLatencySample *sample);

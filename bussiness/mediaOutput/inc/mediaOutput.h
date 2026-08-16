@@ -260,6 +260,7 @@ struct MediaOutput {
     int waiting_for_keyframe;                /* 重连后是否仍在等待关键帧恢复发送。 */
     MediaOutputPacerMode video_pacer_mode;   /* 当前已下发到协议层的视频 RTP pacer 开关。 */
     int video_pacing_rate_bps;               /* 当前已下发到协议层的视频 RTP pacing 码率，单位 bit/s。 */
+    uint64_t last_audio_send_start_us;        /* 上一个音频包开始发送时刻，仅由输出线程访问。 */
 };
 
 /**

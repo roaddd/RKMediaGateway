@@ -589,6 +589,8 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
 {
     std::shared_ptr<rtc::Track> track;
     rtc::binary payload;
+    std::chrono::steady_clock::time_point sendStart;
+    std::chrono::steady_clock::time_point sendDone;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -625,13 +627,24 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
     payload.resize(frame.size);
     std::memcpy(payload.data(), frame.data, frame.size);
     try {
+        sendStart = std::chrono::steady_clock::now();
         track->sendFrame(payload, std::chrono::duration<double, std::micro>(frame.ptsUs));
+        sendDone = std::chrono::steady_clock::now();
     } catch (const std::exception &e) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.audioSendFail;
         LOG_ERROR("[WEBRTC] session=%d send audio failed: %s", id_, e.what());
         return false;
+    }
+
+    if (frame.traceSample) {
+        const uint64_t sendFrameUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count());
+        LOG_INFO("[WEBRTC_AUDIO_SEND] session=%d frame_id=%llu send_frame_us=%llu",
+                 id_,
+                 static_cast<unsigned long long>(frame.frameId),
+                 static_cast<unsigned long long>(sendFrameUs));
     }
 
     {

@@ -256,6 +256,8 @@ static int webrtc_output_send_packet(MediaOutput *output, const MediaPacket *pac
         audioFrame.size = packet->buffer->size;
         audioFrame.ptsUs = packet->pts_us;
         audioFrame.codec = webrtc_output_to_audio_codec(packet->codec);
+        audioFrame.frameId = packet->frame_id;
+        audioFrame.traceSample = packet->path_metrics.sample != 0;
         sentCount = impl->server->sendAudioFrame(audioFrame);
     } else {
         LOG_DEBUG("[WEBRTC] packet ignored: frame_type=%d codec=%d",

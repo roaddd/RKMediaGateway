@@ -106,6 +106,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
         }
         /* xrun 期间可能丢失未知数量的采样，下一帧重新用单调时钟建立 PTS 锚点。 */
         ctx->pts_initialized = 0;
+        ctx->last_capture_done_us = 0;
         return 0;
     }
     if (err == -ESTRPIPE) {
@@ -122,6 +123,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
         }
         /* suspend 持续时间不属于连续 PCM 时间线，恢复后不能沿用旧锚点。 */
         ctx->pts_initialized = 0;
+        ctx->last_capture_done_us = 0;
         return 0;
     }
     if (err == -EAGAIN) {
@@ -377,6 +379,12 @@ int audio_capture_read_frame(AudioCaptureCtx *ctx, AudioCaptureFrame *frame) {
     frame->read_us = end_us - start_us;
     frame->capture_call_us = frame->read_us;
     frame->xrun_count = ctx->xrun_count;
+    frame->capture_done_us = end_us;
+    frame->capture_interval_us = ctx->last_capture_done_us > 0 &&
+                                 end_us >= ctx->last_capture_done_us
+                                     ? end_us - ctx->last_capture_done_us
+                                     : 0;
+    ctx->last_capture_done_us = end_us;
     /*
      * 第一帧用 read 返回时刻减去本帧时长，建立当前连续采集段的 PTS 锚点。
      * 后续帧必须按“累计采样数 / 实际采样率”推导 PTS，不能再次使用 read

@@ -229,6 +229,7 @@ static void *media_output_thread(void *arg)
     MediaOutput *output = (MediaOutput *)arg;
     uint64_t send_start_us = 0;
     uint64_t send_done_us = 0;
+    uint64_t audio_send_interval_us = 0;
     int send_ret = -1;
     MediaPacket packet; /* 每个packet是一帧图像或者音频，一帧编码图像内部可能包含多个H264 NALU */
 
@@ -301,6 +302,16 @@ static void *media_output_thread(void *arg)
         }
         /* 发送数据包 */
         send_start_us = media_output_metrics_now_us();
+        audio_send_interval_us = 0;
+        if (packet.frame_type == MEDIA_FRAME_TYPE_AUDIO)
+        {
+            if (output->last_audio_send_start_us > 0 &&
+                send_start_us >= output->last_audio_send_start_us)
+            {
+                audio_send_interval_us = send_start_us - output->last_audio_send_start_us;
+            }
+            output->last_audio_send_start_us = send_start_us;
+        }
         send_ret = output->vtable->send_packet(output, &packet);
         send_done_us = media_output_metrics_now_us();
         /* 打印一帧音频/视频从采集时间戳到协议层发送完成的路径耗时。 */
@@ -311,6 +322,7 @@ static void *media_output_thread(void *arg)
             path_sample.packet = &packet;
             path_sample.send_start_us = send_start_us;
             path_sample.send_done_us = send_done_us;
+            path_sample.audio_send_interval_us = audio_send_interval_us;
             media_output_log_path_latency(&path_sample);
         }
         if (send_ret != MEDIA_OK)
