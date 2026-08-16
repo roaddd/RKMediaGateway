@@ -1737,7 +1737,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
                       ctx->config.audio.source.capture.channels);
             return -1;
         }
-        ctx->audio_capture_ready = 1;
+        ctx->audio_capture_ready = 1; /* 音频采集设备初始化成功 */
         ctx->config.audio.source.capture.sample_rate = ctx->audio_capture.config.sample_rate;
         ctx->config.audio.source.capture.period_frames = ctx->audio_capture.config.period_frames;
 
@@ -1784,7 +1784,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
                 return -1;
             }
         }
-        ctx->audio_encoder_ready = 1;
+        ctx->audio_encoder_ready = 1; /* 音频编码器初始化成功 */
     }
     return 0;
 }
@@ -1880,6 +1880,7 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
         LOG_ERROR("init gateway video encoders");
         goto fail;
     }
+    /* 初始化音频采集设备和音频编码器 */
     if (init_gateway_audio(ctx) != 0)
     {
         LOG_ERROR("init gateway audio");

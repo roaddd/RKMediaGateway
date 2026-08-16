@@ -345,6 +345,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     MediaOutputStats output_stats = {0};
     char *reply = NULL;
     size_t offset = 0;
+    uint64_t audio_xruns = 0;
     int i = 0;
 
     (void)input;
@@ -360,6 +361,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     reply = output;
     reply[0] = '\0';
     media_gateway_get_stats_snapshot(ctx, &stats_snapshot);
+    audio_xruns = audio_capture_get_xrun_count(&ctx->audio_capture);
 
     debug_command_reply_append(reply, &offset, "cmd=getStatus\n");
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_GREEN, "RUNTIME");
@@ -377,6 +379,10 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                gateway_debug_switch_name(ctx->config.audio.source.enabled),
                                gateway_debug_switch_name(ctx->audio_capture_ready),
                                gateway_debug_switch_name(ctx->audio_encoder_ready));
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  audio_xruns=%" PRIu64 "\n",
+                               audio_xruns);
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "CAPTURE");
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)

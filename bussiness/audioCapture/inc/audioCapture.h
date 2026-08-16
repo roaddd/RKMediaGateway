@@ -23,8 +23,8 @@ typedef struct {
     int sample_rate;             /* 采样率，语音链路通常使用 8000Hz。 */
     int channels;                /* 声道数；当前 G711 链路要求 mono。 */
     AudioSampleFormat format;    /* PCM 样本格式。 */
-    int period_frames;           /* 每次 read 返回的单声道采样数，160 表示 8kHz 下 20ms。 */
-    int buffer_periods;          /* ALSA 硬件缓冲区包含多少个 period，用于平衡延迟和抗抖动能力。 */
+    int period_frames;           /* 一个 ALSA period 包含的 PCM 帧数；当前模块每次向上层返回一个完整 period。 */
+    int buffer_periods;          /* ALSA PCM 环形缓冲区期望包含的 period 数，用于平衡延迟和抗调度抖动能力。 */
 } AudioCaptureConfig;
 
 typedef struct {
@@ -44,12 +44,15 @@ typedef struct {
 typedef struct {
     void *pcm_handle;            /* 私有 ALSA snd_pcm_t*，头文件中隐藏 ALSA 依赖。 */
     AudioCaptureConfig config;   /* 归一化后的实际采集配置。 */
-    uint8_t *period_buffer;      /* 热路径复用的 PCM 周期缓冲区。 */
-    size_t period_buffer_size;   /* period_buffer 容量。 */
+    uint8_t *period_buffer;      /* 用户态复用缓存，与 ALSA 内核/驱动中的 PCM 环形缓冲区不是同一个 buffer。 */
+    size_t period_buffer_size;   /* 用户态 period_buffer 的字节容量。 */
     int bytes_per_sample;        /* 单个采样点字节数。 */
     int frame_bytes;             /* 一个多声道采样帧的字节数。 */
     uint64_t frame_id;           /* 下一个采集帧序号来源。 */
     uint64_t xrun_count;         /* ALSA xrun 恢复计数。 */
+    uint64_t pts_anchor_us;      /* 当前连续采集段首个 PCM 帧的单调时钟 PTS。 */
+    uint64_t pts_frames;         /* 从 pts_anchor_us 起累计输出的每声道采样帧数。 */
+    int pts_initialized;         /* PTS 采样时钟是否已经建立；xrun 恢复后重新锚定。 */
     int initialized;             /* 模块是否初始化完成。 */
 } AudioCaptureCtx;
 
@@ -68,6 +71,14 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config);
  * @return {int} 0 成功，-1 失败。
  */
 int audio_capture_read_frame(AudioCaptureCtx *ctx, AudioCaptureFrame *frame);
+
+/**
+ * @brief 获取当前累计的 ALSA XRUN 恢复次数。
+ * @param ctx 音频采集上下文。
+ * @return XRUN 累计次数；ctx 为空时返回 0。
+ * @note 该接口使用原子读取，可由调试线程与采集线程并发调用。
+ */
+uint64_t audio_capture_get_xrun_count(const AudioCaptureCtx *ctx);
 
 /**
  * @description: 关闭 ALSA 设备并释放内部缓冲区。
