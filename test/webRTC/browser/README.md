@@ -7,7 +7,8 @@
 - 浏览器端 Offer 生成。
 - Answer / ICE candidate 处理。
 - DataChannel IPC 消息收发。
-- 可选视频 Track 接收预留。
+- 视频、音频 Track 接收。
+- 主动发送 RTCP PLI/FIR，并统计关键帧到达和出图耗时。
 
 启动静态页面：
 
@@ -68,3 +69,14 @@ H264 单文件视频测试：
 
 H264 文件需要是 Annex-B 裸流格式，也就是 ffmpeg `-f h264` 生成的 `00 00 00 01` 起始码格式。
 启动后在浏览器页面勾选“接收视频”，再点击开始连接。浏览器 Offer 会携带 `m=video`，设备端会把单个 H264 文件解析成帧，Answer 添加 H264 sendonly Track，并通过 WebRTC RTP 通道循环发送给浏览器。
+
+## PLI/FIR 关键帧恢复测试
+
+视频正常播放且“请求状态”显示“就绪”后，点击“发送 PLI/FIR”。页面通过接收端 `RTCRtpScriptTransformer.sendKeyFrameRequest()` 请求设备输出关键帧，并显示：
+
+- `关键帧到达`：从点击按钮到浏览器收到新编码关键帧的时间。
+- `画面恢复`：从点击按钮到该关键帧被 `<video>` 实际呈现的时间。
+
+浏览器允许根据当前解码状态决定不发送请求，因此 Promise 成功不等于设备一定收到 RTCP。最终需要同时执行设备端 `getWebRTC`，确认 `video pli rx` 和目标 session 的 `pli_rx` 增加。设备端 `PliHandler` 会将 PLI 和 FIR 统一交给关键帧请求逻辑。
+
+该接口需要较新的浏览器。如果页面显示“浏览器不支持”，请升级浏览器；页面必须通过 HTTP/HTTPS 服务打开，不能直接双击 HTML 文件，因为测试依赖独立 Worker。

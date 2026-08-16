@@ -31,7 +31,7 @@ python3 test/rtsp/rtsp_e2e_benchmark.py \
 - `STREAM_MAIN_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT`
 - `STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT`
 
-请直接写在配置文件：`RKMediaGateway/main/rtsp_gateway.conf`
+请直接写在配置文件：`RKMediaGateway/main/media_gateway.toml`
 
 取值：
 
@@ -40,20 +40,16 @@ python3 test/rtsp/rtsp_e2e_benchmark.py \
 
 示例（子码流）：
 
-```ini
-STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=0
+```toml
+[stream.sub.rtsp]
+immediate_sps_pps_on_new_client = false
 ```
 
 切到优化模式：
 
-```ini
-STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=1
-```
-
-兼容单流旧配置时可用：
-
-```ini
-GATEWAY_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT=1
+```toml
+[stream.sub.rtsp]
+immediate_sps_pps_on_new_client = true
 ```
 
 ## 4) 对比建议
