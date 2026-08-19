@@ -125,9 +125,9 @@ typedef struct {
 typedef struct {
     const char *device_name;         /* ALSA 采集设备，例如 default/hw:0,0。 */
     int sample_rate;                 /* 音频采样率，G711 常用 8000，Opus/WebRTC 使用 48000。 */
-    int channels;                    /* PCM 声道数。 */
+    int channels;                    /* ALSA 硬件采集声道数，不等同于编码输出声道数。 */
     AudioSampleFormat format;        /* 采集 PCM 格式，当前支持 S16LE。 */
-    int period_frames;               /* 每个采集周期的单声道采样数。 */
+    int period_frames;               /* 每个采集周期的 PCM frame 数；每个 frame 包含所有采集声道。 */
     int buffer_periods;              /* ALSA 设备缓冲周期数。 */
 } MediaGatewayAudioCaptureConfig;
 
@@ -157,6 +157,8 @@ typedef struct {
 
 typedef struct {
     MediaCodecType codec;            /* 音频编码格式：G711A/G711U/AAC/OPUS。 */
+    int channels;                    /* 编码输入及码流声道数，与 ALSA 采集声道数独立配置。 */
+    int input_channel;               /* 采集多声道转编码单声道时选择的输入声道，下标从 0 开始。 */
     MediaGatewayAudioG711Config g711;
     MediaGatewayAudioAacConfig aac;
     MediaGatewayAudioOpusConfig opus;

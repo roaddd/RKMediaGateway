@@ -21,7 +21,7 @@ typedef enum {
 typedef struct {
     const char *device_name;     /* ALSA PCM 设备名，例如 default 或 hw:0,0。 */
     int sample_rate;             /* 采样率，语音链路通常使用 8000Hz。 */
-    int channels;                /* 声道数；当前 G711 链路要求 mono。 */
+    int channels;                /* ALSA 硬件采集声道数；可在编码前转换为不同的编码声道数。 */
     AudioSampleFormat format;    /* PCM 样本格式。 */
     int period_frames;           /* 一个 ALSA period 包含的 PCM 帧数；当前模块每次向上层返回一个完整 period。 */
     int buffer_periods;          /* ALSA PCM 环形缓冲区期望包含的 period 数，用于平衡延迟和抗调度抖动能力。 */

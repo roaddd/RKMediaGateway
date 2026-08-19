@@ -389,14 +389,14 @@ enable = 1
 bind_stream_index = 0
 
 [audio.capture]
-# AUDIO_DEVICE: ALSA 音频设备名。
-device = "default"
+# AUDIO_DEVICE: ALSA 音频设备名。RK809 硬件 PCM 使用双声道采集，直接打开可避免 default 插件聚合 period。
+device = "hw:0,0"
 
 # AUDIO_SAMPLE_RATE: 音频采样率。
 sample_rate = 48000
 
-# AUDIO_CHANNELS: 音频通道数。
-channels = 1
+# AUDIO_CAPTURE_CHANNELS: ALSA 硬件采集通道数；RK809 当前 BSP 的 hw PCM 最少要求 2 通道。
+channels = 2
 
 # AUDIO_FORMAT: 音频采样格式，1=PCM S16LE。
 format = 1
@@ -420,6 +420,12 @@ max_consecutive_failures = 30
 [audio.encoder]
 # AUDIO_CODEC: 音频编码格式，4=G711A，5=G711U，2=AAC，6=Opus。
 codec = 6
+
+# AUDIO_ENCODER_CHANNELS: 编码输入和最终码流声道数，与 ALSA 采集声道数独立。
+channels = 1
+
+# AUDIO_ENCODER_INPUT_CHANNEL: 多声道采集转单声道编码时选择的采集声道，下标从 0 开始。
+input_channel = 0
 
 [audio.encoder.g711]
 # AUDIO_G711_MODE: G711 模式，0=A-law，1=mu-law。

@@ -57,7 +57,6 @@ typedef struct {
     int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 对应视频帧源线程是否已启动。 */
     AudioFrameSource audio_source;                               /* 音频帧源线程对象。 */
     int audio_source_inited;                                     /* 音频帧源是否已初始化。 */
-    int audio_source_started;                                    /* 音频帧源线程是否已启动。 */
     ThreadMessageQueue result_queue;                              /* 所有 worker 共用的执行结果队列。 */
     int result_queue_inited;                                      /* 结果队列是否初始化成功。 */
     MediaGatewayVideoControlTransition video_control_transition;      /* 运行期视频控制异步事务。 */
@@ -1079,7 +1078,8 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
     {
         if (require_non_empty_string("audio.device_name", dst->audio.source.capture.device_name) != 0 ||
             require_positive_int("audio.sample_rate", dst->audio.source.capture.sample_rate) != 0 ||
-            require_positive_int("audio.channels", dst->audio.source.capture.channels) != 0 ||
+            require_positive_int("audio.capture.channels", dst->audio.source.capture.channels) != 0 ||
+            require_positive_int("audio.encoder.channels", dst->audio.source.encoder.channels) != 0 ||
             require_positive_int("audio.period_frames", dst->audio.source.capture.period_frames) != 0 ||
             require_positive_int("audio.buffer_periods", dst->audio.source.capture.buffer_periods) != 0 ||
             require_positive_int("audio.source_slots", dst->audio.source.runtime.source_slots) != 0 ||
@@ -1093,6 +1093,27 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             dst->audio.source.encoder.codec != MEDIA_CODEC_AAC &&
             dst->audio.source.encoder.codec != MEDIA_CODEC_OPUS)
             return config_error_int("audio.codec", dst->audio.source.encoder.codec, "is unsupported");
+        if (dst->audio.source.capture.channels != 1 && dst->audio.source.capture.channels != 2)
+            return config_error_int("audio.capture.channels", dst->audio.source.capture.channels, "must be 1 or 2");
+        if (dst->audio.source.encoder.channels != 1 && dst->audio.source.encoder.channels != 2)
+            return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 or 2");
+        /* 当前仅实现原通道复制，以及 RK809 双通道采集选择一路转换为单声道。 */
+        if (dst->audio.source.encoder.channels != dst->audio.source.capture.channels &&
+            !(dst->audio.source.capture.channels == 2 && dst->audio.source.encoder.channels == 1))
+        {
+            LOG_ERROR("media_gateway config invalid: unsupported audio channel conversion capture=%d encoder=%d",
+                      dst->audio.source.capture.channels,
+                      dst->audio.source.encoder.channels);
+            return -1;
+        }
+        if (dst->audio.source.encoder.channels == 1 &&
+            (dst->audio.source.encoder.input_channel < 0 ||
+             dst->audio.source.encoder.input_channel >= dst->audio.source.capture.channels))
+            return config_error_int("audio.encoder.input_channel", dst->audio.source.encoder.input_channel, "must reference a capture channel");
+        if ((dst->audio.source.encoder.codec == MEDIA_CODEC_G711A ||
+             dst->audio.source.encoder.codec == MEDIA_CODEC_G711U) &&
+            dst->audio.source.encoder.channels != 1)
+            return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 for G711");
         if (dst->audio.source.encoder.codec == MEDIA_CODEC_AAC)
         {
             if (require_positive_int("audio.aac_bitrate", dst->audio.source.encoder.aac.bitrate) != 0 ||
@@ -1104,8 +1125,8 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             /* WebRTC Opus 的 RTP 时钟固定为 48 kHz；当前链路不在编码前做重采样。 */
             if (dst->audio.source.capture.sample_rate != 48000)
                 return config_error_int("audio.sample_rate", dst->audio.source.capture.sample_rate, "must be 48000 for WebRTC Opus");
-            if (dst->audio.source.capture.channels != 1 && dst->audio.source.capture.channels != 2)
-                return config_error_int("audio.channels", dst->audio.source.capture.channels, "must be 1 or 2 for Opus");
+            if (dst->audio.source.encoder.channels != 1 && dst->audio.source.encoder.channels != 2)
+                return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 or 2 for Opus");
             /* libopus 每次只接受 2.5/5/10/20/40/60ms PCM，下面是 48 kHz 对应采样数。 */
             if (dst->audio.source.capture.period_frames != 120 && dst->audio.source.capture.period_frames != 240 &&
                 dst->audio.source.capture.period_frames != 480 && dst->audio.source.capture.period_frames != 960 &&
@@ -1216,6 +1237,10 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         dst->audio.source.capture.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
     if (dst->audio.source.capture.channels <= 0)
         dst->audio.source.capture.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
+    if (dst->audio.source.encoder.channels <= 0)
+        dst->audio.source.encoder.channels = 1;
+    if (dst->audio.source.encoder.input_channel < 0)
+        dst->audio.source.encoder.input_channel = 0;
     if (dst->audio.source.capture.format == 0)
         dst->audio.source.capture.format = AUDIO_SAMPLE_FORMAT_S16LE;
     if (dst->audio.source.capture.period_frames <= 0)
@@ -1312,7 +1337,7 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         {
             output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.encoder.codec;
             output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
-            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.capture.channels;
+            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.encoder.channels;
             output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.encoder.aac.profile;
         }
         else
@@ -1400,7 +1425,7 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         {
             output_config.protocol.webrtc.audio_codec = ctx->config.audio.source.encoder.codec;
             output_config.protocol.webrtc.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
-            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.capture.channels;
+            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.encoder.channels;
         }
         else
         {
@@ -1739,13 +1764,14 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         }
         ctx->audio_capture_ready = 1; /* 音频采集设备初始化成功 */
         ctx->config.audio.source.capture.sample_rate = ctx->audio_capture.config.sample_rate;
+        ctx->config.audio.source.capture.channels = ctx->audio_capture.config.channels;
         ctx->config.audio.source.capture.period_frames = ctx->audio_capture.config.period_frames;
 
         if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
         {
             memset(&aac_config, 0, sizeof(aac_config));
             aac_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            aac_config.channels = ctx->audio_capture.config.channels;
+            aac_config.channels = ctx->config.audio.source.encoder.channels;
             aac_config.bitrate = ctx->config.audio.source.encoder.aac.bitrate;
             aac_config.profile = ctx->config.audio.source.encoder.aac.profile;
             aac_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
@@ -1758,7 +1784,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
         {
             opus_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            opus_config.channels = ctx->audio_capture.config.channels;
+            opus_config.channels = ctx->config.audio.source.encoder.channels;
             opus_config.bitrate = ctx->config.audio.source.encoder.opus.bitrate;
             opus_config.complexity = ctx->config.audio.source.encoder.opus.complexity;
             opus_config.enable_vbr = ctx->config.audio.source.encoder.opus.vbr;
@@ -1776,7 +1802,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
             memset(&g711_config, 0, sizeof(g711_config));
             g711_config.mode = ctx->config.audio.source.encoder.g711.mode;
             g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            g711_config.channels = ctx->audio_capture.config.channels;
+            g711_config.channels = ctx->config.audio.source.encoder.channels;
             g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
             if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0)
             {
@@ -1785,6 +1811,13 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
             }
         }
         ctx->audio_encoder_ready = 1; /* 音频编码器初始化成功 */
+        LOG_INFO("audio pipeline configured: device=%s rate=%d capture_channels=%d encoder_channels=%d input_channel=%d period_frames=%d",
+                 ctx->audio_capture.config.device_name ? ctx->audio_capture.config.device_name : "unknown",
+                 ctx->audio_capture.config.sample_rate,
+                 ctx->audio_capture.config.channels,
+                 ctx->config.audio.source.encoder.channels,
+                 ctx->config.audio.source.encoder.input_channel,
+                 ctx->audio_capture.config.period_frames);
     }
     return 0;
 }
@@ -1965,7 +1998,6 @@ static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources
             LOG_ERROR("media_gateway_run failed: start audio frame source");
             return -1;
         }
-        res->audio_source_started = 1;
     }
     return 0;
 }
@@ -2018,49 +2050,6 @@ static int dispatch_video_source_once(MediaGatewayCtx *ctx,
     media_frame_source_release(&res->frame_sources[source_idx], slot_index);
     media_frame_reset(&frame);
     return ret;
-}
-
-/**
- * @description: 非阻塞 drain 音频帧并发布到音频编码 FIFO。
- */
-static int drain_audio_source_once(MediaGatewayCtx *ctx,
-                                   MediaGatewayRunResources *res,
-                                   int *got_frame)
-{
-    AudioFrame audio_frame = {0};
-    int audio_slot_index = -1;
-    int audio_drain_count = 0;
-    int acquire_ret = 0;
-
-    if (!res->audio_source_started)
-        return 0;
-
-    while (audio_drain_count < ctx->config.audio.source.runtime.source_slots)
-    {
-        audio_slot_index = -1;
-        /* 从音频采集线程队列里面获取最旧帧 */
-        acquire_ret = audio_frame_source_acquire(&res->audio_source, &audio_frame, &audio_slot_index, 0);
-        if (acquire_ret < 0)
-        {
-            LOG_ERROR("media_gateway_run failed: audio frame source fatal error");
-            return -1;
-        }
-        if (acquire_ret == 0)
-            break;
-
-        *got_frame = 1;
-        /* 将音频帧发布到音频编码队列 */
-        if (media_gateway_audio_queue_publish(&res->pipeline.audio.queue, &audio_frame) != 0)
-        {
-            LOG_ERROR("media_gateway_run failed: publish audio frame=%" PRIu64, audio_frame.frame_id);
-            ctx->running = 0;
-            audio_frame_source_release(&res->audio_source, audio_slot_index);
-            return -1;
-        }
-        audio_frame_source_release(&res->audio_source, audio_slot_index);
-        audio_drain_count++;
-    }
-    return 0;
 }
 
 /**
@@ -2792,13 +2781,6 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
         }
     }
 
-    /* 从音频采集线程队列里面获取最新帧并放入音频编码线程输入队列 */
-    if (drain_audio_source_once(ctx, res, got_frame) != 0)
-    {
-        LOG_ERROR("run_gateway_once failed: drain audio source");
-        return -1;
-    }
-
     /* 检查 pipeline 状态 */
     if (media_gateway_pipeline_get_ret(&res->pipeline) != 0)
     {
@@ -2825,8 +2807,9 @@ static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources
     int source_idx = 0;
 
     ctx->running = 0;
+    /* 先停止帧源并广播条件变量，唤醒直接等待它的音频编码线程。 */
     if (res->audio_source_inited)
-        audio_frame_source_deinit(&res->audio_source);
+        audio_frame_source_stop(&res->audio_source);
     for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx)
     {
         if (res->frame_source_inited[source_idx])
@@ -2834,6 +2817,9 @@ static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources
     }
     media_gateway_pipeline_join_workers(&res->pipeline);
     media_gateway_pipeline_deinit(&res->pipeline);
+    /* 编码线程退出后才能销毁 AudioFrameSource 的 slot、锁和条件变量。 */
+    if (res->audio_source_inited)
+        audio_frame_source_deinit(&res->audio_source);
     if (res->result_queue_inited)
     {
         thread_message_queue_deinit(&res->result_queue);
@@ -2868,8 +2854,21 @@ int media_gateway_run(MediaGatewayCtx *ctx)
     }
     res.result_queue_inited = 1;
 
-    /* 初始化各路流的对应编码pipeline的输入队列和控制命令队列 */
-    if (media_gateway_pipeline_init(&res.pipeline, ctx, &res.result_queue) != 0)
+    /*
+     * 先启动音频帧源，再启动直接等待它的音频编码 worker。
+     * AudioFrameSource 自己就是 FIFO，不再经由 gateway 主循环搬运到第二级队列。
+     */
+    if (start_run_audio_source(ctx, &res) != 0)
+    {
+        ret = -1;
+        goto out;
+    }
+
+    /* 初始化各路流的编码 pipeline、视频输入队列和控制命令队列。 */
+    if (media_gateway_pipeline_init(&res.pipeline,
+                                    ctx,
+                                    &res.result_queue,
+                                    res.audio_source_inited ? &res.audio_source : NULL) != 0)
     {
         LOG_ERROR("media_gateway_run failed: init pipeline");
         ret = -1;
@@ -2888,13 +2887,6 @@ int media_gateway_run(MediaGatewayCtx *ctx)
         ret = -1;
         goto out;
     }
-    /* 启动音频采集线程 */
-    if (start_run_audio_source(ctx, &res) != 0)
-    {
-        ret = -1;
-        goto out;
-    }
-
     /* 进入主循环 */
     while (ctx->running)
     {

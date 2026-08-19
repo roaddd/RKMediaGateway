@@ -239,16 +239,15 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
 
         /*
          * 一条采样日志覆盖整条音频链路。观察哪个阶段首先出现约 0/40ms 的短长交替，
-         * 就能判断抖动产生在 ALSA、帧源调度、编码 FIFO、输出队列还是协议发送调用。
+         * 就能判断抖动产生在 ALSA、帧源等待、编码输入转换、输出队列还是协议发送调用。
          */
         LOG_INFO("[AUDIO_PATH] output=%s output_type=%s stream=%s frame_id=%" PRIu64
                  " capture_interval_us=%" PRIu64
                  " capture_read_us=%" PRIu64
                  " capture_to_source_publish_us=%" PRIu64
                  " source_ring_wait_us=%" PRIu64
-                 " source_to_encode_queue_us=%" PRIu64
-                 " encode_queue_wait_us=%" PRIu64
-                 " dequeue_to_encode_start_us=%" PRIu64
+                 " encoder_input_prepare_us=%" PRIu64
+                 " input_ready_to_encode_start_us=%" PRIu64
                  " encode_us=%" PRIu64
                  " encode_to_output_queue_us=%" PRIu64
                  " output_queue_wait_us=%" PRIu64
@@ -265,12 +264,10 @@ void media_output_log_path_latency(const MediaOutputPathLatencySample *sample)
                                               metrics->audio_capture_done_us),
                  media_output_metric_delta_us(metrics->audio_source_acquire_us,
                                               metrics->audio_source_publish_us),
-                 media_output_metric_delta_us(metrics->audio_encode_queue_enqueue_us,
+                 media_output_metric_delta_us(metrics->audio_encoder_input_ready_us,
                                               metrics->audio_source_acquire_us),
-                 media_output_metric_delta_us(metrics->audio_encode_queue_dequeue_us,
-                                              metrics->audio_encode_queue_enqueue_us),
                  media_output_metric_delta_us(metrics->audio_encode_start_us,
-                                              metrics->audio_encode_queue_dequeue_us),
+                                              metrics->audio_encoder_input_ready_us),
                  metrics->encode_us,
                  media_output_metric_delta_us(metrics->enqueue_ts_us,
                                               metrics->audio_encode_done_us),

@@ -265,7 +265,7 @@ int audio_frame_source_start(AudioFrameSource *source) {
     return 0;
 }
 
-/* 获取最旧可读音频帧；返回后调用方必须 release 对应 slot。 */
+/* 获取最旧可读音频帧；音频编码线程返回后必须 release 对应 slot。 */
 int audio_frame_source_acquire(AudioFrameSource *source,
                                AudioFrame *frame,
                                int *slot_index,
@@ -306,7 +306,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     }
     source->slots[idx].in_use = 1;
     source->slots[idx].valid = 0;
-    *frame = source->slots[idx].frame; /* 只是拷贝frame结构体，音频数据没有拷贝 */
+    *frame = source->slots[idx].frame; /* 只复制元数据，PCM 仍指向 ring slot，release 前有效。 */
     frame->path_timing.source_acquire_us = audio_frame_source_now_us();
     *slot_index = idx;
     audio_frame_source_update_read_slot(source);
@@ -314,7 +314,7 @@ int audio_frame_source_acquire(AudioFrameSource *source,
     return 1;
 }
 
-/* 释放消费中的 slot，采集线程之后可以覆盖复用。 */
+/* 释放编码线程消费中的 slot，采集线程之后可以覆盖复用。 */
 void audio_frame_source_release(AudioFrameSource *source, int slot_index) {
     if (!source || slot_index < 0 || slot_index >= source->slot_count) return;
     pthread_mutex_lock(&source->lock);

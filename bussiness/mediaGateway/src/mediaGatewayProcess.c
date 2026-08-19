@@ -738,8 +738,7 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     packet.path_metrics.audio_capture_read_us = frame->read_us;
     packet.path_metrics.audio_source_publish_us = frame->path_timing.source_publish_us;
     packet.path_metrics.audio_source_acquire_us = frame->path_timing.source_acquire_us;
-    packet.path_metrics.audio_encode_queue_enqueue_us = frame->path_timing.encode_queue_enqueue_us;
-    packet.path_metrics.audio_encode_queue_dequeue_us = frame->path_timing.encode_queue_dequeue_us;
+    packet.path_metrics.audio_encoder_input_ready_us = frame->path_timing.encoder_input_ready_us;
     packet.path_metrics.audio_encode_start_us = encode_start_us;
     packet.path_metrics.audio_encode_done_us = encode_done_us;
 
@@ -797,6 +796,13 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
         LOG_ERROR("process_gateway_audio failed: unsupported format=%d channels=%d",
                   frame->format,
                   frame->channels);
+        return -1;
+    }
+    if (frame->channels != ctx->config.audio.source.encoder.channels)
+    {
+        LOG_ERROR("process_gateway_audio failed: frame channels=%d encoder channels=%d",
+                  frame->channels,
+                  ctx->config.audio.source.encoder.channels);
         return -1;
     }
     /* 确定音频数据绑定的流索引,因为音频需要跟某一路视频时间线绑定 */

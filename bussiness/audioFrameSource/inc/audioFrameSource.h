@@ -14,16 +14,15 @@ extern "C" {
 #define AUDIO_FRAME_SOURCE_MAX_SLOTS 32
 
 /*
- * 音频帧在采集、帧源和编码输入队列之间流转时携带的单调时钟时间点。
+ * 音频帧在采集、帧源和编码线程之间流转时携带的单调时钟时间点。
  * 各字段只用于诊断实际调度间隔，不参与音频 PTS 或 RTP 时间戳计算。
  */
 typedef struct {
     uint64_t capture_done_us;         /* ALSA 完成一个完整 period 的时刻。 */
     uint64_t capture_interval_us;     /* 相邻 period 实际采集完成间隔。 */
     uint64_t source_publish_us;       /* 采集线程发布到 AudioFrameSource ring 的时刻。 */
-    uint64_t source_acquire_us;       /* gateway 从 AudioFrameSource ring 取出的时刻。 */
-    uint64_t encode_queue_enqueue_us; /* gateway 放入音频编码 FIFO 的时刻。 */
-    uint64_t encode_queue_dequeue_us; /* 音频编码线程从 FIFO 取出的时刻。 */
+    uint64_t source_acquire_us;       /* 音频编码线程从 AudioFrameSource ring 取出的时刻。 */
+    uint64_t encoder_input_ready_us;  /* PCM 声道转换/线程私有副本准备完成的时刻。 */
 } AudioFramePathTiming;
 
 typedef struct {
@@ -47,7 +46,7 @@ typedef struct {
     AudioFrame frame;                 /* 槽位当前保存的音频帧元数据。 */
     uint64_t seq;                     /* ring 内递增序号，用于选择最旧可读帧。 */
     int valid;                        /* 槽位是否有待消费数据。 */
-    int in_use;                       /* gateway 是否正在使用该槽位。 */
+    int in_use;                       /* 音频编码线程是否正在使用该槽位。 */
 } AudioFrameSourceSlot;
 
 typedef struct {
@@ -87,7 +86,7 @@ int audio_frame_source_init(AudioFrameSource *source,
 int audio_frame_source_start(AudioFrameSource *source);
 
 /**
- * @description: 从 ring 中获取最旧的待消费音频帧，超时返回 0。
+ * @description: 从 ring 中获取最旧的待消费音频帧，供音频编码线程阻塞等待；超时返回 0。
  */
 int audio_frame_source_acquire(AudioFrameSource *source,
                                AudioFrame *frame,

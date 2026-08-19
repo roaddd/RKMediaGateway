@@ -1,6 +1,6 @@
 /**
  * @file mediaGatewayPipeline.c
- * @brief MediaGateway 编码流水线、输入队列和编码线程控制命令处理。
+ * @brief MediaGateway 编码流水线、视频输入队列和音视频编码线程控制。
  *
  * 每路编码线程拥有独立控制命令队列。MPP 编码和运行期配置修改都在对应
  * 编码线程内串行执行，避免外部线程并发访问同一个 MPP 编码上下文。
@@ -418,251 +418,6 @@ static int video_worker_acquire_frame(VideoEncodeWorker *worker,
 }
 
 /**
- * @description: 初始化音频编码前 FIFO 队列。
- */
-static int audio_queue_init(AudioEncodeQueue *queue, int capacity)
-{
-    int mutex_ret = 0;
-    int cond_ret = 0;
-
-    if (!queue)
-    {
-        LOG_ERROR("audio_queue_init failed: queue is NULL");
-        return -1;
-    }
-    if (capacity <= 0)
-        capacity = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
-    if (capacity > AUDIO_FRAME_SOURCE_MAX_SLOTS)
-        capacity = AUDIO_FRAME_SOURCE_MAX_SLOTS;
-    memset(queue, 0, sizeof(*queue));
-    queue->slots = (AudioEncodeSlot *)calloc((size_t)capacity, sizeof(AudioEncodeSlot));
-    if (!queue->slots)
-    {
-        LOG_ERROR("audio_queue_init failed: calloc slots capacity=%d", capacity);
-        return -1;
-    }
-    queue->capacity = capacity;
-    mutex_ret = pthread_mutex_init(&queue->lock, NULL);
-    if (mutex_ret != 0)
-    {
-        LOG_ERROR("audio_queue_init failed: pthread_mutex_init ret=%d(%s)",
-                  mutex_ret,
-                  strerror(mutex_ret));
-        free(queue->slots);
-        memset(queue, 0, sizeof(*queue));
-        return -1;
-    }
-    cond_ret = pthread_cond_init(&queue->cond, NULL);
-    if (cond_ret != 0)
-    {
-        LOG_ERROR("audio_queue_init failed: pthread_cond_init ret=%d(%s)",
-                  cond_ret,
-                  strerror(cond_ret));
-        pthread_mutex_destroy(&queue->lock);
-        free(queue->slots);
-        memset(queue, 0, sizeof(*queue));
-        return -1;
-    }
-    queue->running = 1;
-    queue->ready = 1;
-    return 0;
-}
-
-/**
- * @description: 停止音频 FIFO 并唤醒等待线程。
- */
-static void audio_queue_stop(AudioEncodeQueue *queue)
-{
-    if (!queue)
-    {
-        LOG_ERROR("audio_queue_stop failed: queue is NULL");
-        return;
-    }
-    if (!queue->ready)
-        return;
-    pthread_mutex_lock(&queue->lock);
-    queue->running = 0;
-    pthread_cond_broadcast(&queue->cond);
-    pthread_mutex_unlock(&queue->lock);
-}
-
-/**
- * @description: 释放音频 FIFO 队列及其槽位缓存。
- */
-static void audio_queue_deinit(AudioEncodeQueue *queue)
-{
-    int i = 0;
-    int cond_ret = 0;
-    int mutex_ret = 0;
-
-    if (!queue)
-    {
-        LOG_ERROR("audio_queue_deinit failed: queue is NULL");
-        return;
-    }
-    audio_queue_stop(queue);
-    for (i = 0; i < queue->capacity; ++i)
-    {
-        free(queue->slots[i].data);
-        queue->slots[i].data = NULL;
-    }
-    free(queue->slots);
-    queue->slots = NULL;
-    if (queue->ready)
-    {
-        cond_ret = pthread_cond_destroy(&queue->cond);
-        if (cond_ret != 0)
-        {
-            LOG_ERROR("audio_queue_deinit failed: pthread_cond_destroy ret=%d(%s)",
-                      cond_ret,
-                      strerror(cond_ret));
-        }
-        mutex_ret = pthread_mutex_destroy(&queue->lock);
-        if (mutex_ret != 0)
-        {
-            LOG_ERROR("audio_queue_deinit failed: pthread_mutex_destroy ret=%d(%s)",
-                      mutex_ret,
-                      strerror(mutex_ret));
-        }
-    }
-    memset(queue, 0, sizeof(*queue));
-}
-
-/**
- * @description: 将 PCM 音频帧复制发布到编码 FIFO。
- * 和视频不同，音频不能只保留最新帧，否则容易产生明显断音，所以这里保留短队列
- */
-int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame *frame)
-{
-    int idx = 0;
-    size_t need_size = 0;
-    uint8_t *new_data = NULL;
-    AudioEncodeSlot *slot = NULL;
-
-    if (!queue || !frame || !frame->data || frame->size == 0)
-    {
-        LOG_ERROR("media_gateway_audio_queue_publish failed: invalid args queue=%p frame=%p data=%p size=%zu",
-                  (void *)queue,
-                  (const void *)frame,
-                  frame ? (const void *)frame->data : NULL,
-                  frame ? frame->size : 0);
-        return -1;
-    }
-
-    need_size = frame->size;
-    pthread_mutex_lock(&queue->lock);
-    if (!queue->running)
-    {
-        pthread_mutex_unlock(&queue->lock);
-        return 0;
-    }
-    if (queue->size >= queue->capacity)
-    {
-        queue->head = (queue->head + 1) % queue->capacity;
-        queue->size--;
-        queue->dropped_frames++;
-    }
-    idx = (queue->head + queue->size) % queue->capacity;
-    slot = &queue->slots[idx];
-    if (slot->capacity < need_size)
-    {
-        new_data = (uint8_t *)realloc(slot->data, need_size);
-        if (!new_data)
-        {
-            LOG_ERROR("media_gateway_audio_queue_publish failed: realloc need=%zu", need_size);
-            pthread_mutex_unlock(&queue->lock);
-            return -1;
-        }
-        slot->data = new_data;
-        slot->capacity = need_size;
-    }
-    memcpy(slot->data, frame->data, need_size); 
-    slot->frame = *frame;
-    slot->frame.data = slot->data;
-    slot->frame.path_timing.encode_queue_enqueue_us = pipeline_now_us();
-    queue->size++;
-    pthread_cond_signal(&queue->cond);
-    pthread_mutex_unlock(&queue->lock);
-    return 0;
-}
-
-/**
- * @description: 音频编码线程从 FIFO 获取一帧本地副本。
- */
-static int audio_queue_acquire_copy(AudioEncodeQueue *queue,
-                                    AudioFrame *frame,
-                                    uint8_t **local_data,
-                                    size_t *local_capacity,
-                                    int timeout_ms)
-{
-    struct timespec ts = {0};
-    int wait_ret = 0;
-    AudioEncodeSlot *slot = NULL;
-    size_t need_size = 0;
-    uint8_t *new_data = NULL;
-
-    if (!queue || !frame || !local_data || !local_capacity)
-    {
-        LOG_ERROR("audio_queue_acquire_copy failed: invalid args queue=%p frame=%p local_data=%p capacity=%p",
-                  (void *)queue,
-                  (void *)frame,
-                  (void *)local_data,
-                  (void *)local_capacity);
-        return -1;
-    }
-    make_abs_timeout(&ts, timeout_ms);
-
-    pthread_mutex_lock(&queue->lock);
-    while (queue->running && queue->size == 0)
-    {
-        wait_ret = pthread_cond_timedwait(&queue->cond, &queue->lock, &ts);
-        if (wait_ret == ETIMEDOUT)
-        {
-            pthread_mutex_unlock(&queue->lock);
-            return 0;
-        }
-        if (wait_ret != 0)
-        {
-            LOG_ERROR("audio_queue_acquire_copy failed: pthread_cond_timedwait ret=%d(%s)",
-                      wait_ret,
-                      strerror(wait_ret));
-            pthread_mutex_unlock(&queue->lock);
-            return -1;
-        }
-    }
-    if (queue->size == 0)
-    {
-        pthread_mutex_unlock(&queue->lock);
-        return 0;
-    }
-
-    slot = &queue->slots[queue->head];
-    need_size = slot->frame.size;
-    if (*local_capacity < need_size)
-    {
-        new_data = (uint8_t *)realloc(*local_data, need_size);
-        if (!new_data)
-        {
-            LOG_ERROR("audio_queue_acquire_copy failed: realloc need=%zu", need_size);
-            pthread_mutex_unlock(&queue->lock);
-            return -1;
-        }
-        *local_data = new_data;
-        *local_capacity = need_size;
-    }
-    /* 从 FIFO 中拷贝音频帧数据 */
-    memcpy(*local_data, slot->data, need_size);
-    *frame = slot->frame;
-    frame->data = *local_data;
-    frame->path_timing.encode_queue_dequeue_us = pipeline_now_us();
-    queue->head = (queue->head + 1) % queue->capacity;
-    queue->size--;
-
-    pthread_mutex_unlock(&queue->lock);
-    return 1;
-}
-
-/**
  * @brief 将编码线程命令执行结果发送到 gateway 统一结果队列。
  */
 static void video_worker_publish_command_result(MediaGatewayPipeline *pipeline,
@@ -933,66 +688,225 @@ static void *video_encode_thread_main(void *arg)
 }
 
 /**
- * @description: 音频编码 worker 主函数。
+ * @description: 把采集帧转换成编码器要求的声道布局，并复制到音频 worker 私有缓存。
+ *
+ * 当前支持两类路径：采集/编码声道一致时原样复制；双声道采集、单声道编码时，
+ * 从交织 PCM 中选择 input_channel。转换完成后源 ring slot 就可以立即释放，
+ * 避免编码或输出入队阶段占用采集缓存。
+ */
+static int audio_prepare_encoder_frame(MediaGatewayPipeline *pipeline,
+                                       const AudioFrame *source_frame,
+                                       AudioFrame *encoder_frame)
+{
+    MediaGatewayAudioEncodeGroup *audio = NULL;
+    const int16_t *source_samples = NULL;
+    int16_t *encoder_samples = NULL;
+    uint8_t *new_buffer = NULL;
+    size_t source_size = 0;
+    size_t output_size = 0;
+    int encoder_channels = 0;
+    int input_channel = 0;
+    int i = 0;
+
+    /*
+     * 第一步：校验调用参数和基础帧信息。
+     * source_frame->data 仍指向 AudioFrameSource 的 ring slot，调用方必须在
+     * 本函数返回后才能 release 对应 slot。
+     */
+    if (!pipeline || !pipeline->ctx || !source_frame || !encoder_frame ||
+        !source_frame->data || source_frame->samples_per_channel <= 0)
+    {
+        LOG_ERROR("audio_prepare_encoder_frame failed: invalid args pipeline=%p frame=%p data=%p samples=%d",
+                  (void *)pipeline,
+                  (const void *)source_frame,
+                  source_frame ? (const void *)source_frame->data : NULL,
+                  source_frame ? source_frame->samples_per_channel : 0);
+        return -1;
+    }
+
+    /*
+     * 当前声道转换只处理 S16LE 交织 PCM，支持单声道和双声道采集。
+     * 双声道样本排列为：ch0_sample0、ch1_sample0、ch0_sample1、ch1_sample1……
+     */
+    if (source_frame->format != AUDIO_SAMPLE_FORMAT_S16LE ||
+        (source_frame->channels != 1 && source_frame->channels != 2))
+    {
+        LOG_ERROR("audio_prepare_encoder_frame failed: unsupported format=%d capture_channels=%d",
+                  source_frame->format,
+                  source_frame->channels);
+        return -1;
+    }
+
+    /*
+     * 第二步：根据“每声道采样数”和声道数计算输入、输出 PCM 字节数。
+     * samples_per_channel 表示 ALSA PCM frame 数，声道转换不会改变它，也不会
+     * 改变本帧时长和 PTS，只会改变每个 PCM frame 包含的样本数量。
+     */
+    audio = &pipeline->audio;
+    encoder_channels = pipeline->ctx->config.audio.source.encoder.channels;
+    input_channel = pipeline->ctx->config.audio.source.encoder.input_channel;
+    source_size = (size_t)source_frame->samples_per_channel *
+                  (size_t)source_frame->channels * sizeof(int16_t);
+    output_size = (size_t)source_frame->samples_per_channel *
+                  (size_t)encoder_channels * sizeof(int16_t);
+    if (source_frame->size < source_size || encoder_channels <= 0)
+    {
+        LOG_ERROR("audio_prepare_encoder_frame failed: invalid PCM size=%zu expected=%zu encoder_channels=%d",
+                  source_frame->size,
+                  source_size,
+                  encoder_channels);
+        return -1;
+    }
+
+    /*
+     * 第三步：确认声道转换组合受支持。
+     * 当前允许：1→1、2→2 原样复制，以及 2→1 选择一个有效采集声道；
+     * 当前不做 1→2 复制扩展，也不做左右声道混音。
+     */
+    if (source_frame->channels != encoder_channels &&
+        !(source_frame->channels == 2 && encoder_channels == 1 &&
+          input_channel >= 0 && input_channel < source_frame->channels))
+    {
+        LOG_ERROR("audio_prepare_encoder_frame failed: unsupported channel conversion capture=%d encoder=%d input_channel=%d",
+                  source_frame->channels,
+                  encoder_channels,
+                  input_channel);
+        return -1;
+    }
+
+    /*
+     * 第四步：扩容音频编码线程私有缓存。
+     * 缓存只在容量不足时 realloc，正常逐帧处理不会反复申请内存。
+     */
+    if (audio->pcm_capacity < output_size)
+    {
+        new_buffer = (uint8_t *)realloc(audio->pcm_buffer, output_size);
+        if (!new_buffer)
+        {
+            LOG_ERROR("audio_prepare_encoder_frame failed: realloc size=%zu", output_size);
+            return -1;
+        }
+        audio->pcm_buffer = new_buffer;
+        audio->pcm_capacity = output_size;
+    }
+
+    if (source_frame->channels == encoder_channels)
+    {
+        /* 采集与编码声道布局一致，直接复制完整 PCM 帧。 */
+        memcpy(audio->pcm_buffer, source_frame->data, output_size);
+    }
+    else
+    {
+        /*
+         * 第五步：双声道采集转单声道编码。
+         * 从每个交织 PCM frame 中提取 input_channel 指定的一个样本。
+         * RK809 当前配置使用 input_channel=0，静音的另一个通道不会进入编码器。
+         */
+        source_samples = (const int16_t *)source_frame->data;
+        encoder_samples = (int16_t *)audio->pcm_buffer;
+        for (i = 0; i < source_frame->samples_per_channel; ++i)
+            encoder_samples[i] = source_samples[i * source_frame->channels + input_channel];
+    }
+
+    /*
+     * 第六步：保留采集帧的 PTS、frame_id 和链路时间信息，只替换编码输入数据、
+     * 字节数及声道数。此后调用方可以释放源 ring slot，编码器仅访问私有缓存。
+     */
+    *encoder_frame = *source_frame;
+    encoder_frame->data = audio->pcm_buffer;
+    encoder_frame->size = output_size;
+    encoder_frame->channels = encoder_channels;
+    encoder_frame->path_timing.encoder_input_ready_us = pipeline_now_us();
+    return 0;
+}
+
+/**
+ * @description: 音频编码 worker 直接阻塞等待 AudioFrameSource，不再由 gateway 主循环搬运。
  */
 static void *audio_encode_thread_main(void *arg)
 {
     MediaGatewayPipeline *pipeline = (MediaGatewayPipeline *)arg;
-    uint8_t *local_data = NULL; /* 线程私有的 PCM 帧缓存 */
-    size_t local_capacity = 0;
-    AudioFrame frame = {0};
+    AudioFrame source_frame = {0};
+    AudioFrame encoder_frame = {0};
+    int source_slot = -1;
     int ret = 0;
 
-    if (!pipeline || !pipeline->ctx)
+    if (!pipeline || !pipeline->ctx || !pipeline->audio.source)
     {
-        LOG_ERROR("audio_encode_thread_main failed: pipeline=%p ctx=%p",
+        LOG_ERROR("audio_encode_thread_main failed: pipeline=%p ctx=%p source=%p",
                   (void *)pipeline,
-                  pipeline ? (void *)pipeline->ctx : NULL);
+                  pipeline ? (void *)pipeline->ctx : NULL,
+                  pipeline ? (void *)pipeline->audio.source : NULL);
         return NULL;
     }
     pipeline_set_thread_name("enc-", "audio", 0);
     while (pipeline->ctx->running)
     {
-        ret = audio_queue_acquire_copy(&pipeline->audio.queue,
-                                       &frame,
-                                       &local_data,
-                                       &local_capacity,
-                                       100);
+        source_slot = -1;
+        ret = audio_frame_source_acquire(pipeline->audio.source,
+                                         &source_frame,
+                                         &source_slot,
+                                         100);
         if (ret < 0)
         {
-            LOG_ERROR("audio encode thread failed: acquire");
-            pipeline_set_error(pipeline);
+            /* stop 路径可能与帧源 fatal 状态同时发生，退出时不再升级为 pipeline 错误。 */
+            if (pipeline->ctx->running)
+            {
+                LOG_ERROR("audio encode thread failed: acquire source");
+                pipeline_set_error(pipeline);
+            }
             break;
         }
         if (ret == MEDIA_OK)
             continue;
-        if (media_gateway_process_audio(pipeline->ctx, &frame) != 0)
+        if (!pipeline->ctx->running)
         {
-            LOG_ERROR("audio encode thread failed: process frame=%" PRIu64, frame.frame_id);
+            /* stop 唤醒时 ring 中可能还有未消费帧，退出前只释放 slot，不再发送尾包。 */
+            audio_frame_source_release(pipeline->audio.source, source_slot);
+            source_slot = -1;
+            break;
+        }
+
+        ret = audio_prepare_encoder_frame(pipeline, &source_frame, &encoder_frame);
+        audio_frame_source_release(pipeline->audio.source, source_slot);
+        source_slot = -1;
+        if (ret != 0)
+        {
+            LOG_ERROR("audio encode thread failed: prepare frame=%" PRIu64, source_frame.frame_id);
+            pipeline_set_error(pipeline);
+            break;
+        }
+        if (media_gateway_process_audio(pipeline->ctx, &encoder_frame) != 0)
+        {
+            LOG_ERROR("audio encode thread failed: process frame=%" PRIu64, encoder_frame.frame_id);
             pipeline_set_error(pipeline);
             break;
         }
     }
-    free(local_data);
+    if (source_slot >= 0)
+        audio_frame_source_release(pipeline->audio.source, source_slot);
     return NULL;
 }
 
 /**
- * @description: 初始化 pipeline 队列、输入槽和同步状态。
+ * @description: 初始化 pipeline 的视频输入槽、音频帧源引用和同步状态。
  */
 int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
                                 MediaGatewayCtx *ctx,
-                                ThreadMessageQueue *result_queue)
+                                ThreadMessageQueue *result_queue,
+                                AudioFrameSource *audio_source)
 {
     int i = 0;
     int mutex_ret = 0;
 
-    if (!pipeline || !ctx || !result_queue)
+    if (!pipeline || !ctx || !result_queue ||
+        (ctx->config.audio.source.enabled && ctx->audio_capture_ready && !audio_source))
     {
-        LOG_ERROR("media_gateway_pipeline_init failed: pipeline=%p ctx=%p result_queue=%p",
+        LOG_ERROR("media_gateway_pipeline_init failed: pipeline=%p ctx=%p result_queue=%p audio_source=%p",
                   (void *)pipeline,
                   (void *)ctx,
-                  (void *)result_queue);
+                  (void *)result_queue,
+                  (void *)audio_source);
         return -1;
     }
     memset(pipeline, 0, sizeof(*pipeline));
@@ -1020,20 +934,14 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
         }
     }
 
-    /* 初始化音频编码前的队列 */
+    /* 音频 worker 直接持有帧源引用；帧源由 mediaGateway run resources 管理。 */
     if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
-    {
-        if (audio_queue_init(&pipeline->audio.queue, ctx->config.audio.source.runtime.source_slots) != 0)
-        {
-            LOG_ERROR("pipeline init failed: audio queue");
-            return -1;
-        }
-    }
+        pipeline->audio.source = audio_source;
     return 0;
 }
 
 /**
- * @description: 停止 pipeline 内所有输入队列。
+ * @description: 停止 pipeline 内由其拥有的视频输入队列。
  */
 static void pipeline_stop_queues(MediaGatewayPipeline *pipeline)
 {
@@ -1046,7 +954,6 @@ static void pipeline_stop_queues(MediaGatewayPipeline *pipeline)
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
         video_worker_stop(&pipeline->video.workers[i]);
-    audio_queue_stop(&pipeline->audio.queue);
 }
 
 /**
@@ -1065,7 +972,9 @@ void media_gateway_pipeline_deinit(MediaGatewayPipeline *pipeline)
     pipeline_stop_queues(pipeline);
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
         video_worker_deinit(&pipeline->video.workers[i]);
-    audio_queue_deinit(&pipeline->audio.queue);
+    free(pipeline->audio.pcm_buffer);
+    pipeline->audio.pcm_buffer = NULL;
+    pipeline->audio.pcm_capacity = 0;
     if (pipeline->ret_lock_ready)
     {
         mutex_ret = pthread_mutex_destroy(&pipeline->ret_lock);

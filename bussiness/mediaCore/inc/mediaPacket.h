@@ -41,9 +41,8 @@ typedef struct {
     uint64_t audio_capture_interval_us;     /* 相邻 period 实际采集完成间隔。 */
     uint64_t audio_capture_read_us;         /* 本 period 的 ALSA read 总耗时。 */
     uint64_t audio_source_publish_us;       /* 发布到音频帧源 ring 的时刻。 */
-    uint64_t audio_source_acquire_us;       /* gateway 从帧源 ring 取出的时刻。 */
-    uint64_t audio_encode_queue_enqueue_us; /* 进入音频编码 FIFO 的时刻。 */
-    uint64_t audio_encode_queue_dequeue_us; /* 编码线程从音频 FIFO 取出的时刻。 */
+    uint64_t audio_source_acquire_us;       /* 音频编码线程从帧源 ring 取出的时刻。 */
+    uint64_t audio_encoder_input_ready_us;  /* PCM 声道转换/私有副本准备完成的时刻。 */
     uint64_t audio_encode_start_us;         /* 音频编码调用开始时刻。 */
     uint64_t audio_encode_done_us;          /* 音频编码调用完成时刻。 */
 } MediaPacketPathMetrics;

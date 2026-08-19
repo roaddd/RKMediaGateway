@@ -38,31 +38,6 @@ typedef struct {
     uint64_t dropped_frames;    /* 因新帧覆盖未消费旧帧而丢弃的数量。 */
 } VideoEncodeInputBuffer;
 
-/* 音频编码 FIFO 中的一个槽位，保存一帧 PCM 副本及其元信息。 */
-typedef struct {
-    uint8_t *data;              /* PCM 帧副本。 */
-    size_t capacity;            /* data 当前已分配容量。 */
-    AudioFrame frame;           /* data 对应的音频帧元信息，data 字段指向本槽 data。 */
-} AudioEncodeSlot;
-
-/*
- * 音频编码输入 FIFO。
- *
- * 音频不能像视频一样随意只保留最新帧，否则会产生明显断音；因此这里使用小 FIFO。
- * 队列满时丢弃最旧帧，避免长期积压造成音画延迟持续扩大。
- */
-typedef struct {
-    pthread_mutex_t lock;       /* 保护 slots/head/size/running/dropped_frames。 */
-    pthread_cond_t cond;        /* 新音频帧到达或停止时唤醒音频编码线程。 */
-    AudioEncodeSlot *slots;     /* 环形 FIFO 槽位数组。 */
-    int capacity;               /* FIFO 最大槽位数。 */
-    int head;                   /* 当前最旧帧所在槽位下标。 */
-    int size;                   /* 当前队列中待消费帧数。 */
-    int running;                /* 队列是否仍允许等待和发布。 */
-    int ready;                  /* lock/cond/slots 是否初始化成功，用于安全释放。 */
-    uint64_t dropped_frames;    /* 队列满时被丢弃的旧音频帧数量。 */
-} AudioEncodeQueue;
-
 /*
  * 单路视频编码 worker 运行期资源。
  *
@@ -88,25 +63,28 @@ typedef struct {
 /*
  * 音频编码运行期资源集合。
  *
- * 音频只有一个 FIFO 输入队列和一个编码线程，集中管理后可以和视频编码资源形成对称结构。
+ * 音频编码线程直接消费 AudioFrameSource，避免主循环搬运和重复 FIFO。
+ * pcm_buffer 是线程私有的编码输入缓存：采集声道与编码声道不同时在这里完成转换。
  */
 typedef struct {
-    AudioEncodeQueue queue; /* 音频编码线程输入 FIFO。*/
-    pthread_t thread;       /* 音频编码线程句柄。*/
-    int thread_started;     /* 音频编码线程是否已成功启动。*/
+    AudioFrameSource *source; /* 音频采集帧源，生命周期由 mediaGateway run resources 管理。 */
+    uint8_t *pcm_buffer;      /* 转换后的编码输入 PCM，仅由音频编码线程访问。 */
+    size_t pcm_capacity;      /* pcm_buffer 当前容量。 */
+    pthread_t thread;         /* 音频编码线程句柄。 */
+    int thread_started;       /* 音频编码线程是否已成功启动。 */
 } MediaGatewayAudioEncodeGroup;
 
 /*
  * mediaGateway 运行期编码 pipeline。
  *
- * pipeline 负责启动/管理视频编码线程、音频编码线程，以及它们的输入队列。
- * 采集线程不直接依赖该结构；主循环负责把采集到的帧发布到对应输入队列。
+ * pipeline 负责启动/管理视频编码线程和音频编码线程。视频帧仍由主循环发布到
+ * latest-frame 输入槽；音频编码线程则直接阻塞等待 AudioFrameSource。
  */
 typedef struct {
     MediaGatewayCtx *ctx;                                   /* 所属 gateway 上下文，生命周期由调用方管理。 */
     MediaGatewayRunState state;                             /* 编码过程中的运行状态和失败统计。 */
     MediaGatewayVideoEncodeGroup video;                      /* 视频编码输入槽和 worker 线程资源。 */
-    MediaGatewayAudioEncodeGroup audio;                      /* 音频编码输入队列和 worker 线程资源。 */
+    MediaGatewayAudioEncodeGroup audio;                      /* 音频帧源引用、转换缓存和编码 worker。 */
     pthread_mutex_t ret_lock;                                /* 保护 ret，并在 fatal error 时同步 ctx->running。 */
     int ret_lock_ready;                                      /* ret_lock 是否初始化成功。 */
     int ret;                                                 /* pipeline 运行结果：0 正常，-1 表示工作线程遇到致命错误。 */
@@ -124,11 +102,13 @@ typedef struct {
  *
  * @param pipeline 待初始化对象。
  * @param ctx      已完成配置和模块初始化的 gateway 上下文。
+ * @param audio_source 已初始化并启动的音频帧源；未启用音频时可以为 NULL。
  * @return 0 成功，-1 失败。
  */
 int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
                                 MediaGatewayCtx *ctx,
-                                ThreadMessageQueue *result_queue);
+                                ThreadMessageQueue *result_queue,
+                                AudioFrameSource *audio_source);
 
 /**
  * @brief 非阻塞向指定视频编码线程投递控制命令。
@@ -171,15 +151,6 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline);
  * @return 0 成功或输入槽已停止，-1 表示参数或内存分配错误。
  */
 int media_gateway_video_input_publish(VideoEncodeInputBuffer *input, const MediaFrame *frame);
-
-/*
- * 将一帧 PCM 音频发布到音频编码 FIFO。
- *
- * 队列满时丢弃最旧帧，再插入新帧，避免音频延迟持续累积。
- *
- * @return 0 成功或队列已停止，-1 表示参数或内存分配错误。
- */
-int media_gateway_audio_queue_publish(AudioEncodeQueue *queue, const AudioFrame *frame);
 
 #ifdef __cplusplus
 }

@@ -130,12 +130,17 @@ static std::string toml_path_to_internal_key(const std::string &path) {
     if (path.compare(0, audio_capture.size(), audio_capture) == 0) {
         suffix = path.substr(audio_capture.size());
         if (suffix == "device") suffix = "device";
+        if (suffix == "channels") return "AUDIO_CAPTURE_CHANNELS";
         return "AUDIO_" + uppercase_key(suffix);
     }
     if (path.compare(0, audio_runtime.size(), audio_runtime) == 0)
         return "AUDIO_" + uppercase_key(path.substr(audio_runtime.size()));
-    if (path.compare(0, audio_encoder.size(), audio_encoder) == 0)
+    if (path.compare(0, audio_encoder.size(), audio_encoder) == 0) {
+        suffix = path.substr(audio_encoder.size());
+        if (suffix == "channels") return "AUDIO_ENCODER_CHANNELS";
+        if (suffix == "input_channel") return "AUDIO_ENCODER_INPUT_CHANNEL";
         return "AUDIO_" + uppercase_key(path.substr(audio_encoder.size()));
+    }
     return uppercase_key(path);
 }
 
@@ -405,7 +410,7 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_ENABLE", 0);
     set_value("AUDIO_DEVICE", "default");
     set_value_int("AUDIO_SAMPLE_RATE", 8000);
-    set_value_int("AUDIO_CHANNELS", 1);
+    set_value_int("AUDIO_CAPTURE_CHANNELS", 1);
     set_value_int("AUDIO_FORMAT", AUDIO_SAMPLE_FORMAT_S16LE);
     set_value_int("AUDIO_PERIOD_FRAMES", 160);
     set_value_int("AUDIO_BUFFER_PERIODS", 4);
@@ -413,6 +418,8 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_RETRY_MS", 5);
     set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
     set_value_int("AUDIO_CODEC", MEDIA_CODEC_NONE);
+    set_value_int("AUDIO_ENCODER_CHANNELS", 1);
+    set_value_int("AUDIO_ENCODER_INPUT_CHANNEL", 0);
     set_value_int("AUDIO_G711_MODE", G711_ENCODER_MODE_ALAW);
     set_value_int("AUDIO_AAC_BITRATE", 32000);
     set_value_int("AUDIO_AAC_PROFILE", 2);
@@ -607,7 +614,7 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->enabled = value_int("AUDIO_ENABLE");
     audio->capture.device_name = value_string("AUDIO_DEVICE");
     audio->capture.sample_rate = value_int("AUDIO_SAMPLE_RATE");
-    audio->capture.channels = value_int("AUDIO_CHANNELS");
+    audio->capture.channels = value_int("AUDIO_CAPTURE_CHANNELS");
     audio->capture.format = (AudioSampleFormat)value_int("AUDIO_FORMAT");
     audio->capture.period_frames = value_int("AUDIO_PERIOD_FRAMES");
     audio->capture.buffer_periods = value_int("AUDIO_BUFFER_PERIODS");
@@ -615,6 +622,8 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->runtime.retry_ms = value_int("AUDIO_RETRY_MS");
     audio->runtime.max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
     audio->encoder.codec = (MediaCodecType)value_int("AUDIO_CODEC");
+    audio->encoder.channels = value_int("AUDIO_ENCODER_CHANNELS");
+    audio->encoder.input_channel = value_int("AUDIO_ENCODER_INPUT_CHANNEL");
     audio->encoder.g711.mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
     audio->encoder.aac.bitrate = value_int("AUDIO_AAC_BITRATE");
     audio->encoder.aac.profile = value_int("AUDIO_AAC_PROFILE");
