@@ -2,7 +2,7 @@
  * @file mediaGateway.c
  * @brief MediaGateway 配置、模块生命周期和主循环调度实现。
  *
- * 主循环负责帧分发、运行期策略评估和异步控制事务协调，不直接执行
+ * 主循环负责运行期策略评估和异步控制事务协调，不再搬运音视频帧，也不直接执行
  * V4L2 或 MPP 运行期控制调用。硬件控制命令由资源所属 worker 串行执行。
  */
 
@@ -985,6 +985,7 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
 {
     int i = 0;
     int source_idx = 0;
+    int source_stream_owner[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {0};
     MediaGatewayConfig src_copy = {0};
     int has_src = 0;
 
@@ -1025,12 +1026,27 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         return config_error_int("stream_count", dst->video.stream_count, "must be between 0 and MEDIA_GATEWAY_MAX_STREAMS");
     if (dst->video.stream_count > 0 && dst->input.capture_source_count <= 0)
         return config_error_int("capture_source_count", dst->input.capture_source_count, "must be > 0 when streams are configured");
+    for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
+        source_stream_owner[i] = -1;
     for (i = 0; i < dst->video.stream_count; ++i)
     {
         if (validate_raw_stream_config(&dst->video.streams[i], i, dst->input.capture_source_count) != 0)
             return -1;
         if (dst->video.streams[i].enabled)
-            dst->input.capture_sources[dst->video.streams[i].source_index].enabled = 1;
+        {
+            source_idx = dst->video.streams[i].source_index;
+            /* 直接消费模式要求一个帧源只有一个消费者，避免多个编码线程竞争 latest-frame。 */
+            if (source_stream_owner[source_idx] >= 0)
+            {
+                LOG_ERROR("media_gateway config invalid: streams %d and %d share source_index=%d; direct video source consumption requires one enabled stream per source",
+                          source_stream_owner[source_idx],
+                          i,
+                          source_idx);
+                return -1;
+            }
+            source_stream_owner[source_idx] = i;
+            dst->input.capture_sources[source_idx].enabled = 1;
+        }
     }
     for (i = 0; i < dst->input.capture_source_count; ++i)
     {
@@ -2003,56 +2019,6 @@ static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources
 }
 
 /**
- * @description: 从一个视频采集源取最新帧并发布到绑定的 stream 输入槽。
- */
-static int dispatch_video_source_once(MediaGatewayCtx *ctx,
-                                      MediaGatewayRunResources *res,
-                                      int source_idx,
-                                      int *got_frame)
-{
-    MediaFrame frame = {0};
-    int stream_idx = 0;
-    int slot_index = -1;
-    int acquire_ret = 0;
-    int ret = 0;
-
-    if (!res->frame_source_started[source_idx])
-        return 0;
-    /* 从视频采集线程队列里获取最新帧 */
-    acquire_ret = media_frame_source_acquire_latest(&res->frame_sources[source_idx], &frame, &slot_index, 10);
-    if (acquire_ret < 0)
-    {
-        LOG_ERROR("media_gateway_run failed: frame source stopped by fatal error source=%d", source_idx);
-        return -1;
-    }
-    if (acquire_ret == 0)
-        return 0;
-
-    *got_frame = 1;
-    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count; ++stream_idx)
-    {
-        if (!ctx->stream_enabled[stream_idx])
-            continue;
-        if (ctx->config.video.streams[stream_idx].source_index != source_idx)
-            continue;
-        /* 将最新采集帧引用发布到对应的视频编码线程输入槽。 */
-        if (media_gateway_video_input_publish(&res->pipeline.video.workers[stream_idx].input, &frame) != 0)
-        {
-            LOG_ERROR("media_gateway_run failed: publish video frame source=%d stream=%d",
-                      source_idx,
-                      stream_idx);
-            ret = -1;
-            ctx->running = 0;
-            break;
-        }
-    }
-
-    media_frame_source_release(&res->frame_sources[source_idx], slot_index);
-    media_frame_reset(&frame);
-    return ret;
-}
-
-/**
  * @brief 非阻塞向指定编码线程投递设置帧率命令。
  */
 static int submit_encoder_fps_command(MediaGatewayRunResources *res,
@@ -2762,23 +2728,18 @@ static void media_gateway_run_adaptive_control_once(MediaGatewayCtx *ctx, MediaG
 }
 
 /**
- * @description: 执行一次 run 主循环调度。
- * 这个函数是 run 循环的核心，负责从视频采集线程队列里获取最新帧并发布到对应的视频编码线程输入队列，
- * 没有让编码线程直接从采集线程队列获取帧的原因是多个编码线程可能对应一个采集源
+ * @description: 执行一次 run 主循环控制调度。
+ * 视频编码线程已经通过 eventfd 直接等待各自帧源，主循环只负责错误检查、
+ * 自适应控制和周期统计，不再搬运视频帧。
  */
-static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res, int *got_frame)
+static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
 {
-    int source_idx = 0;
-
-    *got_frame = 0;
-    for (source_idx = 0; source_idx < ctx->config.input.capture_source_count; ++source_idx)
+    if (!ctx || !res)
     {
-        /* 从视频采集线程队列里面获取最新帧并放入编码线程得到输入队列 */
-        if (dispatch_video_source_once(ctx, res, source_idx, got_frame) != 0)
-        {
-            LOG_ERROR("run_gateway_once failed: dispatch video source=%d", source_idx);
-            return -1;
-        }
+        LOG_ERROR("run_gateway_once failed: ctx=%p res=%p",
+                  (void *)ctx,
+                  (void *)res);
+        return -1;
     }
 
     /* 检查 pipeline 状态 */
@@ -2794,8 +2755,8 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res,
     pthread_mutex_lock(&ctx->stats_lock);
     media_gateway_log_throughput_if_due(ctx);
     pthread_mutex_unlock(&ctx->stats_lock);
-    if (!*got_frame)
-        usleep(1000);
+    /* 媒体线程已经事件驱动，主循环只需短暂退避，避免控制状态检查空转占满 CPU。 */
+    usleep(1000);
     return 0;
 }
 
@@ -2807,16 +2768,23 @@ static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources
     int source_idx = 0;
 
     ctx->running = 0;
-    /* 先停止帧源并广播条件变量，唤醒直接等待它的音频编码线程。 */
+    /* 第一步：停止帧源并发送停止通知，唤醒直接等待帧源的音视频编码线程。 */
     if (res->audio_source_inited)
         audio_frame_source_stop(&res->audio_source);
     for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx)
     {
         if (res->frame_source_inited[source_idx])
-            media_frame_source_deinit(&res->frame_sources[source_idx]);
+            media_frame_source_stop(&res->frame_sources[source_idx]);
     }
+    /* 第二步：消费者退出后释放其持有的帧引用和控制 eventfd。 */
     media_gateway_pipeline_join_workers(&res->pipeline);
     media_gateway_pipeline_deinit(&res->pipeline);
+    /* 第三步：编码线程不再 poll 帧源 fd 后，才能安全关闭 fd 并销毁视频帧槽。 */
+    for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx)
+    {
+        if (res->frame_source_inited[source_idx])
+            media_frame_source_deinit(&res->frame_sources[source_idx]);
+    }
     /* 编码线程退出后才能销毁 AudioFrameSource 的 slot、锁和条件变量。 */
     if (res->audio_source_inited)
         audio_frame_source_deinit(&res->audio_source);
@@ -2834,7 +2802,6 @@ int media_gateway_run(MediaGatewayCtx *ctx)
 {
     MediaGatewayRunResources res = {0};
     int ret = 0;
-    int got_frame = 0;
 
     if (!ctx || !ctx->running)
     {
@@ -2864,10 +2831,19 @@ int media_gateway_run(MediaGatewayCtx *ctx)
         goto out;
     }
 
-    /* 初始化各路流的编码 pipeline、视频输入队列和控制命令队列。 */
+    /* 先启动视频帧源，使 pipeline 初始化时可以绑定有效的 frame eventfd。 */
+    if (start_run_frame_sources(ctx, &res) != 0)
+    {
+        LOG_ERROR("media_gateway_run failed: start video frame sources");
+        ret = -1;
+        goto out;
+    }
+
+    /* 初始化各路流的编码 pipeline、帧源引用和控制命令队列。 */
     if (media_gateway_pipeline_init(&res.pipeline,
                                     ctx,
                                     &res.result_queue,
+                                    res.frame_sources,
                                     res.audio_source_inited ? &res.audio_source : NULL) != 0)
     {
         LOG_ERROR("media_gateway_run failed: init pipeline");
@@ -2881,17 +2857,10 @@ int media_gateway_run(MediaGatewayCtx *ctx)
         ret = -1;
         goto out;
     }
-    /* 启动视频采集线程 */
-    if (start_run_frame_sources(ctx, &res) != 0)
-    {
-        ret = -1;
-        goto out;
-    }
     /* 进入主循环 */
     while (ctx->running)
     {
-        got_frame = 0;
-        if (run_gateway_once(ctx, &res, &got_frame) != 0)
+        if (run_gateway_once(ctx, &res) != 0)
         {
             ret = -1;
             break;

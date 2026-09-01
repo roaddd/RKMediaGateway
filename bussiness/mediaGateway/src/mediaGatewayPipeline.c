@@ -17,12 +17,23 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <time.h>
+#include <unistd.h>
 
 #define VIDEO_COMMAND_QUEUE_CAPACITY 8
+
+/** video worker 通过 poll 同时等待的事件类型。 */
+typedef enum VideoWorkerPollIndex
+{
+    VIDEO_WORKER_POLL_FRAME = 0,
+    VIDEO_WORKER_POLL_CONTROL,
+    VIDEO_WORKER_POLL_COUNT
+} VideoWorkerPollIndex;
 
 static uint64_t pipeline_now_us(void)
 {
@@ -45,36 +56,6 @@ static void pipeline_set_thread_name(const char *prefix, const char *name, int i
     else
         snprintf(thread_name, sizeof(thread_name), "%s%d", prefix, index);
     util_set_thread_name(thread_name);
-}
-
-/**
- * @description: 生成 pthread 条件变量使用的绝对超时时间。
- */
-static void make_abs_timeout(struct timespec *ts, int timeout_ms)
-{
-    long nsec = 0;
-    int ret = 0;
-
-    if (!ts)
-    {
-        LOG_ERROR("make_abs_timeout failed: ts is NULL timeout_ms=%d", timeout_ms);
-        return;
-    }
-    ret = clock_gettime(CLOCK_REALTIME, ts);
-    if (ret != MEDIA_OK)
-    {
-        LOG_ERROR("make_abs_timeout failed: clock_gettime errno=%d(%s)",
-                  errno,
-                  strerror(errno));
-        memset(ts, 0, sizeof(*ts));
-        return;
-    }
-    if (timeout_ms < 0)
-        timeout_ms = 0;
-    ts->tv_sec += timeout_ms / 1000;
-    nsec = ts->tv_nsec + (long)(timeout_ms % 1000) * 1000000L;
-    ts->tv_sec += nsec / 1000000000L;
-    ts->tv_nsec = nsec % 1000000000L;
 }
 
 /**
@@ -121,127 +102,152 @@ int media_gateway_pipeline_get_ret(MediaGatewayPipeline *pipeline)
 }
 
 /**
- * @description: 初始化单路视频 latest-frame 输入缓存。
+ * @brief 写控制 eventfd，通知编码线程有 MPP 命令或停止请求需要处理。
  */
-static int video_input_buffer_init(VideoEncodeInputBuffer *input)
+static int video_worker_notify_control(VideoEncodeWorker *worker)
+{
+    uint64_t value = 1;
+    ssize_t written = -1;
+
+    if (!worker || worker->control_event_fd < 0)
+    {
+        LOG_ERROR("video_worker_notify_control failed: worker=%p event_fd=%d",
+                  (void *)worker,
+                  worker ? worker->control_event_fd : -1);
+        return -1;
+    }
+
+    do
+    {
+        written = write(worker->control_event_fd, &value, sizeof(value));
+    } while (written < 0 && errno == EINTR);
+
+    if (written == (ssize_t)sizeof(value))
+        return 0;
+    if (written < 0 && errno == EAGAIN)
+        return 0;
+
+    LOG_ERROR("video_worker_notify_control failed: event_fd=%d written=%ld errno=%d(%s)",
+              worker->control_event_fd,
+              (long)written,
+              errno,
+              strerror(errno));
+    return -1;
+}
+
+/**
+ * @brief 清空控制 eventfd 的累计计数。
+ *
+ * 多条命令可以合并成一次唤醒；真正的命令数量和内容由 command_queue 保存，
+ * 因此这里读到 EAGAIN 后再由编码线程清空命令队列。
+ */
+static int video_worker_drain_control_event(VideoEncodeWorker *worker)
+{
+    uint64_t value = 0;
+    ssize_t read_size = -1;
+
+    if (!worker || worker->control_event_fd < 0)
+    {
+        LOG_ERROR("video_worker_drain_control_event failed: worker=%p event_fd=%d",
+                  (void *)worker,
+                  worker ? worker->control_event_fd : -1);
+        return -1;
+    }
+
+    for (;;)
+    {
+        read_size = read(worker->control_event_fd, &value, sizeof(value));
+        if (read_size == (ssize_t)sizeof(value))
+            continue;
+        if (read_size < 0 && errno == EINTR)
+            continue;
+        if (read_size < 0 && errno == EAGAIN)
+            return 0;
+
+        LOG_ERROR("video_worker_drain_control_event failed: event_fd=%d read=%ld errno=%d(%s)",
+                  worker->control_event_fd,
+                  (long)read_size,
+                  errno,
+                  strerror(errno));
+        return -1;
+    }
+}
+
+/**
+ * @brief 在线程安全的状态锁保护下读取 worker 运行标志。
+ */
+static int video_worker_is_running(VideoEncodeWorker *worker)
+{
+    int running = 0;
+
+    if (!worker || !worker->ready)
+        return 0;
+    pthread_mutex_lock(&worker->state_lock);
+    running = worker->running;
+    pthread_mutex_unlock(&worker->state_lock);
+    return running;
+}
+
+/**
+ * @brief 初始化单路视频编码 worker 的帧源引用、控制事件和命令队列。
+ */
+static int video_worker_init(VideoEncodeWorker *worker, MediaFrameSource *source)
 {
     int mutex_ret = 0;
-    int cond_ret = 0;
-
-    if (!input)
-    {
-        LOG_ERROR("video_input_buffer_init failed: input is NULL");
-        return -1;
-    }
-    memset(input, 0, sizeof(*input));
-    mutex_ret = pthread_mutex_init(&input->lock, NULL);
-    if (mutex_ret != 0)
-    {
-        LOG_ERROR("video_input_buffer_init failed: pthread_mutex_init ret=%d(%s)",
-                  mutex_ret,
-                  strerror(mutex_ret));
-        return -1;
-    }
-    cond_ret = pthread_cond_init(&input->cond, NULL);
-    if (cond_ret != 0)
-    {
-        LOG_ERROR("video_input_buffer_init failed: pthread_cond_init ret=%d(%s)",
-                  cond_ret,
-                  strerror(cond_ret));
-        pthread_mutex_destroy(&input->lock);
-        return -1;
-    }
-    input->running = 1;
-    input->ready = 1;
-    return 0;
-}
-
-/**
- * @description: 停止单路视频 latest-frame 输入缓存并唤醒等待线程。
- */
-static void video_input_buffer_stop(VideoEncodeInputBuffer *input)
-{
-    if (!input)
-    {
-        LOG_ERROR("video_input_buffer_stop failed: input is NULL");
-        return;
-    }
-    if (!input->ready)
-        return;
-    pthread_mutex_lock(&input->lock);
-    input->running = 0;
-    pthread_cond_broadcast(&input->cond);
-    pthread_mutex_unlock(&input->lock);
-}
-
-/**
- * @description: 释放单路视频 latest-frame 输入缓存。
- */
-static void video_input_buffer_deinit(VideoEncodeInputBuffer *input)
-{
-    int cond_ret = 0;
-    int mutex_ret = 0;
-
-    if (!input)
-    {
-        LOG_ERROR("video_input_buffer_deinit failed: input is NULL");
-        return;
-    }
-    video_input_buffer_stop(input);
-    media_frame_reset(&input->frame);
-    if (input->ready)
-    {
-        cond_ret = pthread_cond_destroy(&input->cond);
-        if (cond_ret != 0)
-        {
-            LOG_ERROR("video_input_buffer_deinit failed: pthread_cond_destroy ret=%d(%s)",
-                      cond_ret,
-                      strerror(cond_ret));
-        }
-        mutex_ret = pthread_mutex_destroy(&input->lock);
-        if (mutex_ret != 0)
-        {
-            LOG_ERROR("video_input_buffer_deinit failed: pthread_mutex_destroy ret=%d(%s)",
-                      mutex_ret,
-                      strerror(mutex_ret));
-        }
-    }
-    memset(input, 0, sizeof(*input));
-}
-
-/**
- * @brief 初始化单路视频编码 worker 的输入缓存和控制命令队列。
- */
-static int video_worker_init(VideoEncodeWorker *worker)
-{
     int queue_ret = 0;
+    int event_fd = -1;
 
-    if (!worker)
+    if (!worker || !source)
     {
-        LOG_ERROR("video_worker_init failed: worker is NULL");
+        LOG_ERROR("video_worker_init failed: worker=%p source=%p",
+                  (void *)worker,
+                  (void *)source);
         return -1;
     }
 
     memset(worker, 0, sizeof(*worker));
-    if (video_input_buffer_init(&worker->input) != 0)
+    worker->control_event_fd = -1;
+    worker->source = source;
+    /* 第一步：初始化只保护 worker 生命周期状态的锁。 */
+    mutex_ret = pthread_mutex_init(&worker->state_lock, NULL);
+    if (mutex_ret != 0)
     {
-        LOG_ERROR("video_worker_init failed: init input buffer");
+        LOG_ERROR("video_worker_init failed: pthread_mutex_init ret=%d(%s)",
+                  mutex_ret,
+                  strerror(mutex_ret));
         return -1;
     }
 
+    /* 第二步：创建命令和停止请求共用的非阻塞 eventfd。 */
+    event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (event_fd < 0)
+    {
+        LOG_ERROR("video_worker_init failed: eventfd errno=%d(%s)",
+                  errno,
+                  strerror(errno));
+        pthread_mutex_destroy(&worker->state_lock);
+        return -1;
+    }
+    worker->control_event_fd = event_fd;
+
+    /* 第三步：命令内容保存在队列中，eventfd 仅用于唤醒 poll。 */
     queue_ret = thread_message_queue_init(&worker->command_queue,
                                           VIDEO_COMMAND_QUEUE_CAPACITY);
     if (queue_ret != MEDIA_OK)
     {
         LOG_ERROR("video_worker_init failed: init command queue ret=%d", queue_ret);
-        video_input_buffer_deinit(&worker->input);
+        close(worker->control_event_fd);
+        worker->control_event_fd = -1;
+        pthread_mutex_destroy(&worker->state_lock);
         return -1;
     }
+    worker->running = 1;
+    worker->ready = 1;
     return 0;
 }
 
 /**
- * @brief 停止单路视频编码 worker 的输入缓存和控制命令队列。
+ * @brief 停止单路视频编码 worker，并通过控制 eventfd 唤醒 poll。
  */
 static void video_worker_stop(VideoEncodeWorker *worker)
 {
@@ -250,29 +256,55 @@ static void video_worker_stop(VideoEncodeWorker *worker)
         LOG_ERROR("video_worker_stop failed: worker is NULL");
         return;
     }
-    if (!worker->input.ready)
+    if (!worker->ready)
         return;
 
-    video_input_buffer_stop(&worker->input);
+    /* 先发布停止状态，再写 eventfd，保证线程醒来后立即观察到退出条件。 */
+    pthread_mutex_lock(&worker->state_lock);
+    worker->running = 0;
+    pthread_mutex_unlock(&worker->state_lock);
     thread_message_queue_stop(&worker->command_queue);
+    if (video_worker_notify_control(worker) != 0)
+        LOG_ERROR("video_worker_stop failed: notify control event");
 }
 
 /**
- * @brief 释放单路视频编码 worker 的输入缓存和控制命令队列。
+ * @brief 释放单路视频编码 worker 的控制 eventfd、状态锁和命令队列。
  */
 static void video_worker_deinit(VideoEncodeWorker *worker)
 {
+    int close_ret = 0;
+    int mutex_ret = 0;
+
     if (!worker)
     {
         LOG_ERROR("video_worker_deinit failed: worker is NULL");
         return;
     }
-
-    if (!worker->input.ready)
+    if (!worker->ready)
         return;
+
     video_worker_stop(worker);
-    video_input_buffer_deinit(&worker->input);
     thread_message_queue_deinit(&worker->command_queue);
+    if (worker->control_event_fd >= 0)
+    {
+        close_ret = close(worker->control_event_fd);
+        if (close_ret != 0)
+        {
+            LOG_ERROR("video_worker_deinit failed: close event_fd=%d errno=%d(%s)",
+                      worker->control_event_fd,
+                      errno,
+                      strerror(errno));
+        }
+        worker->control_event_fd = -1;
+    }
+    mutex_ret = pthread_mutex_destroy(&worker->state_lock);
+    if (mutex_ret != 0)
+    {
+        LOG_ERROR("video_worker_deinit failed: pthread_mutex_destroy ret=%d(%s)",
+                  mutex_ret,
+                  strerror(mutex_ret));
+    }
     memset(worker, 0, sizeof(*worker));
 }
 
@@ -284,7 +316,6 @@ int media_gateway_pipeline_submit_video_command(MediaGatewayPipeline *pipeline,
                                                 const ThreadMessage *command)
 {
     VideoEncodeWorker *worker = NULL;
-    VideoEncodeInputBuffer *input = NULL;
     int ret = 0;
 
     if (!pipeline || !command ||
@@ -298,11 +329,11 @@ int media_gateway_pipeline_submit_video_command(MediaGatewayPipeline *pipeline,
     }
 
     worker = &pipeline->video.workers[stream_idx];
-    input = &worker->input;
-    if (!input->ready)
+    if (!worker->ready || !video_worker_is_running(worker))
     {
-        LOG_ERROR("media_gateway_pipeline_submit_video_command failed: input not ready stream=%d",
-                  stream_idx);
+        LOG_ERROR("media_gateway_pipeline_submit_video_command failed: worker not ready stream=%d ready=%d",
+                  stream_idx,
+                  worker->ready);
         return -1;
     }
     ret = thread_message_queue_push_copy(&worker->command_queue, command);
@@ -315,106 +346,15 @@ int media_gateway_pipeline_submit_video_command(MediaGatewayPipeline *pipeline,
                   ret);
         return ret;
     }
-    pthread_mutex_lock(&input->lock);
-    pthread_cond_signal(&input->cond);
-    pthread_mutex_unlock(&input->lock);
+    if (video_worker_notify_control(worker) != 0)
+    {
+        LOG_ERROR("media_gateway_pipeline_submit_video_command failed: notify stream=%d type=%u request=%" PRIu64,
+                  stream_idx,
+                  command->type,
+                  command->request_id);
+        return -1;
+    }
     return ret;
-}
-
-/**
- * @description: 将视频帧引用发布到 latest-frame 输入缓存。
- * 当前设计目标是降低实时链路延迟，宁可丢旧帧，也不让视频积压。
- * TODO: 如果后续要做录像，需要改成不丢帧的方式。
- */
-int media_gateway_video_input_publish(VideoEncodeInputBuffer *input, const MediaFrame *frame)
-{
-    if (!input || !frame || !frame->raw_frame || frame->raw_len <= 0 || !frame->capture_buffer)
-    {
-        LOG_ERROR("media_gateway_video_input_publish failed: invalid args input=%p frame=%p raw=%p len=%d",
-                  (void *)input,
-                  (const void *)frame,
-                  frame ? (const void *)frame->raw_frame : NULL,
-                  frame ? frame->raw_len : 0);
-        return -1;
-    }
-
-    pthread_mutex_lock(&input->lock);
-    if (!input->running)
-    {
-        pthread_mutex_unlock(&input->lock);
-        return 0;
-    }
-    if (input->valid) {
-        media_frame_reset(&input->frame);
-        input->dropped_frames++;
-    }
-    media_frame_copy_ref(&input->frame, frame);
-    input->frame.metrics.video_input_publish_copy_us = 0;
-    input->valid = 1;
-    pthread_cond_signal(&input->cond);
-    pthread_mutex_unlock(&input->lock);
-    return 0;
-}
-
-/**
- * @description: 编码 worker 从 latest-frame 输入缓存获取一帧引用。
- */
-static int video_worker_acquire_frame(VideoEncodeWorker *worker,
-                                      MediaFrame *frame,
-                                      int timeout_ms)
-{
-    struct timespec ts = {0};
-    VideoEncodeInputBuffer *input = NULL;
-    int wait_ret = 0;
-
-    if (!worker || !frame)
-    {
-        LOG_ERROR("video_worker_acquire_frame failed: invalid args worker=%p frame=%p",
-                  (void *)worker,
-                  (void *)frame);
-        return -1;
-    }
-
-    input = &worker->input;
-    if (!input->ready)
-    {
-        LOG_ERROR("video_worker_acquire_frame failed: input not ready");
-        return -1;
-    }
-
-    make_abs_timeout(&ts, timeout_ms);
-
-    pthread_mutex_lock(&input->lock);
-    while (input->running && !input->valid &&
-           !thread_message_queue_has_messages(&worker->command_queue))
-    {
-        wait_ret = pthread_cond_timedwait(&input->cond, &input->lock, &ts);
-        if (wait_ret == ETIMEDOUT)
-        {
-            pthread_mutex_unlock(&input->lock);
-            return 0;
-        }
-        if (wait_ret != 0)
-        {
-            LOG_ERROR("video_worker_acquire_frame failed: pthread_cond_timedwait ret=%d(%s)",
-                      wait_ret,
-                      strerror(wait_ret));
-            pthread_mutex_unlock(&input->lock);
-            return -1;
-        }
-    }
-    if (!input->valid)
-    {
-        pthread_mutex_unlock(&input->lock);
-        return 0;
-    }
-
-    media_frame_copy_ref(frame, &input->frame);
-    frame->metrics.video_input_acquire_copy_us = 0;
-    media_frame_reset(&input->frame);
-    input->valid = 0;
-    pthread_mutex_unlock(&input->lock);
-    return 1;
 }
 
 /**
@@ -623,14 +563,135 @@ static void video_worker_process_commands(MediaGatewayPipeline *pipeline,
 }
 
 /**
+ * @description: 处理控制 eventfd，并执行当前已经入队的 MPP 控制命令。
+ *
+ * 本函数由视频编码线程调用，因此 MPP 控制命令与视频编码仍在同一线程内串行执行。
+ */
+static int video_worker_handle_control_event(MediaGatewayPipeline *pipeline,
+                                             VideoEncodeWorker *worker,
+                                             int stream_idx)
+{
+    int ret = 0;
+
+    if (!pipeline || !pipeline->ctx || !worker ||
+        stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("video_worker_handle_control_event failed: pipeline=%p ctx=%p worker=%p stream=%d",
+                  (void *)pipeline,
+                  pipeline ? (void *)pipeline->ctx : NULL,
+                  (void *)worker,
+                  stream_idx);
+        return -1;
+    }
+
+    /* eventfd 仅负责唤醒；清空计数后，再从 command_queue 读取实际命令。 */
+    ret = video_worker_drain_control_event(worker);
+    if (ret != 0)
+    {
+        LOG_ERROR("video_worker_handle_control_event failed: drain control event stream=%d ret=%d",
+                  stream_idx,
+                  ret);
+        return -1;
+    }
+    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+        return 0;
+
+    video_worker_process_commands(pipeline, stream_idx);
+    return 0;
+}
+
+/**
+ * @description: 处理帧源 eventfd，取得最新视频帧并完成本轮编码。
+ *
+ * 主要流程：清空帧事件、取得最新帧、尽早释放帧源槽位、处理最新控制命令，
+ * 最后调用当前视频流的编码与分发流程。
+ */
+static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
+                                           VideoEncodeWorker *worker,
+                                           MediaFrameSource *source,
+                                           int stream_idx)
+{
+    MediaFrame frame = {0};
+    int source_slot = -1;
+    int ret = 0;
+
+    if (!pipeline || !pipeline->ctx || !worker || !source ||
+        stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: pipeline=%p ctx=%p worker=%p source=%p stream=%d",
+                  (void *)pipeline,
+                  pipeline ? (void *)pipeline->ctx : NULL,
+                  (void *)worker,
+                  (void *)source,
+                  stream_idx);
+        return -1;
+    }
+
+    /* eventfd 只表示帧源状态发生变化，实际视频帧仍保存在 MediaFrameSource 中。 */
+    ret = media_frame_source_drain_event(source);
+    if (ret != 0)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: drain frame event stream=%d source=%d ret=%d",
+                  stream_idx,
+                  source->config.source_index,
+                  ret);
+        return -1;
+    }
+    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+        return 0;
+
+    ret = media_frame_source_try_acquire_latest(source, &frame, &source_slot);
+    if (ret < 0)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: acquire source stream=%d source=%d ret=%d",
+                  stream_idx,
+                  source->config.source_index,
+                  ret);
+        return -1;
+    }
+    if (ret == 0)
+        return 0;
+
+    /* frame 已持有 buffer 引用，可先释放 ring slot，避免编码期间占用帧源槽位。 */
+    media_frame_source_release(source, source_slot);
+    source_slot = -1;
+
+    /* 处理等待帧期间新到达的命令，确保新配置在当前帧编码前生效。 */
+    video_worker_process_commands(pipeline, stream_idx);
+    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+    {
+        media_frame_reset(&frame);
+        return 0;
+    }
+
+    ret = media_gateway_process_stream(pipeline->ctx, &pipeline->state, &frame, stream_idx);
+    if (ret != 0)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: process stream=%d frame=%" PRIu64 " ret=%d",
+                  stream_idx,
+                  frame.frame_id,
+                  ret);
+        media_frame_reset(&frame);
+        return -1;
+    }
+
+    media_frame_reset(&frame);
+    return 0;
+}
+
+/**
  * @description: 视频编码 worker 主函数。
  */
 static void *video_encode_thread_main(void *arg)
 {
     VideoEncodeThreadArg *thread_arg = (VideoEncodeThreadArg *)arg;
     MediaGatewayPipeline *pipeline = NULL;
+    VideoEncodeWorker *worker = NULL;
+    MediaFrameSource *source = NULL;
+    struct pollfd poll_fds[VIDEO_WORKER_POLL_COUNT] = {{0}};
     int stream_idx = -1;
-    MediaFrame frame = {0};
+    int source_event_fd = -1;
+    int poll_ret = 0;
     int ret = 0;
 
     if (!thread_arg)
@@ -651,39 +712,108 @@ static void *video_encode_thread_main(void *arg)
         return NULL;
     }
 
+    worker = &pipeline->video.workers[stream_idx];
+    source = worker->source;
+    if (!worker->ready || !source)
+    {
+        LOG_ERROR("video_encode_thread_main failed: worker not ready stream=%d ready=%d source=%p",
+                  stream_idx,
+                  worker->ready,
+                  (void *)source);
+        free(thread_arg);
+        pipeline_set_error(pipeline);
+        return NULL;
+    }
+    source_event_fd = media_frame_source_get_event_fd(source);
+    if (source_event_fd < 0)
+    {
+        LOG_ERROR("video_encode_thread_main failed: get source event fd stream=%d source=%d",
+                  stream_idx,
+                  source->config.source_index);
+        free(thread_arg);
+        pipeline_set_error(pipeline);
+        return NULL;
+    }
+
+    poll_fds[VIDEO_WORKER_POLL_FRAME].fd = source_event_fd;
+    poll_fds[VIDEO_WORKER_POLL_FRAME].events = POLLIN;
+    poll_fds[VIDEO_WORKER_POLL_CONTROL].fd = worker->control_event_fd;
+    poll_fds[VIDEO_WORKER_POLL_CONTROL].events = POLLIN;
     pipeline_set_thread_name("enc-", pipeline->ctx->config.video.streams[stream_idx].name, stream_idx);
     free(thread_arg);
-    while (pipeline->ctx->running)
+
+    LOG_INFO("video encode worker started: stream=%d source=%d frame_event_fd=%d control_event_fd=%d",
+             stream_idx,
+             source->config.source_index,
+             source_event_fd,
+             worker->control_event_fd);
+
+    while (pipeline->ctx->running && video_worker_is_running(worker))
     {
-        /* MPP 控制命令与编码调用始终在当前编码线程内串行执行。 */
-        video_worker_process_commands(pipeline, stream_idx);
         /*
-         * VideoEncodeInputBuffer 是单槽 latest-frame 输入缓存，不做 FIFO 排队。
-         * 编码线程慢时新帧会覆盖未消费旧帧，优先降低端到端延迟；主要成本是 publish/acquire 都在锁内整帧拷贝。
+         * 帧源和控制命令各自维护 eventfd，poll 可以在没有超时轮询的情况下同时等待两类事件。
+         * eventfd 只负责唤醒，实际帧和命令仍分别保存在 MediaFrameSource 与 command_queue。
          */
-        ret = video_worker_acquire_frame(&pipeline->video.workers[stream_idx],
-                                         &frame,
-                                         100);
-        if (ret < 0)
+        poll_fds[VIDEO_WORKER_POLL_FRAME].revents = 0;
+        poll_fds[VIDEO_WORKER_POLL_CONTROL].revents = 0;
+        poll_ret = poll(poll_fds, VIDEO_WORKER_POLL_COUNT, -1);
+        if (poll_ret < 0)
         {
-            LOG_ERROR("video encode thread failed: acquire stream=%d", stream_idx);
-            pipeline_set_error(pipeline);
-            break;
-        }
-        if (ret == MEDIA_OK)
-            continue;
-        video_worker_process_commands(pipeline, stream_idx);
-        if (media_gateway_process_stream(pipeline->ctx, &pipeline->state, &frame, stream_idx) != 0)
-        {
-            LOG_ERROR("video encode thread failed: process stream=%d frame=%" PRIu64,
+            if (errno == EINTR)
+                continue;
+            LOG_ERROR("video encode thread failed: poll stream=%d errno=%d(%s)",
                       stream_idx,
-                      frame.frame_id);
+                      errno,
+                      strerror(errno));
             pipeline_set_error(pipeline);
-            media_frame_reset(&frame);
             break;
         }
-        media_frame_reset(&frame);
+
+        if ((poll_fds[VIDEO_WORKER_POLL_FRAME].revents |
+             poll_fds[VIDEO_WORKER_POLL_CONTROL].revents) &
+            (POLLERR | POLLHUP | POLLNVAL))
+        {
+            LOG_ERROR("video encode thread failed: poll event stream=%d source_revents=0x%x control_revents=0x%x",
+                      stream_idx,
+                      poll_fds[VIDEO_WORKER_POLL_FRAME].revents,
+                      poll_fds[VIDEO_WORKER_POLL_CONTROL].revents);
+            pipeline_set_error(pipeline);
+            break;
+        }
+
+        /* 控制事件优先处理，确保新配置在本轮即将编码的视频帧之前生效。 */
+        if (poll_fds[VIDEO_WORKER_POLL_CONTROL].revents & POLLIN)
+        {
+            ret = video_worker_handle_control_event(pipeline, worker, stream_idx);
+            if (ret != 0)
+            {
+                LOG_ERROR("video encode thread failed: handle control event stream=%d ret=%d",
+                          stream_idx,
+                          ret);
+                pipeline_set_error(pipeline);
+                break;
+            }
+            if (!pipeline->ctx->running || !video_worker_is_running(worker))
+                break;
+        }
+
+        if (poll_fds[VIDEO_WORKER_POLL_FRAME].revents & POLLIN)
+        {
+            ret = video_worker_handle_frame_event(pipeline, worker, source, stream_idx);
+            if (ret != 0)
+            {
+                LOG_ERROR("video encode thread failed: handle frame event stream=%d source=%d ret=%d",
+                          stream_idx,
+                          source->config.source_index,
+                          ret);
+                pipeline_set_error(pipeline);
+                break;
+            }
+        }
     }
+    LOG_INFO("video encode worker stopped: stream=%d source=%d",
+             stream_idx,
+             source->config.source_index);
     return NULL;
 }
 
@@ -889,23 +1019,27 @@ static void *audio_encode_thread_main(void *arg)
 }
 
 /**
- * @description: 初始化 pipeline 的视频输入槽、音频帧源引用和同步状态。
+ * @description: 初始化 pipeline 的视频帧源引用、控制事件、音频帧源引用和同步状态。
  */
 int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
                                 MediaGatewayCtx *ctx,
                                 ThreadMessageQueue *result_queue,
+                                MediaFrameSource *video_sources,
                                 AudioFrameSource *audio_source)
 {
     int i = 0;
+    int source_idx = -1;
     int mutex_ret = 0;
 
     if (!pipeline || !ctx || !result_queue ||
+        (ctx->config.video.stream_count > 0 && !video_sources) ||
         (ctx->config.audio.source.enabled && ctx->audio_capture_ready && !audio_source))
     {
-        LOG_ERROR("media_gateway_pipeline_init failed: pipeline=%p ctx=%p result_queue=%p audio_source=%p",
+        LOG_ERROR("media_gateway_pipeline_init failed: pipeline=%p ctx=%p result_queue=%p video_sources=%p audio_source=%p",
                   (void *)pipeline,
                   (void *)ctx,
                   (void *)result_queue,
+                  (void *)video_sources,
                   (void *)audio_source);
         return -1;
     }
@@ -922,14 +1056,28 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     }
     pipeline->ret_lock_ready = 1;
 
-    /* 初始化单路视频编码 worker 的输入缓存和控制命令队列 */
+    /* 每路启用 stream 独占一个帧源，worker 直接 poll 帧源和自己的控制 eventfd。 */
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
         if (!ctx->stream_enabled[i])
             continue;
-        if (video_worker_init(&pipeline->video.workers[i]) != 0)
+        source_idx = ctx->config.video.streams[i].source_index;
+        if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count ||
+            !ctx->capture_ready[source_idx])
         {
-            LOG_ERROR("pipeline init failed: video input stream=%d", i);
+            LOG_ERROR("media_gateway_pipeline_init failed: invalid video source stream=%d source=%d capture_ready=%d",
+                      i,
+                      source_idx,
+                      (source_idx >= 0 && source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
+                          ? ctx->capture_ready[source_idx]
+                          : 0);
+            return -1;
+        }
+        if (video_worker_init(&pipeline->video.workers[i], &video_sources[source_idx]) != 0)
+        {
+            LOG_ERROR("media_gateway_pipeline_init failed: video worker stream=%d source=%d",
+                      i,
+                      source_idx);
             return -1;
         }
     }
@@ -941,7 +1089,7 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
 }
 
 /**
- * @description: 停止 pipeline 内由其拥有的视频输入队列。
+ * @description: 停止 pipeline 内由其拥有的视频编码 worker。
  */
 static void pipeline_stop_queues(MediaGatewayPipeline *pipeline)
 {
@@ -1051,7 +1199,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
 }
 
 /**
- * @description: 停止输入队列并等待所有 worker 退出。
+ * @description: 唤醒并停止所有编码 worker，然后等待线程退出。
  */
 void media_gateway_pipeline_join_workers(MediaGatewayPipeline *pipeline)
 {

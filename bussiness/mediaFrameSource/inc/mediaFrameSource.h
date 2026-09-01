@@ -54,7 +54,7 @@ typedef struct {
     MediaFrame frame;     /* 槽位持有的一帧引用，不再保存整帧 NV12 副本。 */
     uint64_t seq;         /* 槽位帧序号，用于区分新旧帧。 */
     int valid;            /* 槽位是否保存了还没被编码线程取走的新帧。 */
-    int in_use;           /* 调度线程是否正在使用该槽位。 */
+    int in_use;           /* 视频编码线程是否正在取得该槽位。 */
 } MediaFrameSourceSlot;
 
 typedef struct {
@@ -68,13 +68,13 @@ typedef struct {
 typedef struct {
     pthread_t thread;      /* 采集线程句柄。 */
     pthread_mutex_t lock;  /* 保护跨线程共享的槽位和生命周期状态。 */
-    pthread_cond_t cond;   /* 新帧到达或线程退出时唤醒消费者。 */
+    int frame_event_fd;    /* 新帧、停止或致命错误通知 fd，由视频编码线程通过 poll 等待。 */
 
     /* latest-frame 缓存：只保存采集 buffer 引用，消费滞后时丢弃旧帧。 */
     MediaFrameSourceSlot slots[MEDIA_FRAME_SOURCE_SLOTS];
     int latest_slot;              /* 当前最新可消费槽位下标，-1 表示暂无新帧。 */
     uint64_t next_seq;            /* 下一帧发布序号。 */
-    uint64_t consumed_seq;        /* 调度线程最近消费的帧序号。 */
+    uint64_t consumed_seq;        /* 视频编码线程最近消费的帧序号。 */
     uint64_t dropped_frames;      /* 因下游消费不及时而丢弃的旧帧数。 */
     int consecutive_failures;     /* 当前连续采集失败次数。 */
     int running;                  /* frame source 是否应继续运行。 */
@@ -130,17 +130,27 @@ int media_frame_source_submit_command(MediaFrameSource *source,
  */
 int media_frame_source_start(MediaFrameSource *source);
 /**
- * @description: 获取最新采集帧。若暂无新帧，会最多等待 timeout_ms 毫秒。
+ * @description: 非阻塞获取最新采集帧，由调用方在 frame event fd 可读后调用。
  * @param {MediaFrameSource *} source 帧源对象。
  * @param {MediaFrame *} frame 输出最新帧引用，调用方处理完后必须 media_frame_reset。
  * @param {int *} slot_index 输出槽位下标，调用方处理完后必须 release。
- * @param {int} timeout_ms 等待超时时间，单位毫秒。
- * @return {int} 1 获取到新帧；0 超时暂无新帧；-1 帧源发生不可恢复错误或参数非法。
+ * @return {int} 1 获取到新帧；0 当前暂无新帧；-1 帧源发生不可恢复错误或参数非法。
  */
-int media_frame_source_acquire_latest(MediaFrameSource *source,
-                                      MediaFrame *frame,
-                                      int *slot_index,
-                                      int timeout_ms);
+int media_frame_source_try_acquire_latest(MediaFrameSource *source,
+                                          MediaFrame *frame,
+                                          int *slot_index);
+
+/**
+ * @description: 获取用于等待新帧、停止和致命错误事件的 eventfd。
+ * @return eventfd 文件描述符，失败返回 -1。
+ */
+int media_frame_source_get_event_fd(const MediaFrameSource *source);
+
+/**
+ * @description: 清空 frame eventfd 中已经累积的通知计数。
+ * @return 0 成功，-1 失败。
+ */
+int media_frame_source_drain_event(MediaFrameSource *source);
 /**
  * @description: 释放 acquire 得到的槽位，允许帧源复用槽位并释放槽位持有的 buffer 引用。
  * @param {MediaFrameSource *} source 帧源对象。

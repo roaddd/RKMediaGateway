@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/eventfd.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -68,37 +69,41 @@ static int frame_source_should_run(MediaFrameSource *source) {
 }
 
 /**
- * @brief 根据当前实时时钟生成 pthread 条件变量等待的绝对超时时间。
+ * @brief 向帧源 eventfd 写入一次通知。
  *
- * pthread_cond_timedwait 使用绝对时间，因此调用方传入相对超时时间后，需要在这里转换成
- * CLOCK_REALTIME 时间点。
- *
- * @param ts 输出的绝对超时时间。
- * @param timeout_ms 相对超时时间，单位毫秒；小于 0 时按 0 处理。
+ * 帧源会在 latest-frame 状态更新完成、停止或发生致命错误后调用本函数。eventfd
+ * 只表达“状态需要重新检查”，实际帧和错误状态仍由 runtime.lock 保护。
  */
-static void frame_source_make_abs_timeout(struct timespec *ts, int timeout_ms) {
-    long nsec = 0;
-    int ret = 0;
+static int frame_source_notify_event(MediaFrameSource *source)
+{
+    uint64_t value = 1;
+    ssize_t written = -1;
 
-    if (!ts)
+    if (!source || source->runtime.frame_event_fd < 0)
     {
-        LOG_ERROR("frame_source_make_abs_timeout failed: ts is NULL");
-        return;
+        LOG_ERROR("frame_source_notify_event failed: source=%p event_fd=%d",
+                  (void *)source,
+                  source ? source->runtime.frame_event_fd : -1);
+        return -1;
     }
-    ret = clock_gettime(CLOCK_REALTIME, ts);
-    if (ret != 0)
+
+    do
     {
-        LOG_ERROR("frame_source_make_abs_timeout failed: clock_gettime errno=%d(%s)",
-                  errno,
-                  strerror(errno));
-        memset(ts, 0, sizeof(*ts));
-        return;
-    }
-    if (timeout_ms < 0) timeout_ms = 0;
-    ts->tv_sec += timeout_ms / 1000;
-    nsec = ts->tv_nsec + (long)(timeout_ms % 1000) * 1000000L;
-    ts->tv_sec += nsec / 1000000000L;
-    ts->tv_nsec = nsec % 1000000000L;
+        written = write(source->runtime.frame_event_fd, &value, sizeof(value));
+    } while (written < 0 && errno == EINTR);
+
+    if (written == (ssize_t)sizeof(value))
+        return 0;
+    if (written < 0 && errno == EAGAIN)
+        return 0;
+
+    LOG_ERROR("frame_source_notify_event failed: source=%d event_fd=%d written=%ld errno=%d(%s)",
+              source->config.source_index,
+              source->runtime.frame_event_fd,
+              (long)written,
+              errno,
+              strerror(errno));
+    return -1;
 }
 
 /**
@@ -392,6 +397,7 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     }
     publish_start_us = frame_source_now_us();
 
+    /* 第一步：在锁内更新 latest-frame 槽位，保证消费者被唤醒时状态已经完整可见。 */
     pthread_mutex_lock(&source->runtime.lock);
     slot_idx = frame_source_find_write_slot(source);
     if (slot_idx < 0) {
@@ -412,10 +418,17 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     source->runtime.latest_slot = slot_idx;
 
     frame_source_drop_stale_slots(source, slot_idx);
-    pthread_cond_signal(&source->runtime.cond);
     publish_done_us = frame_source_now_us();
     slot->frame.metrics.frame_source_publish_us = publish_done_us - publish_start_us;
     pthread_mutex_unlock(&source->runtime.lock);
+    /* 第二步：状态发布完成后写 eventfd，唤醒 poll 等待中的视频编码线程。 */
+    if (frame_source_notify_event(source) != 0)
+    {
+        LOG_ERROR("frame_source_publish_frame failed: notify source=%d frame=%" PRIu64,
+                  source->config.source_index,
+                  src_frame->frame_id);
+        return -1;
+    }
     return 0;
 }
 
@@ -469,8 +482,12 @@ static void *frame_source_thread(void *arg) {
                 pthread_mutex_lock(&source->runtime.lock);
                 source->runtime.fatal_error = 1;
                 source->runtime.running = 0;
-                pthread_cond_broadcast(&source->runtime.cond);
                 pthread_mutex_unlock(&source->runtime.lock);
+                if (frame_source_notify_event(source) != 0)
+                {
+                    LOG_ERROR("frame_source_thread failed: notify fatal error source=%d",
+                              source->config.source_index);
+                }
                 LOG_ERROR("frame source failed continuously count=%d limit=%d",
                           source->runtime.consecutive_failures,
                           source->config.max_consecutive_failures);
@@ -493,6 +510,10 @@ static void *frame_source_thread(void *arg) {
         /* 将采集帧引用发布到 latest-frame 槽位。 */
         if (frame_source_publish_frame(source, &frame) != 0) 
         {
+            pthread_mutex_lock(&source->runtime.lock);
+            source->runtime.fatal_error = 1;
+            source->runtime.running = 0;
+            pthread_mutex_unlock(&source->runtime.lock);
             LOG_ERROR("frame_source_thread failed: publish frame source=%d frame=%" PRIu64,
                       source->config.source_index,
                       frame.frame_id);
@@ -509,8 +530,12 @@ static void *frame_source_thread(void *arg) {
 
     pthread_mutex_lock(&source->runtime.lock);
     source->runtime.running = 0;
-    pthread_cond_broadcast(&source->runtime.cond);
     pthread_mutex_unlock(&source->runtime.lock);
+    if (frame_source_notify_event(source) != 0)
+    {
+        LOG_ERROR("frame_source_thread failed: notify stopped source=%d",
+                  source->config.source_index);
+    }
     return NULL;
 }
 
@@ -538,7 +563,7 @@ int media_frame_source_init(MediaFrameSource *source,
                             ThreadMessageQueue *result_queue) {
     int queue_ret = 0;
     int mutex_ret = 0;
-    int cond_ret = 0;
+    int event_fd = -1;
 
     if (!source || !capture || !result_queue)
     {
@@ -550,6 +575,7 @@ int media_frame_source_init(MediaFrameSource *source,
         return -1;
     }
     memset(source, 0, sizeof(*source));
+    source->runtime.frame_event_fd = -1;
     source->config.capture = capture;
     snprintf(source->config.thread_name,
              sizeof(source->config.thread_name),
@@ -562,6 +588,7 @@ int media_frame_source_init(MediaFrameSource *source,
     source->runtime.latest_slot = -1;
     source->runtime.next_seq = 1;
     source->messaging.result_queue = result_queue;
+    /* 第一步：初始化保护 latest-frame 槽和帧源状态的互斥锁。 */
     mutex_ret = pthread_mutex_init(&source->runtime.lock, NULL);
     if (mutex_ret != 0) {
         LOG_ERROR("media_frame_source_init failed: pthread_mutex_init ret=%d(%s)",
@@ -569,19 +596,25 @@ int media_frame_source_init(MediaFrameSource *source,
                   strerror(mutex_ret));
         return -1;
     }
-    cond_ret = pthread_cond_init(&source->runtime.cond, NULL);
-    if (cond_ret != 0) {
-        LOG_ERROR("media_frame_source_init failed: pthread_cond_init ret=%d(%s)",
-                  cond_ret,
-                  strerror(cond_ret));
+    /* 第二步：创建供视频编码线程 poll 的非阻塞帧事件 fd。 */
+    event_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (event_fd < 0)
+    {
+        LOG_ERROR("media_frame_source_init failed: eventfd source=%d errno=%d(%s)",
+                  source_index,
+                  errno,
+                  strerror(errno));
         pthread_mutex_destroy(&source->runtime.lock);
         return -1;
     }
+    source->runtime.frame_event_fd = event_fd;
+    /* 第三步：初始化仅由采集线程消费的 V4L2 控制命令队列。 */
     queue_ret = thread_message_queue_init(&source->messaging.command_queue,
                                           MEDIA_FRAME_SOURCE_COMMAND_QUEUE_CAPACITY);
     if (queue_ret != MEDIA_OK)
     {
-        pthread_cond_destroy(&source->runtime.cond);
+        close(source->runtime.frame_event_fd);
+        source->runtime.frame_event_fd = -1;
         pthread_mutex_destroy(&source->runtime.lock);
         LOG_ERROR("media_frame_source_init failed: init command queue source=%d ret=%d",
                   source_index,
@@ -654,68 +687,42 @@ int media_frame_source_start(MediaFrameSource *source) {
         return -1;
     }
     source->runtime.started = 1;
-    LOG_INFO("frame source started");
+    LOG_INFO("frame source started: source=%d event_fd=%d",
+             source->config.source_index,
+             source->runtime.frame_event_fd);
     return 0;
 }
 
 /**
- * @brief 等待并获取最新的一帧采集数据。
+ * @brief 非阻塞获取最新的一帧采集数据。
  *
- * 该函数面向编码线程等消费者使用，会在指定超时时间内等待新帧。成功获取后返回的是帧引用，
- * 调用方处理完成后必须调用 media_frame_source_release 释放对应槽位。
+ * 调用方先通过 media_frame_source_get_event_fd 获取 fd 并使用 poll 等待；fd 可读后先
+ * drain 通知计数，再调用本函数取得 latest-frame。成功后必须 release 对应槽位。
  *
  * @param source 采集源对象。
  * @param frame 输出的帧引用。
  * @param slot_index 输出的槽位下标，后续释放时使用。
- * @param timeout_ms 等待最新帧的超时时间，单位毫秒。
- * @return 1 表示获取到新帧；0 表示超时或当前无新帧；-1 表示发生错误。
+ * @return 1 表示获取到新帧；0 表示当前无新帧；-1 表示发生错误。
  */
-int media_frame_source_acquire_latest(MediaFrameSource *source,
-                                      MediaFrame *frame,
-                                      int *slot_index,
-                                      int timeout_ms) {
-    struct timespec ts = {0};
-    int wait_ret = 0;
+int media_frame_source_try_acquire_latest(MediaFrameSource *source,
+                                          MediaFrame *frame,
+                                          int *slot_index) {
     int idx = -1;
 
     if (!source || !frame || !slot_index) {
-        LOG_ERROR("media_frame_source_acquire_latest failed: source=%p frame=%p slot_index=%p timeout_ms=%d",
+        LOG_ERROR("media_frame_source_try_acquire_latest failed: source=%p frame=%p slot_index=%p",
                   (void *)source,
                   (void *)frame,
-                  (void *)slot_index,
-                  timeout_ms);
+                  (void *)slot_index);
         return -1;
     }
     *slot_index = -1;
     media_frame_init(frame);
-    frame_source_make_abs_timeout(&ts, timeout_ms);
 
+    /* 第一步：检查 fatal 状态和当前是否存在仍未消费的 latest-frame。 */
     pthread_mutex_lock(&source->runtime.lock);
-    /* TODO:这里视频帧没有最新帧时，会阻塞音频帧放入编码队列吗，有必要优化吗 */
-    while (!source->runtime.fatal_error && source->runtime.running &&
-           (source->runtime.latest_slot < 0 ||
-            !source->runtime.slots[source->runtime.latest_slot].valid ||
-            source->runtime.slots[source->runtime.latest_slot].seq == source->runtime.consumed_seq)) {
-        wait_ret = pthread_cond_timedwait(&source->runtime.cond,
-                                          &source->runtime.lock,
-                                          &ts);
-        if (wait_ret == ETIMEDOUT) {
-            pthread_mutex_unlock(&source->runtime.lock);
-            return 0;
-        }
-        if (wait_ret != 0)
-        {
-            LOG_ERROR("media_frame_source_acquire_latest failed: pthread_cond_timedwait source=%d ret=%d(%s)",
-                      source->config.source_index,
-                      wait_ret,
-                      strerror(wait_ret));
-            pthread_mutex_unlock(&source->runtime.lock);
-            return -1;
-        }
-    }
-
     if (source->runtime.fatal_error) {
-        LOG_ERROR("media_frame_source_acquire_latest failed: fatal error source=%d failures=%d",
+        LOG_ERROR("media_frame_source_try_acquire_latest failed: fatal error source=%d failures=%d",
                   source->config.source_index,
                   source->runtime.consecutive_failures);
         pthread_mutex_unlock(&source->runtime.lock);
@@ -729,15 +736,69 @@ int media_frame_source_acquire_latest(MediaFrameSource *source,
     }
 
     idx = source->runtime.latest_slot;
+    /* 第二步：只交付最新槽位，清理其它过期帧并将该槽位标记为消费者占用。 */
     frame_source_drop_stale_slots(source, idx);
     source->runtime.slots[idx].in_use = 1;
     source->runtime.slots[idx].valid = 0;
     source->runtime.consumed_seq = source->runtime.slots[idx].seq;
     source->runtime.latest_slot = -1;
+    /* 第三步：复制的是 V4L2 buffer 引用而非整帧 NV12，调用方随后必须 reset。 */
     media_frame_copy_ref(frame, &source->runtime.slots[idx].frame);
     *slot_index = idx;
     pthread_mutex_unlock(&source->runtime.lock);
     return 1;
+}
+
+/**
+ * @brief 返回帧源拥有的 eventfd，供单一视频编码消费者加入 poll 集合。
+ */
+int media_frame_source_get_event_fd(const MediaFrameSource *source)
+{
+    if (!source || source->runtime.frame_event_fd < 0)
+    {
+        LOG_ERROR("media_frame_source_get_event_fd failed: source=%p event_fd=%d",
+                  (const void *)source,
+                  source ? source->runtime.frame_event_fd : -1);
+        return -1;
+    }
+    return source->runtime.frame_event_fd;
+}
+
+/**
+ * @brief 清空帧源 eventfd 的累计通知计数。
+ */
+int media_frame_source_drain_event(MediaFrameSource *source)
+{
+    uint64_t value = 0;
+    ssize_t read_size = -1;
+
+    if (!source || source->runtime.frame_event_fd < 0)
+    {
+        LOG_ERROR("media_frame_source_drain_event failed: source=%p event_fd=%d",
+                  (void *)source,
+                  source ? source->runtime.frame_event_fd : -1);
+        return -1;
+    }
+
+    /* 非阻塞读到 EAGAIN 为止，合并忙碌期间累积的多次 latest-frame 通知。 */
+    for (;;)
+    {
+        read_size = read(source->runtime.frame_event_fd, &value, sizeof(value));
+        if (read_size == (ssize_t)sizeof(value))
+            continue;
+        if (read_size < 0 && errno == EINTR)
+            continue;
+        if (read_size < 0 && errno == EAGAIN)
+            return 0;
+
+        LOG_ERROR("media_frame_source_drain_event failed: source=%d event_fd=%d read=%ld errno=%d(%s)",
+                  source->config.source_index,
+                  source->runtime.frame_event_fd,
+                  (long)read_size,
+                  errno,
+                  strerror(errno));
+        return -1;
+    }
 }
 
 /**
@@ -760,7 +821,6 @@ void media_frame_source_release(MediaFrameSource *source, int slot_index) {
     pthread_mutex_lock(&source->runtime.lock);
     source->runtime.slots[slot_index].in_use = 0;
     media_frame_reset(&source->runtime.slots[slot_index].frame);
-    pthread_cond_signal(&source->runtime.cond);
     pthread_mutex_unlock(&source->runtime.lock);
 }
 
@@ -781,8 +841,12 @@ void media_frame_source_stop(MediaFrameSource *source) {
     }
     pthread_mutex_lock(&source->runtime.lock);
     source->runtime.running = 0;
-    pthread_cond_broadcast(&source->runtime.cond);
     pthread_mutex_unlock(&source->runtime.lock);
+    if (source->runtime.frame_event_fd >= 0 && frame_source_notify_event(source) != 0)
+    {
+        LOG_ERROR("media_frame_source_stop failed: notify source=%d",
+                  source->config.source_index);
+    }
     thread_message_queue_stop(&source->messaging.command_queue);
 
     if (source->runtime.started) {
@@ -809,8 +873,8 @@ void media_frame_source_stop(MediaFrameSource *source) {
  */
 void media_frame_source_deinit(MediaFrameSource *source) {
     int i = 0;
-    int cond_ret = 0;
     int mutex_ret = 0;
+    int close_ret = 0;
 
     if (!source)
     {
@@ -826,13 +890,18 @@ void media_frame_source_deinit(MediaFrameSource *source) {
     }
     for (i = 0; i < MEDIA_FRAME_SOURCE_SLOTS; ++i)
         media_frame_reset(&source->runtime.slots[i].frame);
-    cond_ret = pthread_cond_destroy(&source->runtime.cond);
-    if (cond_ret != 0)
+    if (source->runtime.frame_event_fd >= 0)
     {
-        LOG_ERROR("media_frame_source_deinit failed: pthread_cond_destroy source=%d ret=%d(%s)",
-                  source->config.source_index,
-                  cond_ret,
-                  strerror(cond_ret));
+        close_ret = close(source->runtime.frame_event_fd);
+        if (close_ret != 0)
+        {
+            LOG_ERROR("media_frame_source_deinit failed: close eventfd source=%d fd=%d errno=%d(%s)",
+                      source->config.source_index,
+                      source->runtime.frame_event_fd,
+                      errno,
+                      strerror(errno));
+        }
+        source->runtime.frame_event_fd = -1;
     }
     mutex_ret = pthread_mutex_destroy(&source->runtime.lock);
     if (mutex_ret != 0)
