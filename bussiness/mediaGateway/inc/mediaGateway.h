@@ -10,9 +10,7 @@
 #include "mediaOutput.h"
 #include "mediaControlMessage.h"
 #include "audioCapture.h"
-#include "g711Encoder.h"
-#include "aacEncoder.h"
-#include "opusEncoder.h"
+#include "audioEncoder.h"
 #include "ispController.h"
 
 #ifdef __cplusplus
@@ -22,6 +20,8 @@ extern "C" {
 #define MEDIA_GATEWAY_MAX_STREAMS 2
 #define MEDIA_GATEWAY_MAX_OUTPUTS 8
 #define MEDIA_GATEWAY_MAX_CAPTURE_SOURCES MEDIA_GATEWAY_MAX_STREAMS
+#define MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS 8
+#define MEDIA_GATEWAY_AUDIO_ENCODER_GROUP_NAME_SIZE 64
 
 typedef struct {
     int normal_fps;                  /* 普通场景目标帧率。 */
@@ -138,10 +138,6 @@ typedef struct {
 } MediaGatewayAudioRuntimeConfig;
 
 typedef struct {
-    G711EncoderMode mode;            /* G711 A-law / mu-law。 */
-} MediaGatewayAudioG711Config;
-
-typedef struct {
     int bitrate;                     /* AAC 目标码率，单位 bit/s。 */
     int profile;                     /* AAC object type，2 表示 AAC-LC。 */
 } MediaGatewayAudioAacConfig;
@@ -157,20 +153,29 @@ typedef struct {
 
 typedef struct {
     MediaCodecType codec;            /* 音频编码格式：G711A/G711U/AAC/OPUS。 */
+    int sample_rate;                 /* 编码输出采样率；可低于 ALSA 采集率。 */
     int channels;                    /* 编码输入及码流声道数，与 ALSA 采集声道数独立配置。 */
     int input_channel;               /* 采集多声道转编码单声道时选择的输入声道，下标从 0 开始。 */
-    MediaGatewayAudioG711Config g711;
     MediaGatewayAudioAacConfig aac;
     MediaGatewayAudioOpusConfig opus;
 } MediaGatewayAudioEncoderConfig;
 
 typedef struct {
+    char name[MEDIA_GATEWAY_AUDIO_ENCODER_GROUP_NAME_SIZE]; /* 配置中引用的稳定编码组名称。 */
+    MediaGatewayAudioEncoderConfig encoder;                 /* 该名称对应的编码格式和参数。 */
+} MediaGatewayAudioEncoderGroupConfig;
+
+typedef struct {
     int enabled;                     /* 是否启用音频采集与编码。 */
     MediaGatewayAudioCaptureConfig capture; /* ALSA 设备及 PCM 帧参数。 */
     MediaGatewayAudioRuntimeConfig runtime; /* 帧源队列和失败重试参数。 */
-    MediaGatewayAudioEncoderConfig encoder; /* 编码格式及各 codec 专属参数。 */
-    int bind_stream_index;           /* 音频包投递到哪一路码流绑定的输出。 */
+    int encoder_group_count;        /* 配置的具名音频编码组数量。 */
+    MediaGatewayAudioEncoderGroupConfig encoder_groups[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS];
 } AudioSourceConfig;
+
+typedef struct {
+    const char *encoder_group;       /* 输出引用的具名音频编码配置；空字符串表示不发送音频。 */
+} MediaGatewayOutputAudioBinding;
 
 typedef struct {
     int enabled;                     /* 是否启用 RKAIQ/ISP 控制链路。 */
@@ -226,6 +231,10 @@ typedef struct {
     MediaOutputRtmpConfig rtmp;      /* 该码流 RTMP 输出配置。 */
     MediaOutputGb28181Config gb28181;/* 该码流 GB28181 输出配置。 */
     MediaOutputWebRtcConfig webrtc;  /* 该码流 WebRTC 输出配置。 */
+    MediaGatewayOutputAudioBinding rtsp_audio;   /* RTSP 到音频编码组的显式绑定。 */
+    MediaGatewayOutputAudioBinding rtmp_audio;   /* RTMP 到音频编码组的显式绑定。 */
+    MediaGatewayOutputAudioBinding gb28181_audio;/* GB28181 到音频编码组的显式绑定。 */
+    MediaGatewayOutputAudioBinding webrtc_audio; /* WebRTC 到音频编码组的显式绑定。 */
 } MediaGatewayStreamConfig;
 
 typedef struct {
@@ -330,6 +339,21 @@ typedef struct {
 } MediaGatewayAudioStats;
 
 typedef struct {
+    char name[MEDIA_GATEWAY_AUDIO_ENCODER_GROUP_NAME_SIZE]; /* 第一个映射到该运行时组的配置名称。 */
+    AudioEncoderRuntimeGroupId group_id;                   /* 去重后的运行时编码组 ID。 */
+    MediaCodecType codec;                                  /* 该运行时组输出的编码格式。 */
+    int sample_rate;                                       /* 该运行时组输出采样率。 */
+    int channels;                                          /* 该运行时组输出声道数。 */
+    uint64_t input_frames;                                 /* 累计送入该组的 PCM 帧数。 */
+    uint64_t encoded_packets;                              /* 累计产生的非空编码包数。 */
+    uint64_t empty_outputs;                                /* 编码成功但暂未产生输出的次数，例如 AAC 缓存输入。 */
+    uint64_t encode_failures;                              /* 累计编码或 PCM 适配失败次数。 */
+    uint64_t encoded_bytes;                                /* 累计编码输出字节数。 */
+    uint64_t encode_total_us;                              /* 累计编码耗时，包含 PCM 适配。 */
+    uint64_t encode_max_us;                                /* 单次最大编码耗时。 */
+} MediaGatewayAudioEncoderGroupStats;
+
+typedef struct {
     double fps;                                            /* 当前统计窗口内的平均帧率。 */
     uint64_t bytes;                                        /* 当前统计窗口内累计视频字节数。 */
 } MediaGatewayStreamStatsSnapshot;
@@ -342,6 +366,8 @@ typedef struct {
     uint64_t last_ts_us;                                   /* 上次吞吐统计输出时间戳。 */
     MediaGatewayStreamStats streams[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流当前统计窗口。 */
     MediaGatewayAudioStats audio;                          /* 音频当前统计窗口。 */
+    size_t audio_group_count;                              /* 去重后的运行时音频编码组数量。 */
+    MediaGatewayAudioEncoderGroupStats audio_groups[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS];
 } MediaGatewayStats;
 
 typedef struct {
@@ -437,39 +463,80 @@ typedef struct {
     MediaAdaptEncodeParamsState encode_params; /* 每路编码器基准参数和目标参数。 */
 } MediaAdaptCtrlState;
 
+/** @description: 单个视频采集源的运行时资源和初始化状态。 */
 typedef struct {
-    V4L2CaptureCtx captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源 V4L2 上下文。 */
-    IspControllerCtx isp;                       /* RKAIQ/ISP 控制上下文。 */
-    int isp_ready;                              /* ISP 控制链路是否已启动。 */
-    AudioCaptureCtx audio_capture;               /* 音频采集上下文。 */
-    G711EncoderCtx audio_encoder;                /* G711 音频编码上下文。 */
-    AacEncoderCtx aac_encoder;                    /* AAC 音频编码上下文。 */
-    OpusEncoderCtx opus_encoder;                  /* Opus 音频编码上下文。 */
-    MppEncoderCtx encoders[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块上下文。 */
-    int stream_enabled[MEDIA_GATEWAY_MAX_STREAMS];     /* 各码流是否启用。 */
-    int capture_ready[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 各采集源是否已初始化成功。 */
-    int audio_capture_ready;                 /* 音频采集是否已初始化。 */
-    int audio_encoder_ready;                 /* 音频编码器是否已初始化。 */
-    MediaOutput outputs[MEDIA_GATEWAY_MAX_OUTPUTS];  /* 已启用的输出通道集合。 */
-    int output_stream_index[MEDIA_GATEWAY_MAX_OUTPUTS]; /* 每个输出通道绑定的 stream 下标。 */
-    int output_count;                           /* 当前启用的输出通道数量。 */
-    MediaGatewayConfig config;                 /* 配置参数 */
+    V4L2CaptureCtx capture; /* V4L2 采集上下文。 */
+    int ready;              /* 采集源是否已初始化成功。 */
+} MediaGatewayVideoCaptureRuntime;
+
+/** @description: 单个视频码流的编码资源、缓存和输出索引。 */
+typedef struct {
+    MppEncoderCtx encoder;          /* 该码流的 MPP 视频编码器。 */
+    int enabled;                    /* 该码流是否启用。 */
+    int encoder_ready;              /* 视频编码器是否已初始化成功。 */
+    uint8_t *scaled_frame_cache;    /* 缩放后的 NV12 帧缓存。 */
+    size_t scaled_frame_cache_size; /* 缩放帧缓存容量，单位字节。 */
+    int rtsp_output_index;          /* 该码流绑定的 RTSP 输出索引，-1 表示未绑定。 */
+    int gb28181_output_index;       /* 该码流绑定的 GB28181 输出索引，-1 表示未绑定。 */
+} MediaGatewayVideoStreamRuntime;
+
+/** @description: 视频采集、ISP 和各码流编码的运行时状态。 */
+typedef struct {
+    MediaGatewayVideoCaptureRuntime captures[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];
+    MediaGatewayVideoStreamRuntime streams[MEDIA_GATEWAY_MAX_STREAMS];
+    IspControllerCtx isp; /* RKAIQ/ISP 控制上下文。 */
+    int isp_ready;        /* ISP 控制链路是否已启动。 */
+} MediaGatewayVideoRuntime;
+
+/** @description: 音频采集及去重编码组的运行时状态。 */
+typedef struct {
+    AudioCaptureCtx capture; /* ALSA 音频采集上下文。 */
+    int capture_ready;       /* 音频采集是否已初始化成功。 */
+    AudioEncoderManagerHandle *encoder_manager; /* 统一音频编码管理器。 */
+    int encoder_ready;       /* 至少一个音频编码组是否已初始化成功。 */
+    AudioEncoderRuntimeGroupId encoder_group_ids[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS]; /* 配置组下标到去重运行时编码组 ID 的映射；未创建的配置组为 AUDIO_ENCODER_INVALID_GROUP_ID。 */
+} MediaGatewayAudioRuntime;
+
+/** @description: 单个协议输出通道及其视频、音频路由信息。 */
+typedef struct {
+    MediaOutput output;                              /* 协议输出通道实例。 */
+    int stream_index;                                /* 绑定的视频码流下标。 */
+    int audio_encoder_config_index;                  /* 音频配置组下标，-1 表示无音频。 */
+    AudioEncoderRuntimeGroupId audio_encoder_group_id; /* 去重后的音频编码组 ID。 */
+} MediaGatewayOutputChannelRuntime;
+
+/** @description: 全部协议输出通道及共享网络反馈入口。 */
+typedef struct {
+    MediaGatewayOutputChannelRuntime channels[MEDIA_GATEWAY_MAX_OUTPUTS];
+    int count;                               /* 当前已启用的输出通道数量。 */
     NetFeedbackCbInfo network_feedback_holder; /* 输出层网络反馈回调入口。 */
-    int rtsp_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 RTSP 输出索引。 */
-    int gb28181_output_index[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流 GB28181 输出索引。 */
-    int encoder_ready[MEDIA_GATEWAY_MAX_STREAMS]; /* 各码流编码模块是否已初始化成功。 */
-    int low_light_bitrate_active;                 /* 当前低照度编码联动策略是否已应用；用于进入/退出时恢复码率或 QP 参数。 */
-    uint64_t last_isp_policy_ts_us;               /* 上次运行 ISP/低照度策略的时间戳，避免策略跟随日志周期。 */
-    MediaLightFpsState light_fps_state; /* 亮度/AE 感知帧率策略运行状态。 */
-    MediaAdaptCtrlState adaptive_policy_state; /* 场景约束、网络约束和融合输出运行状态。 */
-    int running;                               /* 主循环是否正在运行。 */
-    FILE *record_fp;                           /* 本地录像文件句柄。 */
-    pthread_mutex_t stats_lock;                /* 保护吞吐、benchmark 和本地录像写入。 */
-    int stats_lock_ready;                      /* stats_lock 是否已初始化。 */
-    MediaGatewayStats stats;                   /* 吞吐统计窗口。 */
-    MediaGatewayBenchmarkStats bench;          /* benchmark 埋点配置与统计窗口。 */
-    uint8_t *scaled_frame_cache[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放后的 NV12 帧缓存。 */
-    size_t scaled_frame_cache_size[MEDIA_GATEWAY_MAX_STREAMS]; /* 缩放缓存容量。 */
+} MediaGatewayOutputRuntime;
+
+/** @description: 网关吞吐统计、性能埋点及其同步状态。 */
+typedef struct {
+    pthread_mutex_t lock;          /* 保护吞吐、benchmark 和本地录像写入。 */
+    int lock_ready;                /* lock 是否已初始化。 */
+    MediaGatewayStats throughput;  /* 吞吐统计窗口。 */
+    MediaGatewayBenchmarkStats benchmark; /* benchmark 埋点配置与统计窗口。 */
+} MediaGatewayMetricsRuntime;
+
+/** @description: 低照度、动态帧率和网络自适应策略的运行时状态。 */
+typedef struct {
+    int low_light_bitrate_active;    /* 低照度编码联动策略是否已应用。 */
+    uint64_t last_isp_policy_ts_us;  /* 上次运行 ISP/低照度策略的时间戳。 */
+    MediaLightFpsState light_fps;    /* 亮度/AE 感知帧率策略状态。 */
+    MediaAdaptCtrlState adaptive;    /* 场景与网络联合自适应状态。 */
+} MediaGatewayPolicyRuntime;
+
+typedef struct {
+    MediaGatewayConfig config;          /* 启动配置及归一化后的有效参数。 */
+    MediaGatewayVideoRuntime video;     /* 视频采集、ISP 和码流编码状态。 */
+    MediaGatewayAudioRuntime audio;     /* 音频采集和编码组状态。 */
+    MediaGatewayOutputRuntime output;   /* 协议输出通道及其路由状态。 */
+    MediaGatewayMetricsRuntime metrics; /* 吞吐统计和 benchmark 状态。 */
+    MediaGatewayPolicyRuntime policy;   /* 场景和网络自适应策略状态。 */
+    int running;                        /* 主循环是否正在运行。 */
+    FILE *record_fp;                    /* 本地录像文件句柄。 */
 } MediaGatewayCtx;
 
 typedef struct {

@@ -329,6 +329,35 @@ static void webrtc_output_stop(MediaOutput *output)
     }
 }
 
+/* 查询 WebRTC RTP 音频发送和 SDP 协商当前支持的编码集合。 */
+static int webrtc_output_get_audio_capabilities(const MediaOutput *output,
+                                                MediaOutputAudioCapabilities *capabilities)
+{
+    (void)output;
+
+    if (!capabilities) {
+        LOG_ERROR("[WEBRTC] get audio capabilities failed: capabilities is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    capabilities->codec_mask = MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711A) |
+                               MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711U) |
+                               MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_OPUS);
+    capabilities->count = 3;
+    capabilities->entries[0].codec = MEDIA_CODEC_G711A;
+    capabilities->entries[0].sample_rate = 8000;
+    capabilities->entries[0].min_channels = 1;
+    capabilities->entries[0].max_channels = 1;
+    capabilities->entries[1].codec = MEDIA_CODEC_G711U;
+    capabilities->entries[1].sample_rate = 8000;
+    capabilities->entries[1].min_channels = 1;
+    capabilities->entries[1].max_channels = 1;
+    capabilities->entries[2].codec = MEDIA_CODEC_OPUS;
+    capabilities->entries[2].sample_rate = 48000;
+    capabilities->entries[2].min_channels = 1;
+    capabilities->entries[2].max_channels = 2;
+    return MEDIA_OK;
+}
+
 static const MediaOutputVTable g_webrtc_output_vtable = {
     webrtc_output_start,
     webrtc_output_connect,
@@ -336,7 +365,8 @@ static const MediaOutputVTable g_webrtc_output_vtable = {
     webrtc_output_disconnect,
     webrtc_output_stop,
     NULL,
-    NULL
+    NULL,
+    webrtc_output_get_audio_capabilities
 };
 
 /*

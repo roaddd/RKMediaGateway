@@ -22,6 +22,10 @@ extern "C"
 /* 打印配置快照 */
 static void log_main_config_snapshot(const MediaGatewayConfig *config)
 {
+    const MediaGatewayAudioEncoderGroupConfig *audio_group = NULL;
+    const MediaGatewayStreamConfig *s = NULL;
+    int i = 0;
+
     if (!config)
     {
         return;
@@ -43,20 +47,28 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->policy.light_fps.targets.bright_fps,
              config->policy.light_fps.timing.min_switch_interval_ms,
              config->policy.light_fps.timing.evaluate_interval_ms);
-    LOG_INFO("[MAIN_CFG] parsed audio enabled=%d device=%s rate=%d channels=%d period_frames=%d codec=%s bind_stream=%d",
+    LOG_INFO("[MAIN_CFG] parsed audio enabled=%d device=%s rate=%d capture_channels=%d period_frames=%d encoder_groups=%d",
              config->audio.source.enabled,
              config->audio.source.capture.device_name ? config->audio.source.capture.device_name : "unknown",
              config->audio.source.capture.sample_rate,
              config->audio.source.capture.channels,
              config->audio.source.capture.period_frames,
-             config->audio.source.encoder.codec == MEDIA_CODEC_AAC ? "aac" :
-             (config->audio.source.encoder.codec == MEDIA_CODEC_OPUS ? "opus" :
-             (config->audio.source.encoder.codec == MEDIA_CODEC_G711U ? "g711u" : "g711a")),
-             config->audio.source.bind_stream_index);
-
-    for (int i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+             config->audio.source.encoder_group_count);
+    for (i = 0; i < config->audio.source.encoder_group_count; ++i)
     {
-        const MediaGatewayStreamConfig *s = &config->video.streams[i];
+        audio_group = &config->audio.source.encoder_groups[i];
+        LOG_INFO("[MAIN_CFG] audio_encoder_group index=%d name=%s codec=%d rate=%d channels=%d input_channel=%d",
+                 i,
+                 audio_group->name,
+                 audio_group->encoder.codec,
+                 audio_group->encoder.sample_rate,
+                 audio_group->encoder.channels,
+                 audio_group->encoder.input_channel);
+    }
+
+    for (i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
+        s = &config->video.streams[i];
         LOG_INFO("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d webrtc=%d) rtsp_immediate_sps_pps=%d",
                  i,
                  s->name ? s->name : "unknown",
@@ -72,6 +84,12 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
                  s->enable_gb28181,
                  s->enable_webrtc,
                  s->rtsp.immediate_sps_pps_on_new_client);
+        LOG_INFO("[MAIN_CFG] audio_bindings stream=%d rtsp=%s rtmp=%s gb28181=%s webrtc=%s",
+                 i,
+                 s->rtsp_audio.encoder_group,
+                 s->rtmp_audio.encoder_group,
+                 s->gb28181_audio.encoder_group,
+                 s->webrtc_audio.encoder_group);
     }
 }
 

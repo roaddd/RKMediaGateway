@@ -17,9 +17,7 @@ configure_file(${PROJECT_SOURCE_DIR}/main/media_gateway.toml
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/aacEncoder/inc)
-include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/opusEncoder/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaCore/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/inc)
@@ -62,6 +60,7 @@ set(THIRDPARTY_DATACHANNEL_INC_DIR ${THIRDPARTY_DATACHANNEL_ROOT}/inc)
 set(THIRDPARTY_DATACHANNEL_LIB ${THIRDPARTY_DATACHANNEL_ROOT}/lib/libdatachannel.so.0.24.5)
 set(THIRDPARTY_OPUS_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/opus)
 set(THIRDPARTY_OPUS_LIB ${THIRDPARTY_OPUS_ROOT}/lib/libopus.a)
+set(FDK_AAC_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/fdk-aac CACHE PATH "Root path of FDK-AAC installation")
 set(EXOSIP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/exosip_include)
 set(OPENSSL_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/openssl_include)
 
@@ -85,9 +84,9 @@ include_directories(${THIRDPARTY_DATACHANNEL_INC_DIR})
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
-file(GLOB G711_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/g711Encoder/src/*.c)
-file(GLOB AAC_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/aacEncoder/src/*.c)
-file(GLOB OPUS_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/opusEncoder/src/*.cpp)
+file(GLOB_RECURSE AUDIO_ENCODER_C_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.c)
+file(GLOB_RECURSE AUDIO_ENCODER_CPP_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.cpp)
+set(AUDIO_ENCODER_SRC ${AUDIO_ENCODER_C_SRC} ${AUDIO_ENCODER_CPP_SRC})
 file(GLOB MPP_ENCODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/src/*.c)
 file(GLOB MEDIA_CORE_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaCore/src/*.c)
 file(GLOB MEDIA_GATEWAY_SRC ${PROJECT_SOURCE_DIR}/bussiness/mediaGateway/src/*.c)
@@ -179,8 +178,13 @@ if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
 endif()
 
 if(ENABLE_FDK_AAC)
-    find_path(FDK_AAC_INCLUDE_DIR NAMES fdk-aac/aacenc_lib.h aacenc_lib.h)
-    find_library(FDK_AAC_LIBRARY NAMES fdk-aac fdk_aac)
+    find_path(FDK_AAC_INCLUDE_DIR
+        NAMES aacenc_lib.h
+        HINTS ${FDK_AAC_ROOT}/inc ${FDK_AAC_ROOT}/include
+        PATH_SUFFIXES fdk-aac)
+    find_library(FDK_AAC_LIBRARY
+        NAMES fdk-aac fdk_aac
+        HINTS ${FDK_AAC_ROOT}/lib)
     if(FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
         message(STATUS "FDK-AAC encoder enabled")
     else()
@@ -194,12 +198,12 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
         ${MEDIA_CORE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
-        ${G711_ENCODER_SRC}
-        ${AAC_ENCODER_SRC}
+        ${AUDIO_ENCODER_SRC}
         ${UTIL_SRC}
     )
     target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
     target_link_alsa_audio(audio_pipeline_test)
+    target_enable_opus_encoder(audio_pipeline_test)
     if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
         target_include_directories(audio_pipeline_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
         target_link_libraries(audio_pipeline_test PRIVATE ${FDK_AAC_LIBRARY})
@@ -208,6 +212,29 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
     set_target_properties(audio_pipeline_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
+endif()
+
+if(BUILD_TARGET STREQUAL "audio_multi_encoder_test" OR BUILD_TARGET STREQUAL "all")
+    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
+        add_executable(audio_multi_encoder_test
+            ${PROJECT_SOURCE_DIR}/main/main_audio_multi_encoder_test.cpp
+            ${MEDIA_CORE_SRC}
+            ${AUDIO_CAPTURE_SRC}
+            ${AUDIO_FRAME_SOURCE_SRC}
+            ${AUDIO_ENCODER_SRC}
+            ${UTIL_SRC}
+        )
+        target_link_libraries(audio_multi_encoder_test PRIVATE logger pthread m)
+        target_link_alsa_audio(audio_multi_encoder_test)
+        target_enable_opus_encoder(audio_multi_encoder_test)
+        target_include_directories(audio_multi_encoder_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
+        target_link_libraries(audio_multi_encoder_test PRIVATE ${FDK_AAC_LIBRARY})
+        target_compile_definitions(audio_multi_encoder_test PRIVATE ENABLE_FDK_AAC=1)
+    elseif(BUILD_TARGET STREQUAL "audio_multi_encoder_test")
+        message(FATAL_ERROR "audio_multi_encoder_test requires ENABLE_FDK_AAC=ON and FDK-AAC headers/library")
+    else()
+        message(WARNING "audio_multi_encoder_test is skipped because FDK-AAC is unavailable")
+    endif()
 endif()
 
 if(ENABLE_RTMP)
@@ -318,9 +345,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
-        ${G711_ENCODER_SRC}
-        ${AAC_ENCODER_SRC}
-        ${OPUS_ENCODER_SRC}
+        ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -372,9 +397,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
-        ${G711_ENCODER_SRC}
-        ${AAC_ENCODER_SRC}
-        ${OPUS_ENCODER_SRC}
+        ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}
@@ -419,9 +442,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
-        ${G711_ENCODER_SRC}
-        ${AAC_ENCODER_SRC}
-        ${OPUS_ENCODER_SRC}
+        ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
         ${MEDIA_FRAME_SOURCE_SRC}

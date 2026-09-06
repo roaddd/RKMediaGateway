@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file mediaGatewayDebug.c
  * @brief MediaGateway shell 调试命令实现。
  */
@@ -62,6 +62,24 @@ static const char *gateway_debug_safe_str(const char *value)
 static const char *gateway_debug_switch_name(int enabled)
 {
     return enabled ? "on" : "off";
+}
+
+/** @description: 返回状态输出使用的音频编码名称。 */
+static const char *gateway_debug_audio_codec_name(MediaCodecType codec)
+{
+    switch (codec)
+    {
+    case MEDIA_CODEC_AAC:
+        return "AAC";
+    case MEDIA_CODEC_G711A:
+        return "G711A";
+    case MEDIA_CODEC_G711U:
+        return "G711U";
+    case MEDIA_CODEC_OPUS:
+        return "Opus";
+    default:
+        return "unknown";
+    }
 }
 
 /**
@@ -342,10 +360,14 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
 {
     MediaGatewayCtx *ctx = NULL;
     MediaGatewayStatsSnapshot stats_snapshot = {0};
+    MediaGatewayAudioEncoderGroupStats audio_group_stats[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS] = {{0}};
     MediaOutputStats output_stats = {0};
     char *reply = NULL;
     size_t offset = 0;
     uint64_t audio_xruns = 0;
+    size_t audio_group_count = 0;
+    double average_encode_us = 0.0;
+    int lock_ret = 0;
     int i = 0;
 
     (void)input;
@@ -361,7 +383,27 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     reply = output;
     reply[0] = '\0';
     media_gateway_get_stats_snapshot(ctx, &stats_snapshot);
-    audio_xruns = audio_capture_get_xrun_count(&ctx->audio_capture);
+    audio_xruns = audio_capture_get_xrun_count(&ctx->audio.capture);
+    if (ctx->metrics.lock_ready)
+    {
+        lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+        if (lock_ret != 0)
+        {
+            LOG_ERROR("gateway_shell_get_status failed: pthread_mutex_lock ret=%d", lock_ret);
+        }
+        else
+        {
+            audio_group_count = ctx->metrics.throughput.audio_group_count;
+            if (audio_group_count > MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS)
+                audio_group_count = MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS;
+            memcpy(audio_group_stats,
+                   ctx->metrics.throughput.audio_groups,
+                   audio_group_count * sizeof(audio_group_stats[0]));
+            lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+            if (lock_ret != 0)
+                LOG_ERROR("gateway_shell_get_status failed: pthread_mutex_unlock ret=%d", lock_ret);
+        }
+    }
 
     debug_command_reply_append(reply, &offset, "cmd=getStatus\n");
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_GREEN, "RUNTIME");
@@ -369,16 +411,16 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                &offset,
                                "  gateway=%-3s isp=%-3s capture_sources=%d streams=%d outputs=%d\n",
                                gateway_debug_switch_name(ctx->running),
-                               gateway_debug_switch_name(ctx->isp_ready),
+                               gateway_debug_switch_name(ctx->video.isp_ready),
                                ctx->config.input.capture_source_count,
                                ctx->config.video.stream_count,
-                               ctx->output_count);
+                               ctx->output.count);
     debug_command_reply_append(reply,
                                &offset,
                                "  audio  enabled=%-3s capture=%-3s encoder=%-3s\n",
                                gateway_debug_switch_name(ctx->config.audio.source.enabled),
-                               gateway_debug_switch_name(ctx->audio_capture_ready),
-                               gateway_debug_switch_name(ctx->audio_encoder_ready));
+                               gateway_debug_switch_name(ctx->audio.capture_ready),
+                               gateway_debug_switch_name(ctx->audio.encoder_ready));
     debug_command_reply_append(reply,
                                &offset,
                                "  audio_xruns=%" PRIu64 "\n",
@@ -391,7 +433,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                    &offset,
                                    "  capture[%d]  ready=%s\n",
                                    i,
-                                   gateway_debug_switch_name(ctx->capture_ready[i]));
+                                   gateway_debug_switch_name(ctx->video.captures[i].ready));
     }
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_BLUE, "VIDEO_STREAMS");
@@ -407,33 +449,64 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                    &offset,
                                    "  %-2d  %-7s  %-7s  %8.2f  %20" PRIu64 "\n",
                                    i,
-                                   gateway_debug_switch_name(ctx->stream_enabled[i]),
-                                   gateway_debug_switch_name(ctx->encoder_ready[i]),
+                                   gateway_debug_switch_name(ctx->video.streams[i].enabled),
+                                   gateway_debug_switch_name(ctx->video.streams[i].encoder_ready),
                                    stats_snapshot.streams[i].fps,
                                    stats_snapshot.streams[i].bytes);
+    }
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_YELLOW, "AUDIO_ENCODERS");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  id  name                 codec   rate   ch  input     packets   empty  failures      bytes  avg_us  max_us\n");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  --  -------------------  ------  -----  --  --------  --------  ------  --------  ---------  ------  ------\n");
+    for (i = 0; i < (int)audio_group_count; ++i)
+    {
+        average_encode_us = audio_group_stats[i].input_frames > 0
+                                ? (double)audio_group_stats[i].encode_total_us /
+                                      (double)audio_group_stats[i].input_frames
+                                : 0.0;
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "  %-2llu  %-19s  %-6s  %-5d  %-2d  %8" PRIu64 "  %8" PRIu64 "  %6" PRIu64 "  %8" PRIu64 "  %9" PRIu64 "  %6.1f  %6" PRIu64 "\n",
+                                   (unsigned long long)audio_group_stats[i].group_id,
+                                   audio_group_stats[i].name,
+                                   gateway_debug_audio_codec_name(audio_group_stats[i].codec),
+                                   audio_group_stats[i].sample_rate,
+                                   audio_group_stats[i].channels,
+                                   audio_group_stats[i].input_frames,
+                                   audio_group_stats[i].encoded_packets,
+                                   audio_group_stats[i].empty_outputs,
+                                   audio_group_stats[i].encode_failures,
+                                   audio_group_stats[i].encoded_bytes,
+                                   average_encode_us,
+                                   audio_group_stats[i].encode_max_us);
     }
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_MAGENTA, "OUTPUT_QUEUES");
     debug_command_reply_append(reply,
                                &offset,
-                               "  id  name                 stream  total  video  audio  dropped\n");
+                               "  id  name                 stream  audio_group  total  video  audio  dropped\n");
     debug_command_reply_append(reply,
                                &offset,
-                               "  --  -------------------  ------  -----  -----  -----  --------------------\n");
-    for (i = 0; i < ctx->output_count && i < MEDIA_GATEWAY_MAX_OUTPUTS; ++i)
+                               "  --  -------------------  ------  -----------  -----  -----  -----  --------------------\n");
+    for (i = 0; i < ctx->output.count && i < MEDIA_GATEWAY_MAX_OUTPUTS; ++i)
     {
         /*
          * 输出通道队列直接决定直播端到端延迟。
          * 这里分别打印视频和音频队列深度，避免只看总深度时无法判断是哪一路积压。
          */
         memset(&output_stats, 0, sizeof(output_stats));
-        media_output_get_stats(&ctx->outputs[i], &output_stats);
+        media_output_get_stats(&ctx->output.channels[i].output, &output_stats);
         debug_command_reply_append(reply,
                                    &offset,
-                                   "  %-2d  %-19s  %-6d  %-5d  %-5d  %-5d  %20" PRIu64 "\n",
+                                   "  %-2d  %-19s  %-6d  %-11llu  %-5d  %-5d  %-5d  %20" PRIu64 "\n",
                                    i,
-                                   gateway_debug_safe_str(ctx->outputs[i].config.name),
-                                   ctx->output_stream_index[i],
+                                   gateway_debug_safe_str(ctx->output.channels[i].output.config.name),
+                                   ctx->output.channels[i].stream_index,
+                                   (unsigned long long)ctx->output.channels[i].audio_encoder_group_id,
                                    output_stats.queue_depth,
                                    output_stats.video_queue_depth,
                                    output_stats.audio_queue_depth,
@@ -466,7 +539,7 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
     }
 
     ctx = (MediaGatewayCtx *)user_data;
-    state = &ctx->light_fps_state;
+    state = &ctx->policy.light_fps;
     reply = output;
     reply[0] = '\0';
 
@@ -511,7 +584,7 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
     }
 
     ctx = (MediaGatewayCtx *)user_data;
-    state = &ctx->light_fps_state;
+    state = &ctx->policy.light_fps;
     reply = output;
     reply[0] = '\0';
     debug_command_reply_append(reply, &offset, "cmd=setFps\n");
@@ -579,7 +652,7 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
         debug_command_reply_append(reply, &offset, "error=gateway not running\n");
         return -1;
     }
-    if (!ctx->capture_ready[0])
+    if (!ctx->video.captures[0].ready)
     {
         LOG_ERROR("gateway_shell_set_fps failed: capture source 0 not ready target=%d", target_fps);
         debug_command_reply_append(reply, &offset, "ret=-1\n");
@@ -648,12 +721,12 @@ static int gateway_shell_get_isp(void *user_data, const char *input, char *outpu
     reply[0] = '\0';
     debug_command_reply_append(reply, &offset, "cmd=getIsp\n");
     debug_command_reply_append(reply, &offset, "isp_config_enabled=%d\n", ctx->config.input.isp.enabled);
-    debug_command_reply_append(reply, &offset, "isp_ready=%d\n", ctx->isp_ready);
+    debug_command_reply_append(reply, &offset, "isp_ready=%d\n", ctx->video.isp_ready);
 
-    if (!ctx->isp_ready && !ctx->isp.initialized && !ctx->isp.status_lock_ready)
+    if (!ctx->video.isp_ready && !ctx->video.isp.initialized && !ctx->video.isp.status_lock_ready)
         return 0;
 
-    ret = isp_controller_query_status(&ctx->isp, &status);
+    ret = isp_controller_query_status(&ctx->video.isp, &status);
     if (ret != 0)
     {
         LOG_ERROR("gateway_shell_get_isp failed: isp_controller_query_status ret=%d", ret);
@@ -719,12 +792,12 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
     ctx = (MediaGatewayCtx *)user_data;
     reply = output;
     reply[0] = '\0';
-    if (ctx->stats_lock_ready)
-        pthread_mutex_lock(&ctx->stats_lock);
-    state = ctx->adaptive_policy_state;
-    light_state = ctx->light_fps_state;
-    if (ctx->stats_lock_ready)
-        pthread_mutex_unlock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_lock(&ctx->metrics.lock);
+    state = ctx->policy.adaptive;
+    light_state = ctx->policy.light_fps;
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_unlock(&ctx->metrics.lock);
 
     debug_command_reply_append(reply, &offset, "cmd=getAdapt\n");
 
@@ -764,13 +837,13 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
          * 一个码流可能同时输出到 RTSP/RTMP/GB28181 等多个通道。
          * 调试时按当前码流聚合所有输出通道的最大音视频队列深度，方便定位延迟来源。
          */
-        for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+        for (output_idx = 0; output_idx < ctx->output.count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
         {
-            output_stream_idx = ctx->output_stream_index[output_idx];
+            output_stream_idx = ctx->output.channels[output_idx].stream_index;
             if (output_stream_idx != stream_idx)
                 continue;
             memset(&output_stats, 0, sizeof(output_stats));
-            media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
+            media_output_get_stats(&ctx->output.channels[output_idx].output, &output_stats);
             if (output_stats.video_queue_depth > max_video_queue_depth)
                 max_video_queue_depth = output_stats.video_queue_depth;
             if (output_stats.audio_queue_depth > max_audio_queue_depth)
@@ -1057,7 +1130,7 @@ static int gateway_shell_get_encoder(void *user_data, const char *input, char *o
                          stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
          ++stream_idx)
     {
-        encoder = &ctx->encoders[stream_idx];
+        encoder = &ctx->video.streams[stream_idx].encoder;
         debug_command_reply_append(reply,
                                    &offset,
                                    "%s--------ENCODER_STREAM_%d--------%s\n",
@@ -1065,8 +1138,8 @@ static int gateway_shell_get_encoder(void *user_data, const char *input, char *o
                                    stream_idx,
                                    GATEWAY_DEBUG_COLOR_RESET);
         debug_command_reply_append(reply, &offset, "stream%d_config_enabled=%d\n", stream_idx, ctx->config.video.streams[stream_idx].enabled);
-        debug_command_reply_append(reply, &offset, "stream%d_encoder_ready=%d\n", stream_idx, ctx->encoder_ready[stream_idx]);
-        if (!ctx->encoder_ready[stream_idx])
+        debug_command_reply_append(reply, &offset, "stream%d_encoder_ready=%d\n", stream_idx, ctx->video.streams[stream_idx].encoder_ready);
+        if (!ctx->video.streams[stream_idx].encoder_ready)
         {
             debug_command_reply_append(reply, &offset, "stream%d_query_ret=%d\n", stream_idx, MEDIA_ERR_NOT_READY);
             continue;
@@ -1135,20 +1208,20 @@ static int gateway_shell_get_pacer(void *user_data, const char *input, char *out
     reply[0] = '\0';
     debug_command_reply_append(reply, &offset, "cmd=getPacer\n");
 
-    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+    for (output_idx = 0; output_idx < ctx->output.count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
     {
         memset(&stats, 0, sizeof(stats));
         memset(&output_stats, 0, sizeof(output_stats));
-        media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
-        ret = media_output_get_video_pacer_stats(&ctx->outputs[output_idx], &stats);
+        media_output_get_stats(&ctx->output.channels[output_idx].output, &output_stats);
+        ret = media_output_get_video_pacer_stats(&ctx->output.channels[output_idx].output, &stats);
         debug_command_reply_append(reply,
                                    &offset,
                                    "%s--------PACER_OUTPUT_%d--------%s\n",
                                    (output_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_BLUE : GATEWAY_DEBUG_COLOR_CYAN,
                                    output_idx,
                                    GATEWAY_DEBUG_COLOR_RESET);
-        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown");
-        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output_stream_index[output_idx]);
+        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->output.channels[output_idx].output.config.name ? ctx->output.channels[output_idx].output.config.name : "unknown");
+        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output.channels[output_idx].stream_index);
         debug_command_reply_append(reply, &offset, "output%d_queue_depth=%d\n", output_idx, output_stats.queue_depth);
         debug_command_reply_append(reply, &offset, "output%d_video_queue_depth=%d\n", output_idx, output_stats.video_queue_depth);
         debug_command_reply_append(reply, &offset, "output%d_audio_queue_depth=%d\n", output_idx, output_stats.audio_queue_depth);
@@ -1231,12 +1304,12 @@ static int gateway_shell_get_rtp_rate(void *user_data, const char *input, char *
     reply[0] = '\0';
     debug_command_reply_append(reply, &offset, "cmd=getRtpRate\n");
 
-    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+    for (output_idx = 0; output_idx < ctx->output.count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
     {
         memset(&stats, 0, sizeof(stats));
         memset(&output_stats, 0, sizeof(output_stats));
-        media_output_get_stats(&ctx->outputs[output_idx], &output_stats);
-        ret = media_output_get_video_pacer_stats(&ctx->outputs[output_idx], &stats);
+        media_output_get_stats(&ctx->output.channels[output_idx].output, &output_stats);
+        ret = media_output_get_video_pacer_stats(&ctx->output.channels[output_idx].output, &stats);
 
         debug_command_reply_append(reply,
                                    &offset,
@@ -1244,8 +1317,8 @@ static int gateway_shell_get_rtp_rate(void *user_data, const char *input, char *
                                    (output_idx % 2 == 0) ? GATEWAY_DEBUG_COLOR_GREEN : GATEWAY_DEBUG_COLOR_YELLOW,
                                    output_idx,
                                    GATEWAY_DEBUG_COLOR_RESET);
-        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown");
-        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output_stream_index[output_idx]);
+        debug_command_reply_append(reply, &offset, "output%d_name=%s\n", output_idx, ctx->output.channels[output_idx].output.config.name ? ctx->output.channels[output_idx].output.config.name : "unknown");
+        debug_command_reply_append(reply, &offset, "output%d_stream=%d\n", output_idx, ctx->output.channels[output_idx].stream_index);
         debug_command_reply_append(reply, &offset, "output%d_queue_depth=%d\n", output_idx, output_stats.queue_depth);
         debug_command_reply_append(reply, &offset, "output%d_video_queue_depth=%d\n", output_idx, output_stats.video_queue_depth);
         debug_command_reply_append(reply, &offset, "output%d_audio_queue_depth=%d\n", output_idx, output_stats.audio_queue_depth);
@@ -1413,15 +1486,15 @@ static int gateway_shell_inject_rtcp(void *user_data, const char *input, char *o
         return -1;
     }
 
-    network = &ctx->adaptive_policy_state.stream_network[stream_idx];
-    if (ctx->stats_lock_ready)
-        pthread_mutex_lock(&ctx->stats_lock);
+    network = &ctx->policy.adaptive.stream_network[stream_idx];
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_lock(&ctx->metrics.lock);
     network->rtcp_fraction_lost = (uint8_t)fraction_lost;
     network->rtcp_rtt_ms = (uint32_t)rtt_ms;
     network->rtcp_jitter = (uint32_t)jitter;
     network->last_rtcp_feedback_ts_us = gateway_debug_now_us();
-    if (ctx->stats_lock_ready)
-        pthread_mutex_unlock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_unlock(&ctx->metrics.lock);
 
     debug_command_reply_append(reply, &offset, "ret=0\n");
     debug_command_reply_append(reply, &offset, "stream_idx=%d\n", stream_idx);
@@ -1499,11 +1572,11 @@ static int gateway_shell_clear_rtcp(void *user_data, const char *input, char *ou
         end_stream = begin_stream + 1;
     }
 
-    if (ctx->stats_lock_ready)
-        pthread_mutex_lock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_lock(&ctx->metrics.lock);
     for (stream_idx = begin_stream; stream_idx < end_stream && stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
     {
-        network = &ctx->adaptive_policy_state.stream_network[stream_idx];
+        network = &ctx->policy.adaptive.stream_network[stream_idx];
         network->rtcp_fraction_lost = 0;
         network->rtcp_rtt_ms = 0;
         network->rtcp_jitter = 0;
@@ -1512,8 +1585,8 @@ static int gateway_shell_clear_rtcp(void *user_data, const char *input, char *ou
         network->pending_state = MEDIA_GATEWAY_NETWORK_GOOD;
         network->pending_state_count = 0;
     }
-    if (ctx->stats_lock_ready)
-        pthread_mutex_unlock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_unlock(&ctx->metrics.lock);
 
     debug_command_reply_append(reply, &offset, "ret=0\n");
     debug_command_reply_append(reply, &offset, "begin_stream=%d\n", begin_stream);

@@ -15,7 +15,9 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
                                  MediaGatewayRunState *state,
                                  const MediaFrame *frame,
                                  int stream_idx);
-int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame);
+int media_gateway_process_audio_group(MediaGatewayCtx *ctx,
+                                      const AudioFrame *frame,
+                                      AudioEncoderRuntimeGroupId group_id);
 
 #ifdef __cplusplus
 }

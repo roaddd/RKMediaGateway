@@ -427,7 +427,7 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
 
     request = (const MediaSetFpsRequest *)command->data;
     result.requested_fps = request->target_fps;
-    ret = mpp_encoder_set_fps(&pipeline->ctx->encoders[stream_idx],
+    ret = mpp_encoder_set_fps(&pipeline->ctx->video.streams[stream_idx].encoder,
                               request->target_fps);
     if (ret == MEDIA_OK)
     {
@@ -437,7 +437,7 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
          * 读写同一路 stream 配置。
          */
         pipeline->ctx->config.video.streams[stream_idx].fps = request->target_fps;
-        ret = mpp_encoder_request_idr(&pipeline->ctx->encoders[stream_idx]);
+        ret = mpp_encoder_request_idr(&pipeline->ctx->video.streams[stream_idx].encoder);
     }
     video_worker_publish_command_result(pipeline,
                                         stream_idx,
@@ -478,7 +478,7 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
 
     request = (const MediaSetVideoEncodeParamsRequest *)command->data;
     result.requested_params = request->params;
-    ret = mpp_encoder_apply_video_encode_params(&pipeline->ctx->encoders[stream_idx],
+    ret = mpp_encoder_apply_video_encode_params(&pipeline->ctx->video.streams[stream_idx].encoder,
                                                 &request->params);
     if (ret == MEDIA_OK)
     {
@@ -494,7 +494,7 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
         stream->qp_min_i = request->params.qp_min_i;
         stream->qp_max_i = request->params.qp_max_i;
         stream->qp_max_step = request->params.qp_max_step;
-        ret = mpp_encoder_request_idr(&pipeline->ctx->encoders[stream_idx]);
+        ret = mpp_encoder_request_idr(&pipeline->ctx->video.streams[stream_idx].encoder);
     }
     video_worker_publish_command_result(pipeline,
                                         stream_idx,
@@ -818,155 +818,37 @@ static void *video_encode_thread_main(void *arg)
 }
 
 /**
- * @description: 把采集帧转换成编码器要求的声道布局，并复制到音频 worker 私有缓存。
+ * @description: 音频 worker 将同一原始 PCM 帧依次送入全部去重编码组。
  *
- * 当前支持两类路径：采集/编码声道一致时原样复制；双声道采集、单声道编码时，
- * 从交织 PCM 中选择 input_channel。转换完成后源 ring slot 就可以立即释放，
- * 避免编码或输出入队阶段占用采集缓存。
- */
-static int audio_prepare_encoder_frame(MediaGatewayPipeline *pipeline,
-                                       const AudioFrame *source_frame,
-                                       AudioFrame *encoder_frame)
-{
-    MediaGatewayAudioEncodeGroup *audio = NULL;
-    const int16_t *source_samples = NULL;
-    int16_t *encoder_samples = NULL;
-    uint8_t *new_buffer = NULL;
-    size_t source_size = 0;
-    size_t output_size = 0;
-    int encoder_channels = 0;
-    int input_channel = 0;
-    int i = 0;
-
-    /*
-     * 第一步：校验调用参数和基础帧信息。
-     * source_frame->data 仍指向 AudioFrameSource 的 ring slot，调用方必须在
-     * 本函数返回后才能 release 对应 slot。
-     */
-    if (!pipeline || !pipeline->ctx || !source_frame || !encoder_frame ||
-        !source_frame->data || source_frame->samples_per_channel <= 0)
-    {
-        LOG_ERROR("audio_prepare_encoder_frame failed: invalid args pipeline=%p frame=%p data=%p samples=%d",
-                  (void *)pipeline,
-                  (const void *)source_frame,
-                  source_frame ? (const void *)source_frame->data : NULL,
-                  source_frame ? source_frame->samples_per_channel : 0);
-        return -1;
-    }
-
-    /*
-     * 当前声道转换只处理 S16LE 交织 PCM，支持单声道和双声道采集。
-     * 双声道样本排列为：ch0_sample0、ch1_sample0、ch0_sample1、ch1_sample1……
-     */
-    if (source_frame->format != AUDIO_SAMPLE_FORMAT_S16LE ||
-        (source_frame->channels != 1 && source_frame->channels != 2))
-    {
-        LOG_ERROR("audio_prepare_encoder_frame failed: unsupported format=%d capture_channels=%d",
-                  source_frame->format,
-                  source_frame->channels);
-        return -1;
-    }
-
-    /*
-     * 第二步：根据“每声道采样数”和声道数计算输入、输出 PCM 字节数。
-     * samples_per_channel 表示 ALSA PCM frame 数，声道转换不会改变它，也不会
-     * 改变本帧时长和 PTS，只会改变每个 PCM frame 包含的样本数量。
-     */
-    audio = &pipeline->audio;
-    encoder_channels = pipeline->ctx->config.audio.source.encoder.channels;
-    input_channel = pipeline->ctx->config.audio.source.encoder.input_channel;
-    source_size = (size_t)source_frame->samples_per_channel *
-                  (size_t)source_frame->channels * sizeof(int16_t);
-    output_size = (size_t)source_frame->samples_per_channel *
-                  (size_t)encoder_channels * sizeof(int16_t);
-    if (source_frame->size < source_size || encoder_channels <= 0)
-    {
-        LOG_ERROR("audio_prepare_encoder_frame failed: invalid PCM size=%zu expected=%zu encoder_channels=%d",
-                  source_frame->size,
-                  source_size,
-                  encoder_channels);
-        return -1;
-    }
-
-    /*
-     * 第三步：确认声道转换组合受支持。
-     * 当前允许：1→1、2→2 原样复制，以及 2→1 选择一个有效采集声道；
-     * 当前不做 1→2 复制扩展，也不做左右声道混音。
-     */
-    if (source_frame->channels != encoder_channels &&
-        !(source_frame->channels == 2 && encoder_channels == 1 &&
-          input_channel >= 0 && input_channel < source_frame->channels))
-    {
-        LOG_ERROR("audio_prepare_encoder_frame failed: unsupported channel conversion capture=%d encoder=%d input_channel=%d",
-                  source_frame->channels,
-                  encoder_channels,
-                  input_channel);
-        return -1;
-    }
-
-    /*
-     * 第四步：扩容音频编码线程私有缓存。
-     * 缓存只在容量不足时 realloc，正常逐帧处理不会反复申请内存。
-     */
-    if (audio->pcm_capacity < output_size)
-    {
-        new_buffer = (uint8_t *)realloc(audio->pcm_buffer, output_size);
-        if (!new_buffer)
-        {
-            LOG_ERROR("audio_prepare_encoder_frame failed: realloc size=%zu", output_size);
-            return -1;
-        }
-        audio->pcm_buffer = new_buffer;
-        audio->pcm_capacity = output_size;
-    }
-
-    if (source_frame->channels == encoder_channels)
-    {
-        /* 采集与编码声道布局一致，直接复制完整 PCM 帧。 */
-        memcpy(audio->pcm_buffer, source_frame->data, output_size);
-    }
-    else
-    {
-        /*
-         * 第五步：双声道采集转单声道编码。
-         * 从每个交织 PCM frame 中提取 input_channel 指定的一个样本。
-         * RK809 当前配置使用 input_channel=0，静音的另一个通道不会进入编码器。
-         */
-        source_samples = (const int16_t *)source_frame->data;
-        encoder_samples = (int16_t *)audio->pcm_buffer;
-        for (i = 0; i < source_frame->samples_per_channel; ++i)
-            encoder_samples[i] = source_samples[i * source_frame->channels + input_channel];
-    }
-
-    /*
-     * 第六步：保留采集帧的 PTS、frame_id 和链路时间信息，只替换编码输入数据、
-     * 字节数及声道数。此后调用方可以释放源 ring slot，编码器仅访问私有缓存。
-     */
-    *encoder_frame = *source_frame;
-    encoder_frame->data = audio->pcm_buffer;
-    encoder_frame->size = output_size;
-    encoder_frame->channels = encoder_channels;
-    encoder_frame->path_timing.encoder_input_ready_us = pipeline_now_us();
-    return 0;
-}
-
-/**
- * @description: 音频编码 worker 直接阻塞等待 AudioFrameSource，不再由 gateway 主循环搬运。
+ * 声道选择和采样率适配由 AudioEncoderManager 内部完成；worker 只负责等待帧源、
+ * 枚举编码组和保证源 ring slot 在所有同步编码调用完成前保持有效。
  */
 static void *audio_encode_thread_main(void *arg)
 {
     MediaGatewayPipeline *pipeline = (MediaGatewayPipeline *)arg;
     AudioFrame source_frame = {0};
-    AudioFrame encoder_frame = {0};
+    AudioEncoderParams encoder_params = {0};
+    AudioEncoderRuntimeGroupId group_id = AUDIO_ENCODER_INVALID_GROUP_ID;
+    size_t group_count = 0;
+    size_t group_index = 0;
     int source_slot = -1;
     int ret = 0;
 
-    if (!pipeline || !pipeline->ctx || !pipeline->audio.source)
+    if (!pipeline || !pipeline->ctx || !pipeline->audio.source ||
+        !pipeline->ctx->audio.encoder_manager)
     {
-        LOG_ERROR("audio_encode_thread_main failed: pipeline=%p ctx=%p source=%p",
+        LOG_ERROR("audio_encode_thread_main failed: pipeline=%p ctx=%p source=%p manager=%p",
                   (void *)pipeline,
                   pipeline ? (void *)pipeline->ctx : NULL,
-                  pipeline ? (void *)pipeline->audio.source : NULL);
+                  pipeline ? (void *)pipeline->audio.source : NULL,
+                  (pipeline && pipeline->ctx) ? (void *)pipeline->ctx->audio.encoder_manager : NULL);
+        return NULL;
+    }
+    group_count = audio_encoder_manager_group_count(pipeline->ctx->audio.encoder_manager);
+    if (group_count == 0)
+    {
+        LOG_ERROR("audio_encode_thread_main failed: no runtime encoder groups");
+        pipeline_set_error(pipeline);
         return NULL;
     }
     pipeline_set_thread_name("enc-", "audio", 0);
@@ -997,18 +879,40 @@ static void *audio_encode_thread_main(void *arg)
             break;
         }
 
-        ret = audio_prepare_encoder_frame(pipeline, &source_frame, &encoder_frame);
+        source_frame.path_timing.encoder_input_ready_us = pipeline_now_us();
+        /*
+         * 同一采集帧依次驱动每个去重后的编码器；同参数配置不会重复编码。
+         * 源 slot 必须保留到循环结束，因为每个组可能选择不同的采集声道。
+         */
+        ret = 0;
+        for (group_index = 0; group_index < group_count; ++group_index)
+        {
+            memset(&encoder_params, 0, sizeof(encoder_params));
+            group_id = AUDIO_ENCODER_INVALID_GROUP_ID;
+            if (audio_encoder_manager_group_at(pipeline->ctx->audio.encoder_manager,
+                                               group_index,
+                                               &group_id,
+                                               &encoder_params) != 0)
+            {
+                LOG_ERROR("audio encode thread failed: lookup group index=%zu frame=%" PRIu64,
+                          group_index,
+                          source_frame.frame_id);
+                ret = -1;
+                break;
+            }
+            if (media_gateway_process_audio_group(pipeline->ctx, &source_frame, group_id) != 0)
+            {
+                LOG_ERROR("audio encode thread failed: process group_id=%llu frame=%" PRIu64,
+                          (unsigned long long)group_id,
+                          source_frame.frame_id);
+                ret = -1;
+                break;
+            }
+        }
         audio_frame_source_release(pipeline->audio.source, source_slot);
         source_slot = -1;
         if (ret != 0)
         {
-            LOG_ERROR("audio encode thread failed: prepare frame=%" PRIu64, source_frame.frame_id);
-            pipeline_set_error(pipeline);
-            break;
-        }
-        if (media_gateway_process_audio(pipeline->ctx, &encoder_frame) != 0)
-        {
-            LOG_ERROR("audio encode thread failed: process frame=%" PRIu64, encoder_frame.frame_id);
             pipeline_set_error(pipeline);
             break;
         }
@@ -1033,7 +937,7 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
 
     if (!pipeline || !ctx || !result_queue ||
         (ctx->config.video.stream_count > 0 && !video_sources) ||
-        (ctx->config.audio.source.enabled && ctx->audio_capture_ready && !audio_source))
+        (ctx->config.audio.source.enabled && ctx->audio.capture_ready && !audio_source))
     {
         LOG_ERROR("media_gateway_pipeline_init failed: pipeline=%p ctx=%p result_queue=%p video_sources=%p audio_source=%p",
                   (void *)pipeline,
@@ -1059,17 +963,17 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     /* 每路启用 stream 独占一个帧源，worker 直接 poll 帧源和自己的控制 eventfd。 */
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
-        if (!ctx->stream_enabled[i])
+        if (!ctx->video.streams[i].enabled)
             continue;
         source_idx = ctx->config.video.streams[i].source_index;
         if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count ||
-            !ctx->capture_ready[source_idx])
+            !ctx->video.captures[source_idx].ready)
         {
             LOG_ERROR("media_gateway_pipeline_init failed: invalid video source stream=%d source=%d capture_ready=%d",
                       i,
                       source_idx,
                       (source_idx >= 0 && source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
-                          ? ctx->capture_ready[source_idx]
+                          ? ctx->video.captures[source_idx].ready
                           : 0);
             return -1;
         }
@@ -1083,7 +987,7 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     }
 
     /* 音频 worker 直接持有帧源引用；帧源由 mediaGateway run resources 管理。 */
-    if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
+    if (ctx->config.audio.source.enabled && ctx->audio.capture_ready)
         pipeline->audio.source = audio_source;
     return 0;
 }
@@ -1120,9 +1024,6 @@ void media_gateway_pipeline_deinit(MediaGatewayPipeline *pipeline)
     pipeline_stop_queues(pipeline);
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
         video_worker_deinit(&pipeline->video.workers[i]);
-    free(pipeline->audio.pcm_buffer);
-    pipeline->audio.pcm_buffer = NULL;
-    pipeline->audio.pcm_capacity = 0;
     if (pipeline->ret_lock_ready)
     {
         mutex_ret = pthread_mutex_destroy(&pipeline->ret_lock);
@@ -1154,7 +1055,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
     /* 为每个流创建编码线程，TODO：不能无限创建吧，RK的MPP硬件编解码是有限的 */
     for (i = 0; i < pipeline->ctx->config.video.stream_count; ++i)
     {
-        if (!pipeline->ctx->stream_enabled[i])
+        if (!pipeline->ctx->video.streams[i].enabled)
             continue;
         arg = (VideoEncodeThreadArg *)calloc(1, sizeof(*arg));
         if (!arg)
@@ -1180,7 +1081,7 @@ int media_gateway_pipeline_start_workers(MediaGatewayPipeline *pipeline)
         }
         pipeline->video.workers[i].thread_started = 1;
     }
-    if (pipeline->ctx->config.audio.source.enabled && pipeline->ctx->audio_capture_ready)
+    if (pipeline->ctx->config.audio.source.enabled && pipeline->ctx->audio.capture_ready)
     {
         thread_ret = pthread_create(&pipeline->audio.thread,
                                     NULL,

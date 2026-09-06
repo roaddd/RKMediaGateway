@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file mediaGateway.c
  * @brief MediaGateway 配置、模块生命周期和主循环调度实现。
  *
@@ -96,7 +96,7 @@ static int adaptive_target_params_need_apply(MediaGatewayCtx *ctx)
         return 0;
     for (i = 0; i < ctx->config.video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        if (!ctx->stream_enabled[i] || !ctx->encoder_ready[i])
+        if (!ctx->video.streams[i].enabled || !ctx->video.streams[i].encoder_ready)
             continue;
         memset(&current, 0, sizeof(current));
         current.fps = ctx->config.video.streams[i].fps;
@@ -109,7 +109,7 @@ static int adaptive_target_params_need_apply(MediaGatewayCtx *ctx)
         current.qp_min_i = ctx->config.video.streams[i].qp_min_i;
         current.qp_max_i = ctx->config.video.streams[i].qp_max_i;
         current.qp_max_step = ctx->config.video.streams[i].qp_max_step;
-        if (!video_encode_params_equal(&current, &ctx->adaptive_policy_state.encode_params.target[i]))
+        if (!video_encode_params_equal(&current, &ctx->policy.adaptive.encode_params.target[i]))
             return 1;
     }
     return 0;
@@ -134,11 +134,11 @@ static int adaptive_effective_target_fps(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] get effective fps failed: runtime policies are disabled");
         return 0;
     }
-    if (ctx->adaptive_policy_state.output.target_fps > 0)
-        return ctx->adaptive_policy_state.output.target_fps;
+    if (ctx->policy.adaptive.output.target_fps > 0)
+        return ctx->policy.adaptive.output.target_fps;
     LOG_ERROR("[ADAPTIVE_CONTROL] get effective fps failed: fused target_fps=%d",
-              ctx->adaptive_policy_state.output.target_fps);
-    return ctx->light_fps_state.target_fps;
+              ctx->policy.adaptive.output.target_fps);
+    return ctx->policy.light_fps.target_fps;
 }
 
 /**
@@ -191,16 +191,16 @@ static int media_gateway_find_feedback_stream_index(MediaGatewayCtx *ctx,
     if (feedback->output_type == MEDIA_OUTPUT_TYPE_RTSP && has_session_name)
         return -1;
 
-    for (output_idx = 0; output_idx < ctx->output_count &&
+    for (output_idx = 0; output_idx < ctx->output.count &&
                          output_idx < MEDIA_GATEWAY_MAX_OUTPUTS;
          ++output_idx)
     {
-        output = &ctx->outputs[output_idx];
+        output = &ctx->output.channels[output_idx].output;
         output_matched = media_gateway_string_equal(feedback->output_name,
                                                     output->config.name);
         if (!output_matched)
             continue;
-        mapped_stream_idx = ctx->output_stream_index[output_idx];
+        mapped_stream_idx = ctx->output.channels[output_idx].stream_index;
         if (mapped_stream_idx >= 0 && mapped_stream_idx < MEDIA_GATEWAY_MAX_STREAMS)
             return mapped_stream_idx;
     }
@@ -231,15 +231,15 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
         return;
     }
 
-    network = &ctx->adaptive_policy_state.stream_network[stream_idx];
-    if (ctx->stats_lock_ready)
-        pthread_mutex_lock(&ctx->stats_lock);
+    network = &ctx->policy.adaptive.stream_network[stream_idx];
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_lock(&ctx->metrics.lock);
     network->rtcp_fraction_lost = feedback->fraction_lost;
     network->rtcp_jitter = feedback->jitter;
     network->rtcp_rtt_ms = feedback->rtt_ms;
     network->last_rtcp_feedback_ts_us = media_gateway_get_now_us();
-    if (ctx->stats_lock_ready)
-        pthread_mutex_unlock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_unlock(&ctx->metrics.lock);
 }
 
 /**
@@ -280,7 +280,7 @@ static bool media_gateway_should_apply_video_pacer(MediaGatewayCtx *ctx,
         return false;
     }
 
-    output = &ctx->adaptive_policy_state.output;
+    output = &ctx->policy.adaptive.output;
     pacing_state = &output->output_pacing[output_idx];
     enabled = (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED) ? 1 : 0;
     last_enabled = pacing_state->enabled;
@@ -337,9 +337,9 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
     if (ctx->config.policy.network_encode.pacing_enabled)
         pacer_mode = MEDIA_OUTPUT_PACER_ENABLED;
 
-    for (output_idx = 0; output_idx < ctx->output_count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
+    for (output_idx = 0; output_idx < ctx->output.count && output_idx < MEDIA_GATEWAY_MAX_OUTPUTS; ++output_idx)
     {
-        stream_idx = ctx->output_stream_index[output_idx];
+        stream_idx = ctx->output.channels[output_idx].stream_index;
         if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         {
             LOG_ERROR("[ADAPTIVE_CONTROL] apply video pacer failed: invalid stream index %d", stream_idx);
@@ -347,7 +347,7 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
         }
 
         if (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED)
-            pacing_rate_bps = ctx->adaptive_policy_state.output.pacing_rate_bps[stream_idx];
+            pacing_rate_bps = ctx->policy.adaptive.output.pacing_rate_bps[stream_idx];
         else
             pacing_rate_bps = 0;
 
@@ -361,19 +361,19 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
         }
 
         /* 将 pacing 配置下发到输出层 */
-        if (media_output_set_video_pacer(&ctx->outputs[output_idx], pacer_mode, pacing_rate_bps) != MEDIA_OK)
+        if (media_output_set_video_pacer(&ctx->output.channels[output_idx].output, pacer_mode, pacing_rate_bps) != MEDIA_OK)
         {
             LOG_WARN("[ADAPTIVE_CONTROL] apply video pacer failed output=%s stream=%d enabled=%d rate=%d",
-                     ctx->outputs[output_idx].config.name ? ctx->outputs[output_idx].config.name : "unknown",
+                     ctx->output.channels[output_idx].output.config.name ? ctx->output.channels[output_idx].output.config.name : "unknown",
                      stream_idx,
                      pacer_mode == MEDIA_OUTPUT_PACER_ENABLED ? 1 : 0,
                      pacing_rate_bps);
             continue;
         }
-        ctx->adaptive_policy_state.output.output_pacing[output_idx].enabled =
+        ctx->policy.adaptive.output.output_pacing[output_idx].enabled =
             (pacer_mode == MEDIA_OUTPUT_PACER_ENABLED) ? 1 : 0;
-        ctx->adaptive_policy_state.output.output_pacing[output_idx].rate_bps = pacing_rate_bps;
-        ctx->adaptive_policy_state.output.output_pacing[output_idx].apply_ts_us = now_us;
+        ctx->policy.adaptive.output.output_pacing[output_idx].rate_bps = pacing_rate_bps;
+        ctx->policy.adaptive.output.output_pacing[output_idx].apply_ts_us = now_us;
     }
 }
 
@@ -810,6 +810,10 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
         dst->webrtc.queue_capacity = 32;
     if (dst->webrtc.video_fps <= 0)
         dst->webrtc.video_fps = dst->fps;
+    dst->rtsp_audio.encoder_group = safe_str(dst->rtsp_audio.encoder_group, "");
+    dst->rtmp_audio.encoder_group = safe_str(dst->rtmp_audio.encoder_group, "");
+    dst->gb28181_audio.encoder_group = safe_str(dst->gb28181_audio.encoder_group, "");
+    dst->webrtc_audio.encoder_group = safe_str(dst->webrtc_audio.encoder_group, "");
 }
 
 /**
@@ -981,11 +985,65 @@ static int validate_raw_stream_config(const MediaGatewayStreamConfig *cfg,
     return 0;
 }
 
+/**
+ * @description: 校验协议输出引用的编码组名称，避免初始化硬件后才发现路由错误。
+ */
+static int validate_audio_output_binding(const AudioSourceConfig *audio,
+                                         const char *group_name,
+                                         const char *protocol,
+                                         int stream_idx)
+{
+    int i = 0;
+
+    if (!group_name || group_name[0] == '\0')
+        return 0;
+    if (!audio || !audio->enabled)
+    {
+        LOG_ERROR("media_gateway config invalid: stream=%d protocol=%s binds audio group=%s while audio is disabled",
+                  stream_idx,
+                  protocol ? protocol : "unknown",
+                  group_name);
+        return -1;
+    }
+    for (i = 0; i < audio->encoder_group_count; ++i)
+    {
+        if (strcmp(audio->encoder_groups[i].name, group_name) == 0)
+            return 0;
+    }
+    LOG_ERROR("media_gateway config invalid: stream=%d protocol=%s references unknown audio encoder group=%s",
+              stream_idx,
+              protocol ? protocol : "unknown",
+              group_name);
+    return -1;
+}
+
+/**
+ * @description: 判断 Opus 每声道采样数是否对应 2.5/5/10/20/40/60ms 合法帧长。
+ */
+static int is_valid_opus_frame_samples(int sample_rate, int samples_per_channel)
+{
+    int64_t scaled_samples = 0;
+
+    if (sample_rate <= 0 || samples_per_channel <= 0)
+        return 0;
+    scaled_samples = (int64_t)samples_per_channel * 400;
+    return scaled_samples == sample_rate ||
+           scaled_samples == (int64_t)sample_rate * 2 ||
+           scaled_samples == (int64_t)sample_rate * 4 ||
+           scaled_samples == (int64_t)sample_rate * 8 ||
+           scaled_samples == (int64_t)sample_rate * 16 ||
+           scaled_samples == (int64_t)sample_rate * 24;
+}
+
 static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig *src)
 {
     int i = 0;
+    int j = 0;
     int source_idx = 0;
+    int encoder_period_frames = 0;
+    int rate_ratio = 0;
     int source_stream_owner[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {0};
+    const MediaGatewayAudioEncoderConfig *audio_encoder = NULL;
     MediaGatewayConfig src_copy = {0};
     int has_src = 0;
 
@@ -1095,7 +1153,6 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         if (require_non_empty_string("audio.device_name", dst->audio.source.capture.device_name) != 0 ||
             require_positive_int("audio.sample_rate", dst->audio.source.capture.sample_rate) != 0 ||
             require_positive_int("audio.capture.channels", dst->audio.source.capture.channels) != 0 ||
-            require_positive_int("audio.encoder.channels", dst->audio.source.encoder.channels) != 0 ||
             require_positive_int("audio.period_frames", dst->audio.source.capture.period_frames) != 0 ||
             require_positive_int("audio.buffer_periods", dst->audio.source.capture.buffer_periods) != 0 ||
             require_positive_int("audio.source_slots", dst->audio.source.runtime.source_slots) != 0 ||
@@ -1104,59 +1161,108 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             return -1;
         if (dst->audio.source.capture.format != AUDIO_SAMPLE_FORMAT_S16LE)
             return config_error_int("audio.format", dst->audio.source.capture.format, "is unsupported");
-        if (dst->audio.source.encoder.codec != MEDIA_CODEC_G711A &&
-            dst->audio.source.encoder.codec != MEDIA_CODEC_G711U &&
-            dst->audio.source.encoder.codec != MEDIA_CODEC_AAC &&
-            dst->audio.source.encoder.codec != MEDIA_CODEC_OPUS)
-            return config_error_int("audio.codec", dst->audio.source.encoder.codec, "is unsupported");
         if (dst->audio.source.capture.channels != 1 && dst->audio.source.capture.channels != 2)
             return config_error_int("audio.capture.channels", dst->audio.source.capture.channels, "must be 1 or 2");
-        if (dst->audio.source.encoder.channels != 1 && dst->audio.source.encoder.channels != 2)
-            return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 or 2");
-        /* 当前仅实现原通道复制，以及 RK809 双通道采集选择一路转换为单声道。 */
-        if (dst->audio.source.encoder.channels != dst->audio.source.capture.channels &&
-            !(dst->audio.source.capture.channels == 2 && dst->audio.source.encoder.channels == 1))
+        if (dst->audio.source.encoder_group_count <= 0 ||
+            dst->audio.source.encoder_group_count > MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS)
+            return config_error_int("audio.encoder_group_count", dst->audio.source.encoder_group_count, "must be between 1 and MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS");
+
+        /* 每个具名配置独立校验，输出绑定后才能安全选择任意一个编码组。 */
+        for (i = 0; i < dst->audio.source.encoder_group_count; ++i)
         {
-            LOG_ERROR("media_gateway config invalid: unsupported audio channel conversion capture=%d encoder=%d",
-                      dst->audio.source.capture.channels,
-                      dst->audio.source.encoder.channels);
+            audio_encoder = &dst->audio.source.encoder_groups[i].encoder;
+            if (dst->audio.source.encoder_groups[i].name[0] == '\0')
+            {
+                LOG_ERROR("media_gateway config invalid: audio encoder group index=%d has empty name", i);
+                return -1;
+            }
+            for (j = 0; j < i; ++j)
+            {
+                if (strcmp(dst->audio.source.encoder_groups[j].name,
+                           dst->audio.source.encoder_groups[i].name) == 0)
+                {
+                    LOG_ERROR("media_gateway config invalid: duplicate audio encoder group name=%s",
+                              dst->audio.source.encoder_groups[i].name);
+                    return -1;
+                }
+            }
+            if (audio_encoder->codec != MEDIA_CODEC_G711A && audio_encoder->codec != MEDIA_CODEC_G711U &&
+                audio_encoder->codec != MEDIA_CODEC_AAC && audio_encoder->codec != MEDIA_CODEC_OPUS)
+                return config_error_int("audio.encoder_groups[].codec", audio_encoder->codec, "is unsupported");
+            if (require_positive_int("audio.encoder_groups[].sample_rate", audio_encoder->sample_rate) != 0)
+                return -1;
+            if (dst->audio.source.capture.sample_rate < audio_encoder->sample_rate ||
+                dst->audio.source.capture.sample_rate % audio_encoder->sample_rate != 0)
+            {
+                LOG_ERROR("media_gateway config invalid: group=%s unsupported rate conversion capture=%d encoder=%d; only integer downsampling is supported",
+                          dst->audio.source.encoder_groups[i].name,
+                          dst->audio.source.capture.sample_rate,
+                          audio_encoder->sample_rate);
+                return -1;
+            }
+            rate_ratio = dst->audio.source.capture.sample_rate / audio_encoder->sample_rate;
+            if (rate_ratio <= 0 || dst->audio.source.capture.period_frames % rate_ratio != 0)
+            {
+                LOG_ERROR("media_gateway config invalid: group=%s period_frames=%d is not aligned to rate ratio=%d",
+                          dst->audio.source.encoder_groups[i].name,
+                          dst->audio.source.capture.period_frames,
+                          rate_ratio);
+                return -1;
+            }
+            encoder_period_frames = dst->audio.source.capture.period_frames / rate_ratio;
+            if (audio_encoder->channels != 1 && audio_encoder->channels != 2)
+                return config_error_int("audio.encoder_groups[].channels", audio_encoder->channels, "must be 1 or 2");
+            if (audio_encoder->channels != dst->audio.source.capture.channels &&
+                !(dst->audio.source.capture.channels == 2 && audio_encoder->channels == 1))
+            {
+                LOG_ERROR("media_gateway config invalid: group=%s unsupported channel conversion capture=%d encoder=%d",
+                          dst->audio.source.encoder_groups[i].name,
+                          dst->audio.source.capture.channels,
+                          audio_encoder->channels);
+                return -1;
+            }
+            if (audio_encoder->channels == 1 &&
+                (audio_encoder->input_channel < 0 || audio_encoder->input_channel >= dst->audio.source.capture.channels))
+                return config_error_int("audio.encoder_groups[].input_channel", audio_encoder->input_channel, "must reference a capture channel");
+            if ((audio_encoder->codec == MEDIA_CODEC_G711A || audio_encoder->codec == MEDIA_CODEC_G711U) && audio_encoder->channels != 1)
+                return config_error_int("audio.encoder_groups[].channels", audio_encoder->channels, "must be 1 for G711");
+            if ((audio_encoder->codec == MEDIA_CODEC_G711A || audio_encoder->codec == MEDIA_CODEC_G711U) &&
+                audio_encoder->sample_rate != 8000)
+                return config_error_int("audio.encoder_groups[].sample_rate", audio_encoder->sample_rate, "must be 8000 for G711");
+            if (audio_encoder->codec == MEDIA_CODEC_AAC &&
+                (require_positive_int("audio.encoder_groups[].aac_bitrate", audio_encoder->aac.bitrate) != 0 ||
+                 require_positive_int("audio.encoder_groups[].aac_profile", audio_encoder->aac.profile) != 0))
+                return -1;
+            if (audio_encoder->codec == MEDIA_CODEC_OPUS)
+            {
+                if (audio_encoder->sample_rate != 8000 && audio_encoder->sample_rate != 12000 &&
+                    audio_encoder->sample_rate != 16000 && audio_encoder->sample_rate != 24000 &&
+                    audio_encoder->sample_rate != 48000)
+                    return config_error_int("audio.encoder_groups[].sample_rate", audio_encoder->sample_rate, "must be an Opus-supported rate");
+                if (!is_valid_opus_frame_samples(audio_encoder->sample_rate, encoder_period_frames))
+                    return config_error_int("audio.period_frames", dst->audio.source.capture.period_frames, "does not produce a valid Opus frame duration");
+                if (require_positive_int("audio.encoder_groups[].opus_bitrate", audio_encoder->opus.bitrate) != 0)
+                    return -1;
+                if (audio_encoder->opus.complexity < 0 || audio_encoder->opus.complexity > 10)
+                    return config_error_int("audio.encoder_groups[].opus_complexity", audio_encoder->opus.complexity, "must be between 0 and 10");
+                if (audio_encoder->opus.packet_loss_percent < 0 || audio_encoder->opus.packet_loss_percent > 100)
+                    return config_error_int("audio.encoder_groups[].opus_packet_loss_percent", audio_encoder->opus.packet_loss_percent, "must be between 0 and 100");
+            }
+        }
+    }
+    for (i = 0; i < dst->video.stream_count; ++i)
+    {
+        if (!dst->video.streams[i].enabled)
+            continue;
+        if ((dst->video.streams[i].enable_rtsp &&
+             validate_audio_output_binding(&dst->audio.source, dst->video.streams[i].rtsp_audio.encoder_group, "rtsp", i) != 0) ||
+            (dst->video.streams[i].enable_rtmp &&
+             validate_audio_output_binding(&dst->audio.source, dst->video.streams[i].rtmp_audio.encoder_group, "rtmp", i) != 0) ||
+            (dst->video.streams[i].enable_gb28181 &&
+             validate_audio_output_binding(&dst->audio.source, dst->video.streams[i].gb28181_audio.encoder_group, "gb28181", i) != 0) ||
+            (dst->video.streams[i].enable_webrtc &&
+             validate_audio_output_binding(&dst->audio.source, dst->video.streams[i].webrtc_audio.encoder_group, "webrtc", i) != 0))
             return -1;
-        }
-        if (dst->audio.source.encoder.channels == 1 &&
-            (dst->audio.source.encoder.input_channel < 0 ||
-             dst->audio.source.encoder.input_channel >= dst->audio.source.capture.channels))
-            return config_error_int("audio.encoder.input_channel", dst->audio.source.encoder.input_channel, "must reference a capture channel");
-        if ((dst->audio.source.encoder.codec == MEDIA_CODEC_G711A ||
-             dst->audio.source.encoder.codec == MEDIA_CODEC_G711U) &&
-            dst->audio.source.encoder.channels != 1)
-            return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 for G711");
-        if (dst->audio.source.encoder.codec == MEDIA_CODEC_AAC)
-        {
-            if (require_positive_int("audio.aac_bitrate", dst->audio.source.encoder.aac.bitrate) != 0 ||
-                require_positive_int("audio.aac_profile", dst->audio.source.encoder.aac.profile) != 0)
-                return -1;
-        }
-        if (dst->audio.source.encoder.codec == MEDIA_CODEC_OPUS)
-        {
-            /* WebRTC Opus 的 RTP 时钟固定为 48 kHz；当前链路不在编码前做重采样。 */
-            if (dst->audio.source.capture.sample_rate != 48000)
-                return config_error_int("audio.sample_rate", dst->audio.source.capture.sample_rate, "must be 48000 for WebRTC Opus");
-            if (dst->audio.source.encoder.channels != 1 && dst->audio.source.encoder.channels != 2)
-                return config_error_int("audio.encoder.channels", dst->audio.source.encoder.channels, "must be 1 or 2 for Opus");
-            /* libopus 每次只接受 2.5/5/10/20/40/60ms PCM，下面是 48 kHz 对应采样数。 */
-            if (dst->audio.source.capture.period_frames != 120 && dst->audio.source.capture.period_frames != 240 &&
-                dst->audio.source.capture.period_frames != 480 && dst->audio.source.capture.period_frames != 960 &&
-                dst->audio.source.capture.period_frames != 1920 && dst->audio.source.capture.period_frames != 2880)
-                return config_error_int("audio.period_frames", dst->audio.source.capture.period_frames, "must be 2.5/5/10/20/40/60ms at 48kHz");
-            if (require_positive_int("audio.opus_bitrate", dst->audio.source.encoder.opus.bitrate) != 0)
-                return -1;
-            if (dst->audio.source.encoder.opus.complexity < 0 || dst->audio.source.encoder.opus.complexity > 10)
-                return config_error_int("audio.opus_complexity", dst->audio.source.encoder.opus.complexity, "must be between 0 and 10");
-            if (dst->audio.source.encoder.opus.packet_loss_percent < 0 || dst->audio.source.encoder.opus.packet_loss_percent > 100)
-                return config_error_int("audio.opus_packet_loss_percent", dst->audio.source.encoder.opus.packet_loss_percent, "must be between 0 and 100");
-        }
-        if (dst->audio.source.bind_stream_index < 0 || dst->audio.source.bind_stream_index >= dst->video.stream_count)
-            return config_error_int("audio.bind_stream_index", dst->audio.source.bind_stream_index, "must reference a configured stream");
     }
     if (dst->policy.light_fps.enabled)
     {
@@ -1253,10 +1359,6 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         dst->audio.source.capture.sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
     if (dst->audio.source.capture.channels <= 0)
         dst->audio.source.capture.channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
-    if (dst->audio.source.encoder.channels <= 0)
-        dst->audio.source.encoder.channels = 1;
-    if (dst->audio.source.encoder.input_channel < 0)
-        dst->audio.source.encoder.input_channel = 0;
     if (dst->audio.source.capture.format == 0)
         dst->audio.source.capture.format = AUDIO_SAMPLE_FORMAT_S16LE;
     if (dst->audio.source.capture.period_frames <= 0)
@@ -1269,36 +1371,15 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         dst->audio.source.runtime.retry_ms = DEFAULT_AUDIO_RETRY_MS;
     if (dst->audio.source.runtime.max_consecutive_failures <= 0)
         dst->audio.source.runtime.max_consecutive_failures = DEFAULT_AUDIO_MAX_CONSECUTIVE_FAILURES;
-    if (dst->audio.source.encoder.codec == MEDIA_CODEC_NONE)
+    for (i = 0; i < dst->audio.source.encoder_group_count; ++i)
     {
-        dst->audio.source.encoder.codec = (dst->audio.source.encoder.g711.mode == G711_ENCODER_MODE_ULAW) ? MEDIA_CODEC_G711U : MEDIA_CODEC_G711A;
+        dst->audio.source.encoder_groups[i].encoder.opus.vbr =
+            dst->audio.source.encoder_groups[i].encoder.opus.vbr ? 1 : 0;
+        dst->audio.source.encoder_groups[i].encoder.opus.fec =
+            dst->audio.source.encoder_groups[i].encoder.opus.fec ? 1 : 0;
+        dst->audio.source.encoder_groups[i].encoder.opus.dtx =
+            dst->audio.source.encoder_groups[i].encoder.opus.dtx ? 1 : 0;
     }
-    if (dst->audio.source.encoder.codec != MEDIA_CODEC_G711A &&
-        dst->audio.source.encoder.codec != MEDIA_CODEC_G711U &&
-        dst->audio.source.encoder.codec != MEDIA_CODEC_AAC &&
-        dst->audio.source.encoder.codec != MEDIA_CODEC_OPUS)
-    {
-        dst->audio.source.encoder.codec = MEDIA_CODEC_G711A;
-    }
-    if (dst->audio.source.encoder.codec == MEDIA_CODEC_G711U)
-        dst->audio.source.encoder.g711.mode = G711_ENCODER_MODE_ULAW;
-    else if (dst->audio.source.encoder.codec == MEDIA_CODEC_G711A)
-        dst->audio.source.encoder.g711.mode = G711_ENCODER_MODE_ALAW;
-    if (dst->audio.source.encoder.aac.bitrate <= 0)
-        dst->audio.source.encoder.aac.bitrate = 32000;
-    if (dst->audio.source.encoder.aac.profile <= 0)
-        dst->audio.source.encoder.aac.profile = 2;
-    if (dst->audio.source.encoder.opus.bitrate <= 0)
-        dst->audio.source.encoder.opus.bitrate = 24000;
-    if (dst->audio.source.encoder.opus.complexity < 0 || dst->audio.source.encoder.opus.complexity > 10)
-        dst->audio.source.encoder.opus.complexity = 6;
-    dst->audio.source.encoder.opus.vbr = dst->audio.source.encoder.opus.vbr ? 1 : 0;
-    dst->audio.source.encoder.opus.fec = dst->audio.source.encoder.opus.fec ? 1 : 0;
-    dst->audio.source.encoder.opus.dtx = dst->audio.source.encoder.opus.dtx ? 1 : 0;
-    if (dst->audio.source.encoder.opus.packet_loss_percent < 0 || dst->audio.source.encoder.opus.packet_loss_percent > 100)
-        dst->audio.source.encoder.opus.packet_loss_percent = 10;
-    if (dst->audio.source.bind_stream_index < 0 || dst->audio.source.bind_stream_index >= MEDIA_GATEWAY_MAX_STREAMS)
-        dst->audio.source.bind_stream_index = DEFAULT_AUDIO_BIND_STREAM_INDEX;
 
     if (dst->video.stream_count > MEDIA_GATEWAY_MAX_STREAMS)
         dst->video.stream_count = MEDIA_GATEWAY_MAX_STREAMS;
@@ -1324,12 +1405,57 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
 }
 
 /**
- * @description: 为指定 stream 创建其启用的协议输出通道。
+ * @description: 按名称解析输出绑定的音频编码配置组。
+ * @param group 返回配置组地址；未绑定音频时返回 NULL。
+ * @param group_index 返回稳定的配置组下标；未绑定音频时返回 -1。
+ */
+static int resolve_audio_encoder_group(MediaGatewayCtx *ctx,
+                                       const char *group_name,
+                                       const MediaGatewayAudioEncoderGroupConfig **group,
+                                       int *group_index)
+{
+    int i = 0;
+
+    if (!ctx || !group || !group_index)
+    {
+        LOG_ERROR("resolve_audio_encoder_group failed: invalid argument ctx=%p group=%p index=%p",
+                  (void *)ctx,
+                  (void *)group,
+                  (void *)group_index);
+        return -1;
+    }
+    *group = NULL;
+    *group_index = -1;
+    if (!group_name || group_name[0] == '\0')
+        return 0;
+    if (!ctx->config.audio.source.enabled)
+    {
+        LOG_ERROR("audio output binding invalid: group=%s but audio capture is disabled", group_name);
+        return -1;
+    }
+
+    for (i = 0; i < ctx->config.audio.source.encoder_group_count; ++i)
+    {
+        if (strcmp(ctx->config.audio.source.encoder_groups[i].name, group_name) == 0)
+        {
+            *group = &ctx->config.audio.source.encoder_groups[i];
+            *group_index = i;
+            return 0;
+        }
+    }
+    LOG_ERROR("audio output binding invalid: encoder_group=%s was not configured", group_name);
+    return -1;
+}
+
+/**
+ * @description: 为指定 stream 创建其启用的协议输出通道，并解析音频编码组绑定。
  */
 static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
 {
     const MediaGatewayStreamConfig *s = &ctx->config.video.streams[stream_idx];
+    const MediaGatewayAudioEncoderGroupConfig *audio_group = NULL;
     MediaOutputConfig output_config = {0};
+    int audio_group_index = -1;
 
     if (!s->enabled)
         return 0;
@@ -1337,125 +1463,252 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
     /* 该路流是否开启了RTSP */
     if (s->enable_rtsp)
     {
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        if (ctx->output.count >= MEDIA_GATEWAY_MAX_OUTPUTS)
         {
             LOG_ERROR("setup_outputs_for_stream failed: RTSP output limit stream=%d count=%d max=%d",
                       stream_idx,
-                      ctx->output_count,
+                      ctx->output.count,
                       MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
         memset(&output_config, 0, sizeof(output_config));
+        if (resolve_audio_encoder_group(ctx, s->rtsp_audio.encoder_group, &audio_group, &audio_group_index) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: resolve RTSP audio binding stream=%d", stream_idx);
+            return -1;
+        }
         output_config.type = MEDIA_OUTPUT_TYPE_RTSP;
         output_config.protocol.rtsp = s->rtsp;
-        output_config.protocol.rtsp.feedback_holder = &ctx->network_feedback_holder;
-        if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
+        output_config.protocol.rtsp.feedback_holder = &ctx->output.network_feedback_holder;
+        if (audio_group)
         {
-            output_config.protocol.rtsp.audio_codec = ctx->config.audio.source.encoder.codec;
-            output_config.protocol.rtsp.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
-            output_config.protocol.rtsp.audio_channels = ctx->config.audio.source.encoder.channels;
-            output_config.protocol.rtsp.aac_profile = ctx->config.audio.source.encoder.aac.profile;
+            output_config.protocol.rtsp.audio_codec = audio_group->encoder.codec;
+            output_config.protocol.rtsp.audio_sample_rate = audio_group->encoder.sample_rate;
+            output_config.protocol.rtsp.audio_channels = audio_group->encoder.channels;
+            output_config.protocol.rtsp.aac_profile = audio_group->encoder.aac.profile;
         }
         else
         {
             output_config.protocol.rtsp.audio_codec = MEDIA_CODEC_NONE;
         }
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        if (media_output_setup(&ctx->output.channels[ctx->output.count].output, &output_config) != 0)
         {
             LOG_ERROR("setup_outputs_for_stream failed: setup RTSP stream=%d name=%s",
                       stream_idx,
                       s->name ? s->name : "unknown");
             return -1;
         }
-        ctx->output_stream_index[ctx->output_count] = stream_idx;
-        ctx->rtsp_output_index[stream_idx] = ctx->output_count;
-        ctx->output_count++;
+        ctx->output.channels[ctx->output.count].stream_index = stream_idx;
+        ctx->output.channels[ctx->output.count].audio_encoder_config_index = audio_group_index;
+        ctx->output.channels[ctx->output.count].audio_encoder_group_id =
+            (audio_group_index >= 0) ? ctx->audio.encoder_group_ids[audio_group_index] : AUDIO_ENCODER_INVALID_GROUP_ID;
+        ctx->video.streams[stream_idx].rtsp_output_index = ctx->output.count;
+        ctx->output.count++;
     }
 
     /* 该路流是否开启了RTMP */
     if (s->enable_rtmp)
     {
 #if defined(ENABLE_RTMP_OUTPUT)
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        if (ctx->output.count >= MEDIA_GATEWAY_MAX_OUTPUTS)
         {
             LOG_ERROR("setup_outputs_for_stream failed: RTMP output limit stream=%d count=%d max=%d",
                       stream_idx,
-                      ctx->output_count,
+                      ctx->output.count,
                       MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
         memset(&output_config, 0, sizeof(output_config));
+        if (resolve_audio_encoder_group(ctx, s->rtmp_audio.encoder_group, &audio_group, &audio_group_index) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: resolve RTMP audio binding stream=%d", stream_idx);
+            return -1;
+        }
         output_config.type = MEDIA_OUTPUT_TYPE_RTMP;
         output_config.protocol.rtmp = s->rtmp;
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        output_config.protocol.rtmp.audio_enabled = audio_group ? 1 : 0;
+        if (media_output_setup(&ctx->output.channels[ctx->output.count].output, &output_config) != 0)
         {
             LOG_ERROR("setup_outputs_for_stream failed: setup RTMP stream=%d name=%s",
                       stream_idx,
                       s->name ? s->name : "unknown");
             return -1;
         }
-        ctx->output_stream_index[ctx->output_count] = stream_idx;
-        ctx->output_count++;
+        ctx->output.channels[ctx->output.count].stream_index = stream_idx;
+        ctx->output.channels[ctx->output.count].audio_encoder_config_index = audio_group_index;
+        ctx->output.channels[ctx->output.count].audio_encoder_group_id =
+            (audio_group_index >= 0) ? ctx->audio.encoder_group_ids[audio_group_index] : AUDIO_ENCODER_INVALID_GROUP_ID;
+        ctx->output.count++;
 #endif
     }
     /* 该路流是否开启了GB28181 */
     if (s->enable_gb28181)
     {
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        if (ctx->output.count >= MEDIA_GATEWAY_MAX_OUTPUTS)
         {
             LOG_ERROR("setup_outputs_for_stream failed: GB28181 output limit stream=%d count=%d max=%d",
                       stream_idx,
-                      ctx->output_count,
+                      ctx->output.count,
                       MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
         memset(&output_config, 0, sizeof(output_config));
+        if (resolve_audio_encoder_group(ctx, s->gb28181_audio.encoder_group, &audio_group, &audio_group_index) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: resolve GB28181 audio binding stream=%d", stream_idx);
+            return -1;
+        }
         output_config.type = MEDIA_OUTPUT_TYPE_GB28181;
         output_config.protocol.gb28181 = s->gb28181;
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        if (media_output_setup(&ctx->output.channels[ctx->output.count].output, &output_config) != 0)
         {
             LOG_ERROR("setup_outputs_for_stream failed: setup GB28181 stream=%d name=%s",
                       stream_idx,
                       s->name ? s->name : "unknown");
             return -1;
         }
-        ctx->output_stream_index[ctx->output_count] = stream_idx;
-        ctx->gb28181_output_index[stream_idx] = ctx->output_count;
-        ctx->output_count++;
+        ctx->output.channels[ctx->output.count].stream_index = stream_idx;
+        ctx->output.channels[ctx->output.count].audio_encoder_config_index = audio_group_index;
+        ctx->output.channels[ctx->output.count].audio_encoder_group_id =
+            (audio_group_index >= 0) ? ctx->audio.encoder_group_ids[audio_group_index] : AUDIO_ENCODER_INVALID_GROUP_ID;
+        ctx->video.streams[stream_idx].gb28181_output_index = ctx->output.count;
+        ctx->output.count++;
     }
     /* 该路流是否开启了 WebRTC */
     if (s->enable_webrtc)
     {
-        if (ctx->output_count >= MEDIA_GATEWAY_MAX_OUTPUTS)
+        if (ctx->output.count >= MEDIA_GATEWAY_MAX_OUTPUTS)
         {
             LOG_ERROR("setup_outputs_for_stream failed: WebRTC output limit stream=%d count=%d max=%d",
                       stream_idx,
-                      ctx->output_count,
+                      ctx->output.count,
                       MEDIA_GATEWAY_MAX_OUTPUTS);
             return -1;
         }
         memset(&output_config, 0, sizeof(output_config));
+        if (resolve_audio_encoder_group(ctx, s->webrtc_audio.encoder_group, &audio_group, &audio_group_index) != 0)
+        {
+            LOG_ERROR("setup_outputs_for_stream failed: resolve WebRTC audio binding stream=%d", stream_idx);
+            return -1;
+        }
         output_config.type = MEDIA_OUTPUT_TYPE_WEBRTC;
         output_config.protocol.webrtc = s->webrtc;
-        if (ctx->config.audio.source.enabled && ctx->config.audio.source.bind_stream_index == stream_idx)
+        if (audio_group)
         {
-            output_config.protocol.webrtc.audio_codec = ctx->config.audio.source.encoder.codec;
-            output_config.protocol.webrtc.audio_sample_rate = ctx->config.audio.source.capture.sample_rate;
-            output_config.protocol.webrtc.audio_channels = ctx->config.audio.source.encoder.channels;
+            output_config.protocol.webrtc.audio_codec = audio_group->encoder.codec;
+            output_config.protocol.webrtc.audio_sample_rate = audio_group->encoder.sample_rate;
+            output_config.protocol.webrtc.audio_channels = audio_group->encoder.channels;
         }
         else
         {
             output_config.protocol.webrtc.audio_codec = MEDIA_CODEC_NONE;
         }
-        if (media_output_setup(&ctx->outputs[ctx->output_count], &output_config) != 0)
+        if (media_output_setup(&ctx->output.channels[ctx->output.count].output, &output_config) != 0)
         {
             LOG_ERROR("setup_outputs_for_stream failed: setup WebRTC stream=%d name=%s",
                       stream_idx,
                       s->name ? s->name : "unknown");
             return -1;
         }
-        ctx->output_stream_index[ctx->output_count] = stream_idx;
-        ctx->output_count++;
+        ctx->output.channels[ctx->output.count].stream_index = stream_idx;
+        ctx->output.channels[ctx->output.count].audio_encoder_config_index = audio_group_index;
+        ctx->output.channels[ctx->output.count].audio_encoder_group_id =
+            (audio_group_index >= 0) ? ctx->audio.encoder_group_ids[audio_group_index] : AUDIO_ENCODER_INVALID_GROUP_ID;
+        ctx->output.count++;
+    }
+    return 0;
+}
+
+/**
+ * @description: 返回启动校验日志使用的音频编码名称。
+ */
+static const char *media_gateway_audio_codec_name(MediaCodecType codec)
+{
+    switch (codec)
+    {
+    case MEDIA_CODEC_AAC:
+        return "aac";
+    case MEDIA_CODEC_G711A:
+        return "g711a";
+    case MEDIA_CODEC_G711U:
+        return "g711u";
+    case MEDIA_CODEC_OPUS:
+        return "opus";
+    case MEDIA_CODEC_NONE:
+        return "none";
+    default:
+        return "unknown";
+    }
+}
+
+/**
+ * @description: 在启动协议线程前，校验每个输出显式绑定的音频编码参数。
+ */
+static int validate_output_audio_capabilities(MediaGatewayCtx *ctx)
+{
+    MediaCodecType codec = MEDIA_CODEC_NONE;
+    const MediaGatewayAudioEncoderGroupConfig *group = NULL;
+    MediaOutput *output = NULL;
+    int group_index = -1;
+    int sample_rate = 0;
+    int channels = 0;
+    int ret = MEDIA_ERR;
+    int i = 0;
+
+    if (!ctx)
+    {
+        LOG_ERROR("validate_output_audio_capabilities failed: ctx is NULL");
+        return -1;
+    }
+    if (!ctx->config.audio.source.enabled)
+        return 0;
+
+    /* 未绑定编码组的输出只发送视频；已绑定输出按各自组参数独立校验。 */
+    for (i = 0; i < ctx->output.count; ++i)
+    {
+        group_index = ctx->output.channels[i].audio_encoder_config_index;
+        if (group_index < 0)
+            continue;
+        if (group_index >= ctx->config.audio.source.encoder_group_count)
+        {
+            LOG_ERROR("audio capability validation failed: output=%d invalid group_index=%d", i, group_index);
+            return -1;
+        }
+
+        group = &ctx->config.audio.source.encoder_groups[group_index];
+        if (ctx->output.channels[i].audio_encoder_group_id == AUDIO_ENCODER_INVALID_GROUP_ID)
+        {
+            LOG_ERROR("audio capability validation failed: output=%d group=%s has no runtime encoder",
+                      i,
+                      group->name);
+            return -1;
+        }
+        codec = group->encoder.codec;
+        sample_rate = group->encoder.sample_rate;
+        channels = group->encoder.channels;
+        output = &ctx->output.channels[i].output;
+        ret = media_output_validate_audio_format(output, codec, sample_rate, channels);
+        if (ret != MEDIA_OK)
+        {
+            LOG_ERROR("audio capability validation failed: output=%s type=%d stream=%d codec=%s(%d) rate=%d channels=%d ret=%d",
+                      output->config.name ? output->config.name : "unknown",
+                      output->type,
+                      ctx->output.channels[i].stream_index,
+                      media_gateway_audio_codec_name(codec),
+                      codec,
+                      sample_rate,
+                      channels,
+                      ret);
+            return -1;
+        }
+        LOG_INFO("audio capability validated: output=%s type=%d stream=%d encoder_group=%s codec=%s rate=%d channels=%d",
+                 output->config.name ? output->config.name : "unknown",
+                 output->type,
+                 ctx->output.channels[i].stream_index,
+                 group->name,
+                 media_gateway_audio_codec_name(codec),
+                 sample_rate,
+                 channels);
     }
     return 0;
 }
@@ -1469,7 +1722,7 @@ static int setup_outputs(MediaGatewayCtx *ctx)
 
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        if (!ctx->stream_enabled[i])
+        if (!ctx->video.streams[i].enabled)
             continue;
         /* 为stream创建每个协议对应的输出通道 */
         if (setup_outputs_for_stream(ctx, i) != 0)
@@ -1480,9 +1733,14 @@ static int setup_outputs(MediaGatewayCtx *ctx)
             return -1;
         }
     }
-    if (ctx->output_count <= 0)
+    if (ctx->output.count <= 0)
     {
         LOG_ERROR("setup_outputs failed: no enabled output configured");
+        return -1;
+    }
+    if (validate_output_audio_capabilities(ctx) != 0)
+    {
+        LOG_ERROR("setup_outputs failed: audio codec is incompatible with one or more bound outputs");
         return -1;
     }
     return 0;
@@ -1495,14 +1753,14 @@ static int start_outputs(MediaGatewayCtx *ctx)
 {
     int i = 0;
 
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
-        if (media_output_start(&ctx->outputs[i]) != 0)
+        if (media_output_start(&ctx->output.channels[i].output) != 0)
         {
             LOG_ERROR("start_outputs failed: idx=%d name=%s stream=%d",
                       i,
-                      ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
-                      ctx->output_stream_index[i]);
+                      ctx->output.channels[i].output.config.name ? ctx->output.channels[i].output.config.name : "unknown",
+                      ctx->output.channels[i].stream_index);
             return -1;
         }
     }
@@ -1516,8 +1774,8 @@ static void stop_outputs(MediaGatewayCtx *ctx)
 {
     int i = 0;
 
-    for (i = 0; i < ctx->output_count; ++i)
-        media_output_stop(&ctx->outputs[i]);
+    for (i = 0; i < ctx->output.count; ++i)
+        media_output_stop(&ctx->output.channels[i].output);
 }
 
 /**
@@ -1528,13 +1786,13 @@ static void deinit_outputs(MediaGatewayCtx *ctx)
     int i = 0;
     void *impl = NULL;
 
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
-        impl = ctx->outputs[i].impl;
-        media_output_deinit(&ctx->outputs[i]);
+        impl = ctx->output.channels[i].output.impl;
+        media_output_deinit(&ctx->output.channels[i].output);
         free(impl);
     }
-    ctx->output_count = 0;
+    ctx->output.count = 0;
 }
 
 /**
@@ -1573,12 +1831,14 @@ static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *con
     int i = 0;
 
     memset(ctx, 0, sizeof(*ctx));
-    if (pthread_mutex_init(&ctx->stats_lock, NULL) != 0)
+    for (i = 0; i < MEDIA_GATEWAY_MAX_OUTPUTS; ++i)
+        ctx->output.channels[i].audio_encoder_config_index = -1;
+    if (pthread_mutex_init(&ctx->metrics.lock, NULL) != 0)
     {
         LOG_ERROR("failed: pthread_mutex_init stats_lock");
         return -1;
     }
-    ctx->stats_lock_ready = 1;
+    ctx->metrics.lock_ready = 1;
     if (fill_default_config(&ctx->config, config) != 0)
     {
         LOG_ERROR("failed: invalid config");
@@ -1586,41 +1846,41 @@ static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *con
     }
     log_set_level((LogLevel)ctx->config.system.log.level);
     log_effective_config(&ctx->config);
-    ctx->network_feedback_holder.callback = media_gateway_handle_output_network_feedback;
-    ctx->network_feedback_holder.userdata = ctx;
+    ctx->output.network_feedback_holder.callback = media_gateway_handle_output_network_feedback;
+    ctx->output.network_feedback_holder.userdata = ctx;
     if (ctx->config.video.stream_count > 0)
     {
-        ctx->light_fps_state.current_fps = ctx->config.video.streams[0].fps;
-        ctx->light_fps_state.target_fps = ctx->config.video.streams[0].fps;
-        ctx->light_fps_state.last_logged_target_fps = ctx->config.video.streams[0].fps;
-        ctx->adaptive_policy_state.output.target_fps = ctx->config.video.streams[0].fps;
+        ctx->policy.light_fps.current_fps = ctx->config.video.streams[0].fps;
+        ctx->policy.light_fps.target_fps = ctx->config.video.streams[0].fps;
+        ctx->policy.light_fps.last_logged_target_fps = ctx->config.video.streams[0].fps;
+        ctx->policy.adaptive.output.target_fps = ctx->config.video.streams[0].fps;
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        ctx->rtsp_output_index[i] = -1;
-        ctx->gb28181_output_index[i] = -1;
+        ctx->video.streams[i].rtsp_output_index = -1;
+        ctx->video.streams[i].gb28181_output_index = -1;
         if (i < ctx->config.video.stream_count)
         {
-            ctx->adaptive_policy_state.encode_params.base[i].fps = ctx->config.video.streams[i].fps;
-            ctx->adaptive_policy_state.encode_params.base[i].bitrate = ctx->config.video.streams[i].bitrate;
-            ctx->adaptive_policy_state.encode_params.base[i].gop = ctx->config.video.streams[i].gop;
-            ctx->adaptive_policy_state.encode_params.base[i].rc_mode = ctx->config.video.streams[i].rc_mode;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_init = ctx->config.video.streams[i].qp_init;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_min = ctx->config.video.streams[i].qp_min;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_max = ctx->config.video.streams[i].qp_max;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_min_i = ctx->config.video.streams[i].qp_min_i;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_max_i = ctx->config.video.streams[i].qp_max_i;
-            ctx->adaptive_policy_state.encode_params.base[i].qp_max_step = ctx->config.video.streams[i].qp_max_step;
-            ctx->adaptive_policy_state.encode_params.target[i].fps = ctx->config.video.streams[i].fps;
-            ctx->adaptive_policy_state.encode_params.target[i].bitrate = ctx->config.video.streams[i].bitrate;
-            ctx->adaptive_policy_state.encode_params.target[i].gop = ctx->config.video.streams[i].gop;
-            ctx->adaptive_policy_state.encode_params.target[i].rc_mode = ctx->config.video.streams[i].rc_mode;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_init = ctx->config.video.streams[i].qp_init;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_min = ctx->config.video.streams[i].qp_min;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_max = ctx->config.video.streams[i].qp_max;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_min_i = ctx->config.video.streams[i].qp_min_i;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_max_i = ctx->config.video.streams[i].qp_max_i;
-            ctx->adaptive_policy_state.encode_params.target[i].qp_max_step = ctx->config.video.streams[i].qp_max_step;
+            ctx->policy.adaptive.encode_params.base[i].fps = ctx->config.video.streams[i].fps;
+            ctx->policy.adaptive.encode_params.base[i].bitrate = ctx->config.video.streams[i].bitrate;
+            ctx->policy.adaptive.encode_params.base[i].gop = ctx->config.video.streams[i].gop;
+            ctx->policy.adaptive.encode_params.base[i].rc_mode = ctx->config.video.streams[i].rc_mode;
+            ctx->policy.adaptive.encode_params.base[i].qp_init = ctx->config.video.streams[i].qp_init;
+            ctx->policy.adaptive.encode_params.base[i].qp_min = ctx->config.video.streams[i].qp_min;
+            ctx->policy.adaptive.encode_params.base[i].qp_max = ctx->config.video.streams[i].qp_max;
+            ctx->policy.adaptive.encode_params.base[i].qp_min_i = ctx->config.video.streams[i].qp_min_i;
+            ctx->policy.adaptive.encode_params.base[i].qp_max_i = ctx->config.video.streams[i].qp_max_i;
+            ctx->policy.adaptive.encode_params.base[i].qp_max_step = ctx->config.video.streams[i].qp_max_step;
+            ctx->policy.adaptive.encode_params.target[i].fps = ctx->config.video.streams[i].fps;
+            ctx->policy.adaptive.encode_params.target[i].bitrate = ctx->config.video.streams[i].bitrate;
+            ctx->policy.adaptive.encode_params.target[i].gop = ctx->config.video.streams[i].gop;
+            ctx->policy.adaptive.encode_params.target[i].rc_mode = ctx->config.video.streams[i].rc_mode;
+            ctx->policy.adaptive.encode_params.target[i].qp_init = ctx->config.video.streams[i].qp_init;
+            ctx->policy.adaptive.encode_params.target[i].qp_min = ctx->config.video.streams[i].qp_min;
+            ctx->policy.adaptive.encode_params.target[i].qp_max = ctx->config.video.streams[i].qp_max;
+            ctx->policy.adaptive.encode_params.target[i].qp_min_i = ctx->config.video.streams[i].qp_min_i;
+            ctx->policy.adaptive.encode_params.target[i].qp_max_i = ctx->config.video.streams[i].qp_max_i;
+            ctx->policy.adaptive.encode_params.target[i].qp_max_step = ctx->config.video.streams[i].qp_max_step;
         }
     }
     return 0;
@@ -1665,7 +1925,7 @@ static int init_gateway_isp(MediaGatewayCtx *ctx)
     if (isp_config.sensor.height <= 0)
         isp_config.sensor.height = ctx->config.input.capture_sources[source_idx].height;
 
-    if (isp_controller_init(&ctx->isp, &isp_config) != 0)
+    if (isp_controller_init(&ctx->video.isp, &isp_config) != 0)
     {
         LOG_ERROR("init ISP failed: sensor=%s iq_dir=%s fallback=%d",
                   safe_str(isp_config.sensor.sensor_name, "auto"),
@@ -1674,8 +1934,8 @@ static int init_gateway_isp(MediaGatewayCtx *ctx)
         return -1;
     }
 
-    ctx->isp_ready = isp_controller_is_started(&ctx->isp);
-    if (ctx->config.input.isp.enabled && !ctx->isp_ready)
+    ctx->video.isp_ready = isp_controller_is_started(&ctx->video.isp);
+    if (ctx->config.input.isp.enabled && !ctx->video.isp_ready)
     {
         LOG_WARN("[ISP] requested but not active; gateway continues with plain V4L2 capture");
     }
@@ -1703,7 +1963,7 @@ static int init_gateway_captures(MediaGatewayCtx *ctx)
         capture_config.height = source->height;
         capture_config.pixelformat = source->pixelformat;
         capture_config.buffer_count = source->buffer_count;
-        if (v4l2_capture_init_with_config(&ctx->captures[i], &capture_config) < 0)
+        if (v4l2_capture_init_with_config(&ctx->video.captures[i].capture, &capture_config) < 0)
         {
             LOG_ERROR("init capture source=%d name=%s device=%s",
                       i,
@@ -1711,10 +1971,10 @@ static int init_gateway_captures(MediaGatewayCtx *ctx)
                       source->device_path ? source->device_path : "unknown");
             return -1;
         }
-        ctx->capture_ready[i] = 1;
-        ctx->config.input.capture_sources[i].width = ctx->captures[i].format.width;
-        ctx->config.input.capture_sources[i].height = ctx->captures[i].format.height;
-        ctx->config.input.capture_sources[i].pixelformat = ctx->captures[i].format.pixelformat;
+        ctx->video.captures[i].ready = 1;
+        ctx->config.input.capture_sources[i].width = ctx->video.captures[i].capture.format.width;
+        ctx->config.input.capture_sources[i].height = ctx->video.captures[i].capture.format.height;
+        ctx->config.input.capture_sources[i].pixelformat = ctx->video.captures[i].capture.format.pixelformat;
     }
     return 0;
 }
@@ -1732,7 +1992,7 @@ static int init_gateway_video_encoders(MediaGatewayCtx *ctx)
         if (!ctx->config.video.streams[i].enabled)
             continue;
         source_idx = ctx->config.video.streams[i].source_index;
-        if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count || !ctx->capture_ready[source_idx])
+        if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count || !ctx->video.captures[source_idx].ready)
         {
             LOG_ERROR("stream=%d name=%s capture source not ready index=%d",
                       i,
@@ -1747,20 +2007,50 @@ static int init_gateway_video_encoders(MediaGatewayCtx *ctx)
                       ctx->config.video.streams[i].name ? ctx->config.video.streams[i].name : "unknown");
             return -1;
         }
-        ctx->stream_enabled[i] = 1;
+        ctx->video.streams[i].enabled = 1;
     }
     return 0;
 }
 
 /**
- * @description: 初始化音频采集设备和配置选择的音频编码器。
+ * @description: 判断具名编码配置是否至少被一个已启用协议输出引用。
+ */
+static int audio_encoder_group_is_referenced(const MediaGatewayConfig *config,
+                                             const char *group_name)
+{
+    const MediaGatewayStreamConfig *stream = NULL;
+    int i = 0;
+
+    if (!config || !group_name || group_name[0] == '\0')
+        return 0;
+    for (i = 0; i < config->video.stream_count; ++i)
+    {
+        stream = &config->video.streams[i];
+        if (!stream->enabled)
+            continue;
+        if ((stream->enable_rtsp && strcmp(stream->rtsp_audio.encoder_group, group_name) == 0) ||
+            (stream->enable_rtmp && strcmp(stream->rtmp_audio.encoder_group, group_name) == 0) ||
+            (stream->enable_gb28181 && strcmp(stream->gb28181_audio.encoder_group, group_name) == 0) ||
+            (stream->enable_webrtc && strcmp(stream->webrtc_audio.encoder_group, group_name) == 0))
+            return 1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 初始化音频采集设备，并建立输出实际引用的去重编码组。
  */
 static int init_gateway_audio(MediaGatewayCtx *ctx)
 {
     AudioCaptureConfig audio_capture_config = {0};
-    G711EncoderConfig g711_config = {0};
-    AacEncoderConfig aac_config = {0};
-    OpusEncoderConfig opus_config = {0};
+    AudioEncoderParams encoder_params = {0};
+    const MediaGatewayAudioEncoderGroupConfig *group = NULL;
+    MediaGatewayAudioEncoderGroupStats *group_stats = NULL;
+    AudioEncoderRuntimeGroupId group_id = AUDIO_ENCODER_INVALID_GROUP_ID;
+    size_t unique_group_count = 0;
+    size_t stats_index = 0;
+    int reused = 0;
+    int i = 0;
 
     if (ctx->config.audio.source.enabled)
     {
@@ -1770,7 +2060,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         audio_capture_config.format = ctx->config.audio.source.capture.format;
         audio_capture_config.period_frames = ctx->config.audio.source.capture.period_frames;
         audio_capture_config.buffer_periods = ctx->config.audio.source.capture.buffer_periods;
-        if (audio_capture_init(&ctx->audio_capture, &audio_capture_config) != 0)
+        if (audio_capture_init(&ctx->audio.capture, &audio_capture_config) != 0)
         {
             LOG_ERROR("init audio capture failed: device=%s rate=%d channels=%d",
                       ctx->config.audio.source.capture.device_name ? ctx->config.audio.source.capture.device_name : "unknown",
@@ -1778,62 +2068,143 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
                       ctx->config.audio.source.capture.channels);
             return -1;
         }
-        ctx->audio_capture_ready = 1; /* 音频采集设备初始化成功 */
-        ctx->config.audio.source.capture.sample_rate = ctx->audio_capture.config.sample_rate;
-        ctx->config.audio.source.capture.channels = ctx->audio_capture.config.channels;
-        ctx->config.audio.source.capture.period_frames = ctx->audio_capture.config.period_frames;
+        ctx->audio.capture_ready = 1; /* 音频采集设备初始化成功 */
+        ctx->config.audio.source.capture.sample_rate = ctx->audio.capture.config.sample_rate;
+        ctx->config.audio.source.capture.channels = ctx->audio.capture.config.channels;
+        ctx->config.audio.source.capture.period_frames = ctx->audio.capture.config.period_frames;
 
-        if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
+        if (audio_encoder_manager_create(&ctx->audio.encoder_manager) != 0)
         {
-            memset(&aac_config, 0, sizeof(aac_config));
-            aac_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            aac_config.channels = ctx->config.audio.source.encoder.channels;
-            aac_config.bitrate = ctx->config.audio.source.encoder.aac.bitrate;
-            aac_config.profile = ctx->config.audio.source.encoder.aac.profile;
-            aac_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
-            if (aac_encoder_init(&ctx->aac_encoder, &aac_config) != 0)
+            LOG_ERROR("init_gateway_audio failed: create audio encoder manager");
+            return -1;
+        }
+
+        /* 每个配置名先注册到 manager；相同参数会得到相同的运行时 group_id。 */
+        for (i = 0; i < ctx->config.audio.source.encoder_group_count; ++i)
+        {
+            group = &ctx->config.audio.source.encoder_groups[i];
+            if (!audio_encoder_group_is_referenced(&ctx->config, group->name))
             {
-                LOG_ERROR("init aac encoder failed");
+                LOG_INFO("audio encoder config skipped: index=%d name=%s reason=unreferenced", i, group->name);
+                continue;
+            }
+            if (group->encoder.channels != ctx->audio.capture.config.channels &&
+                !(ctx->audio.capture.config.channels == 2 && group->encoder.channels == 1))
+            {
+                LOG_ERROR("init_gateway_audio failed: group=%s unsupported negotiated channel conversion capture=%d encoder=%d",
+                          group->name,
+                          ctx->audio.capture.config.channels,
+                          group->encoder.channels);
                 return -1;
             }
-        }
-        else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
-        {
-            opus_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            opus_config.channels = ctx->config.audio.source.encoder.channels;
-            opus_config.bitrate = ctx->config.audio.source.encoder.opus.bitrate;
-            opus_config.complexity = ctx->config.audio.source.encoder.opus.complexity;
-            opus_config.enable_vbr = ctx->config.audio.source.encoder.opus.vbr;
-            opus_config.enable_fec = ctx->config.audio.source.encoder.opus.fec;
-            opus_config.enable_dtx = ctx->config.audio.source.encoder.opus.dtx;
-            opus_config.packet_loss_percent = ctx->config.audio.source.encoder.opus.packet_loss_percent;
-            if (opus_audio_encoder_init(&ctx->opus_encoder, &opus_config) != 0)
+            if (ctx->audio.capture.config.sample_rate < group->encoder.sample_rate ||
+                ctx->audio.capture.config.sample_rate % group->encoder.sample_rate != 0)
             {
-                LOG_ERROR("init opus encoder failed");
+                LOG_ERROR("init_gateway_audio failed: group=%s unsupported negotiated rate conversion capture=%d encoder=%d",
+                          group->name,
+                          ctx->audio.capture.config.sample_rate,
+                          group->encoder.sample_rate);
                 return -1;
             }
-        }
-        else
-        {
-            memset(&g711_config, 0, sizeof(g711_config));
-            g711_config.mode = ctx->config.audio.source.encoder.g711.mode;
-            g711_config.sample_rate = ctx->audio_capture.config.sample_rate;
-            g711_config.channels = ctx->config.audio.source.encoder.channels;
-            g711_config.max_samples_per_frame = ctx->audio_capture.config.period_frames;
-            if (g711_encoder_init(&ctx->audio_encoder, &g711_config) != 0)
+            if (ctx->audio.capture.config.period_frames %
+                    (ctx->audio.capture.config.sample_rate / group->encoder.sample_rate) != 0)
             {
-                LOG_ERROR("init g711 encoder failed");
+                LOG_ERROR("init_gateway_audio failed: group=%s period_frames=%d is not aligned to negotiated rates capture=%d encoder=%d",
+                          group->name,
+                          ctx->audio.capture.config.period_frames,
+                          ctx->audio.capture.config.sample_rate,
+                          group->encoder.sample_rate);
                 return -1;
             }
+            if (group->encoder.channels == 1 &&
+                (group->encoder.input_channel < 0 ||
+                 group->encoder.input_channel >= ctx->audio.capture.config.channels))
+            {
+                LOG_ERROR("init_gateway_audio failed: group=%s input_channel=%d capture_channels=%d",
+                          group->name,
+                          group->encoder.input_channel,
+                          ctx->audio.capture.config.channels);
+                return -1;
+            }
+            memset(&encoder_params, 0, sizeof(encoder_params));
+            encoder_params.codec = group->encoder.codec;
+            encoder_params.sample_rate = group->encoder.sample_rate;
+            encoder_params.channels = group->encoder.channels;
+            encoder_params.max_samples_per_frame =
+                ctx->audio.capture.config.period_frames /
+                (ctx->audio.capture.config.sample_rate / group->encoder.sample_rate);
+            encoder_params.input_channel = group->encoder.input_channel;
+            if (group->encoder.codec == MEDIA_CODEC_AAC)
+            {
+                encoder_params.codec_params.aac.bitrate = group->encoder.aac.bitrate;
+                encoder_params.codec_params.aac.profile = group->encoder.aac.profile;
+            }
+            else if (group->encoder.codec == MEDIA_CODEC_OPUS)
+            {
+                encoder_params.codec_params.opus.bitrate = group->encoder.opus.bitrate;
+                encoder_params.codec_params.opus.complexity = group->encoder.opus.complexity;
+                encoder_params.codec_params.opus.enable_vbr = group->encoder.opus.vbr;
+                encoder_params.codec_params.opus.enable_fec = group->encoder.opus.fec;
+                encoder_params.codec_params.opus.enable_dtx = group->encoder.opus.dtx;
+                encoder_params.codec_params.opus.packet_loss_percent = group->encoder.opus.packet_loss_percent;
+            }
+            group_id = AUDIO_ENCODER_INVALID_GROUP_ID;
+            reused = 0;
+            if (audio_encoder_manager_register(ctx->audio.encoder_manager,
+                                               &encoder_params,
+                                               &group_id,
+                                               &reused) != 0)
+            {
+                LOG_ERROR("init_gateway_audio failed: register group index=%d name=%s codec=%d",
+                          i,
+                          group->name,
+                          group->encoder.codec);
+                return -1;
+            }
+            ctx->audio.encoder_group_ids[i] = group_id;
+            stats_index = (size_t)(group_id - 1);
+            if (stats_index >= MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS)
+            {
+                LOG_ERROR("init_gateway_audio failed: runtime group id out of range group_id=%llu max=%d",
+                          (unsigned long long)group_id,
+                          MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS);
+                return -1;
+            }
+            if (!reused)
+            {
+                group_stats = &ctx->metrics.throughput.audio_groups[stats_index];
+                memset(group_stats, 0, sizeof(*group_stats));
+                snprintf(group_stats->name, sizeof(group_stats->name), "%s", group->name);
+                group_stats->group_id = group_id;
+                group_stats->codec = group->encoder.codec;
+                group_stats->sample_rate = group->encoder.sample_rate;
+                group_stats->channels = group->encoder.channels;
+            }
+            LOG_INFO("audio encoder config registered: index=%d name=%s runtime_group=%llu reused=%d codec=%d rate=%d channels=%d input_channel=%d",
+                     i,
+                     group->name,
+                     (unsigned long long)group_id,
+                     reused,
+                     group->encoder.codec,
+                     group->encoder.sample_rate,
+                     group->encoder.channels,
+                     group->encoder.input_channel);
         }
-        ctx->audio_encoder_ready = 1; /* 音频编码器初始化成功 */
-        LOG_INFO("audio pipeline configured: device=%s rate=%d capture_channels=%d encoder_channels=%d input_channel=%d period_frames=%d",
-                 ctx->audio_capture.config.device_name ? ctx->audio_capture.config.device_name : "unknown",
-                 ctx->audio_capture.config.sample_rate,
-                 ctx->audio_capture.config.channels,
-                 ctx->config.audio.source.encoder.channels,
-                 ctx->config.audio.source.encoder.input_channel,
-                 ctx->audio_capture.config.period_frames);
+        unique_group_count = audio_encoder_manager_group_count(ctx->audio.encoder_manager);
+        if (unique_group_count == 0)
+        {
+            LOG_ERROR("init_gateway_audio failed: no runtime audio encoder group");
+            return -1;
+        }
+        ctx->metrics.throughput.audio_group_count = unique_group_count;
+        ctx->audio.encoder_ready = 1;
+        LOG_INFO("audio pipeline configured: device=%s rate=%d capture_channels=%d period_frames=%d configured_groups=%d unique_groups=%zu",
+                 ctx->audio.capture.config.device_name ? ctx->audio.capture.config.device_name : "unknown",
+                 ctx->audio.capture.config.sample_rate,
+                 ctx->audio.capture.config.channels,
+                 ctx->audio.capture.config.period_frames,
+                 ctx->config.audio.source.encoder_group_count,
+                 unique_group_count);
     }
     return 0;
 }
@@ -1882,19 +2253,19 @@ static int init_gateway_record_file(MediaGatewayCtx *ctx)
 static void init_gateway_runtime_stats(MediaGatewayCtx *ctx)
 {
     ctx->running = 1;
-    ctx->stats.last_ts_us = media_gateway_get_now_us();
-    ctx->bench.enable = ctx->config.system.bench.enabled ? 1 : 0;
-    ctx->bench.sample_every = ctx->config.system.bench.sample_every;
-    ctx->bench.print_interval_sec = ctx->config.system.bench.print_interval_sec;
-    if (ctx->bench.sample_every <= 0)
-        ctx->bench.sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
-    if (ctx->bench.print_interval_sec <= 0)
-        ctx->bench.print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
-    ctx->bench.last_ts_us = ctx->stats.last_ts_us;
+    ctx->metrics.throughput.last_ts_us = media_gateway_get_now_us();
+    ctx->metrics.benchmark.enable = ctx->config.system.bench.enabled ? 1 : 0;
+    ctx->metrics.benchmark.sample_every = ctx->config.system.bench.sample_every;
+    ctx->metrics.benchmark.print_interval_sec = ctx->config.system.bench.print_interval_sec;
+    if (ctx->metrics.benchmark.sample_every <= 0)
+        ctx->metrics.benchmark.sample_every = DEFAULT_BENCH_SAMPLE_EVERY;
+    if (ctx->metrics.benchmark.print_interval_sec <= 0)
+        ctx->metrics.benchmark.print_interval_sec = DEFAULT_BENCH_PRINT_INTERVAL_SEC;
+    ctx->metrics.benchmark.last_ts_us = ctx->metrics.throughput.last_ts_us;
     LOG_INFO("[CFG] bench enable=%d sample_every=%d print_interval_sec=%d",
-             ctx->bench.enable,
-             ctx->bench.sample_every,
-             ctx->bench.print_interval_sec);
+             ctx->metrics.benchmark.enable,
+             ctx->metrics.benchmark.sample_every,
+             ctx->metrics.benchmark.print_interval_sec);
     media_gateway_bench_reset_window(ctx);
 }
 
@@ -1968,10 +2339,10 @@ static int start_run_frame_sources(MediaGatewayCtx *ctx, MediaGatewayRunResource
 
     for (source_idx = 0; source_idx < ctx->config.input.capture_source_count; ++source_idx)
     {
-        if (!ctx->capture_ready[source_idx])
+        if (!ctx->video.captures[source_idx].ready)
             continue;
         if (media_frame_source_init(&res->frame_sources[source_idx],
-                                    &ctx->captures[source_idx],
+                                    &ctx->video.captures[source_idx].capture,
                                     ctx->config.input.capture_sources[source_idx].name,
                                     ctx->config.system.runtime.capture_retry_ms,
                                     ctx->config.system.runtime.max_consecutive_failures,
@@ -1997,10 +2368,10 @@ static int start_run_frame_sources(MediaGatewayCtx *ctx, MediaGatewayRunResource
  */
 static int start_run_audio_source(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
 {
-    if (ctx->config.audio.source.enabled && ctx->audio_capture_ready)
+    if (ctx->config.audio.source.enabled && ctx->audio.capture_ready)
     {
         if (audio_frame_source_init(&res->audio_source,
-                                    &ctx->audio_capture,
+                                    &ctx->audio.capture,
                                     ctx->config.audio.source.runtime.source_slots,
                                     ctx->config.audio.source.runtime.retry_ms,
                                     ctx->config.audio.source.runtime.max_consecutive_failures) != 0)
@@ -2198,7 +2569,7 @@ static void submit_pending_encoder_control_commands(MediaGatewayCtx *ctx,
         bit = 1U << stream_idx;
         stream_cfg = &ctx->config.video.streams[stream_idx];
         if (!stream_cfg->enabled || stream_cfg->source_index != 0 ||
-            !ctx->encoder_ready[stream_idx])
+            !ctx->video.streams[stream_idx].encoder_ready)
             continue;
         /*
          * retry_mask 为 0 表示首次投递全部相关编码器；非 0 时只投递上轮
@@ -2209,7 +2580,7 @@ static void submit_pending_encoder_control_commands(MediaGatewayCtx *ctx,
 
         params = NULL;
         if (ctx->config.policy.network_encode.enabled)
-            params = &ctx->adaptive_policy_state.encode_params.target[stream_idx];
+            params = &ctx->policy.adaptive.encode_params.target[stream_idx];
         if (params && params->fps > 0 && params->bitrate > 0 && params->gop > 0)
         {
             submit_ret = submit_encoder_params_command(res,
@@ -2290,10 +2661,10 @@ static void commit_video_control_transition(MediaGatewayCtx *ctx,
      * 此处提交的是“整条受控链路已经一致”的 FPS。Sensor 和各编码器的
      * 实际硬件配置此前已由各自 worker 完成。
      */
-    old_fps = ctx->light_fps_state.current_fps;
-    ctx->light_fps_state.current_fps = transition->target_fps;
+    old_fps = ctx->policy.light_fps.current_fps;
+    ctx->policy.light_fps.current_fps = transition->target_fps;
     if (old_fps != transition->target_fps)
-        ctx->light_fps_state.last_switch_ts_us = media_gateway_get_now_us();
+        ctx->policy.light_fps.last_switch_ts_us = media_gateway_get_now_us();
     LOG_WARN("[VIDEO_CONTROL] async transition completed old=%d new=%d request=%" PRIu64,
              old_fps,
              transition->target_fps,
@@ -2638,7 +3009,7 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
     target_fps = adaptive_effective_target_fps(ctx);
     /* 判断根据网络反馈得到的编码参数是否与目前的一致，如果一致则不需要进行配置  */
     need_params_apply = adaptive_target_params_need_apply(ctx);
-    need_sensor_fps = (target_fps != ctx->light_fps_state.current_fps);
+    need_sensor_fps = (target_fps != ctx->policy.light_fps.current_fps);
     
     if (transition->phase != MEDIA_GATEWAY_FPS_TRANSITION_IDLE ||
         (!need_sensor_fps && !need_params_apply) ||
@@ -2671,7 +3042,7 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
             commit_video_control_transition(ctx, res);
         }
         LOG_WARN("[VIDEO_CONTROL] async encoder params transition started current=%d target=%d request=%" PRIu64,
-                 ctx->light_fps_state.current_fps,
+                 ctx->policy.light_fps.current_fps,
                  transition->target_fps,
                  transition->request_id);
         return;
@@ -2697,7 +3068,7 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
     /* Sensor 命令成功入队，状态机转入等待采集线程结果阶段。 */
     transition->phase = MEDIA_GATEWAY_FPS_TRANSITION_SENSOR_PENDING;
     LOG_WARN("[VIDEO_CONTROL] async transition started current=%d target=%d request=%" PRIu64,
-             ctx->light_fps_state.current_fps,
+             ctx->policy.light_fps.current_fps,
              transition->target_fps,
              transition->request_id);
 }
@@ -2752,9 +3123,9 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
     /* 执行运行期自适应控制：策略目标刷新、输出 pacer 下发、视频硬件控制下发。 */
     media_gateway_run_adaptive_control_once(ctx, res);
 
-    pthread_mutex_lock(&ctx->stats_lock);
+    pthread_mutex_lock(&ctx->metrics.lock);
     media_gateway_log_throughput_if_due(ctx);
-    pthread_mutex_unlock(&ctx->stats_lock);
+    pthread_mutex_unlock(&ctx->metrics.lock);
     /* 媒体线程已经事件驱动，主循环只需短暂退避，避免控制状态检查空转占满 CPU。 */
     usleep(1000);
     return 0;
@@ -2901,49 +3272,45 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
         fclose(ctx->record_fp);
         ctx->record_fp = NULL;
     }
-    if (ctx->audio_encoder_ready)
+    if (ctx->audio.encoder_manager)
     {
-        if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
-            aac_encoder_deinit(&ctx->aac_encoder);
-        else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
-            opus_audio_encoder_deinit(&ctx->opus_encoder);
-        else
-            g711_encoder_deinit(&ctx->audio_encoder);
-        ctx->audio_encoder_ready = 0;
+        audio_encoder_manager_destroy(ctx->audio.encoder_manager);
+        ctx->audio.encoder_manager = NULL;
+        ctx->audio.encoder_ready = 0;
     }
-    if (ctx->audio_capture_ready)
+    if (ctx->audio.capture_ready)
     {
-        audio_capture_deinit(&ctx->audio_capture);
-        ctx->audio_capture_ready = 0;
+        audio_capture_deinit(&ctx->audio.capture);
+        ctx->audio.capture_ready = 0;
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        if (ctx->encoder_ready[i])
+        if (ctx->video.streams[i].encoder_ready)
         {
-            mpp_encoder_deinit(&ctx->encoders[i]);
-            ctx->encoder_ready[i] = 0;
+            mpp_encoder_deinit(&ctx->video.streams[i].encoder);
+            ctx->video.streams[i].encoder_ready = 0;
         }
-        free(ctx->scaled_frame_cache[i]);
-        ctx->scaled_frame_cache[i] = NULL;
-        ctx->scaled_frame_cache_size[i] = 0;
+        free(ctx->video.streams[i].scaled_frame_cache);
+        ctx->video.streams[i].scaled_frame_cache = NULL;
+        ctx->video.streams[i].scaled_frame_cache_size = 0;
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
     {
-        if (ctx->capture_ready[i])
+        if (ctx->video.captures[i].ready)
         {
-            v4l2_capture_deinit(&ctx->captures[i]);
-            ctx->capture_ready[i] = 0;
+            v4l2_capture_deinit(&ctx->video.captures[i].capture);
+            ctx->video.captures[i].ready = 0;
         }
     }
-    if (ctx->isp_ready || ctx->isp.initialized || ctx->isp.status_lock_ready)
+    if (ctx->video.isp_ready || ctx->video.isp.initialized || ctx->video.isp.status_lock_ready)
     {
-        isp_controller_deinit(&ctx->isp);
-        ctx->isp_ready = 0;
+        isp_controller_deinit(&ctx->video.isp);
+        ctx->video.isp_ready = 0;
     }
-    if (ctx->stats_lock_ready)
+    if (ctx->metrics.lock_ready)
     {
-        pthread_mutex_destroy(&ctx->stats_lock);
-        ctx->stats_lock_ready = 0;
+        pthread_mutex_destroy(&ctx->metrics.lock);
+        ctx->metrics.lock_ready = 0;
     }
     memset(&ctx->config, 0, sizeof(ctx->config));
     ctx->running = 0;

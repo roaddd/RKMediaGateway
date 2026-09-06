@@ -66,7 +66,7 @@ void media_gateway_bench_reset_window(MediaGatewayCtx *ctx)
 {
     if (!ctx)
         return;
-    memset(ctx->bench.streams, 0, sizeof(ctx->bench.streams));
+    memset(ctx->metrics.benchmark.streams, 0, sizeof(ctx->metrics.benchmark.streams));
 }
 
 void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
@@ -90,7 +90,7 @@ void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
     if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         return;
 
-    window = &ctx->bench.streams[stream_idx];
+    window = &ctx->metrics.benchmark.streams[stream_idx];
     window->sample_count++;
     bench_metric_record(&window->camera_buffer_wait, camera_buffer_wait_us);
     bench_metric_record(&window->dqbuf_ioctl_duration, dqbuf_ioctl_duration_us);
@@ -121,7 +121,7 @@ void media_gateway_bench_record_sample(MediaGatewayCtx *ctx,
 
 static void media_gateway_bench_log_stream(MediaGatewayCtx *ctx, int stream_idx)
 {
-    MediaGatewayBenchmarkWindow *window = &ctx->bench.streams[stream_idx];
+    MediaGatewayBenchmarkWindow *window = &ctx->metrics.benchmark.streams[stream_idx];
     double sample_count;
     const char *stream_name;
 
@@ -142,8 +142,8 @@ static void media_gateway_bench_log_stream(MediaGatewayCtx *ctx, int stream_idx)
              stream_idx,
              stream_name,
              window->sample_count,
-             ctx->bench.print_interval_sec,
-             ctx->bench.sample_every);
+             ctx->metrics.benchmark.print_interval_sec,
+             ctx->metrics.benchmark.sample_every);
     LOG_WARN("[BENCH_SUMMARY_CAPTURE] stream=%d camera_wait_avg_us=%.2f camera_wait_max_us=%" PRIu64
              " dqbuf_ioctl_avg_us=%.2f dqbuf_ioctl_max_us=%" PRIu64
              " capture_call_avg_us=%.2f capture_call_max_us=%" PRIu64,
@@ -207,19 +207,19 @@ void media_gateway_bench_log_and_reset_if_due(MediaGatewayCtx *ctx)
     uint64_t span_us;
     int i;
 
-    if (!ctx || !ctx->bench.enable)
+    if (!ctx || !ctx->metrics.benchmark.enable)
         return;
     now = media_gateway_get_now_us();
-    span_us = now - ctx->bench.last_ts_us;
-    if (span_us < (uint64_t)ctx->bench.print_interval_sec * 1000000ULL)
+    span_us = now - ctx->metrics.benchmark.last_ts_us;
+    if (span_us < (uint64_t)ctx->metrics.benchmark.print_interval_sec * 1000000ULL)
         return;
 
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
-        if (!ctx->stream_enabled[i])
+        if (!ctx->video.streams[i].enabled)
             continue;
         media_gateway_bench_log_stream(ctx, i);
     }
-    ctx->bench.last_ts_us = now;
+    ctx->metrics.benchmark.last_ts_us = now;
     media_gateway_bench_reset_window(ctx);
 }

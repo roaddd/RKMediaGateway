@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file mediaGatewayPolicy.c
  * @brief MediaGateway 运行期策略处理。
  *
@@ -265,7 +265,7 @@ static int adaptive_update_scene_constraint(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] adaptive control is disabled or ctx is NULL");
         return MEDIA_ERR_INVALID_PARAM;
     }
-    state = &ctx->adaptive_policy_state;
+    state = &ctx->policy.adaptive;
     fps_cfg = &ctx->config.policy.light_fps;
     global_max_fps = adaptive_get_global_max_fps(ctx);
 
@@ -278,14 +278,14 @@ static int adaptive_update_scene_constraint(MediaGatewayCtx *ctx)
     }
 
     /* 亮度调帧率开启时，场景侧严格使用 AE 确认后的目标帧率参与融合。 */
-    scene_fps = ctx->light_fps_state.target_fps;
+    scene_fps = ctx->policy.light_fps.target_fps;
     if (scene_fps <= 0)
         scene_fps = fps_cfg->targets.normal_fps;
     if (scene_fps <= 0)
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] invalid scene_fps=%d target_fps=%d normal_fps=%d",
                   scene_fps,
-                  ctx->light_fps_state.target_fps,
+                  ctx->policy.light_fps.target_fps,
                   fps_cfg->targets.normal_fps);
         return MEDIA_ERR_INVALID_CONFIG;
     }
@@ -322,12 +322,12 @@ static int adaptive_get_stream_output_queue_depth(MediaGatewayCtx *ctx, int stre
     }
     if (stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
         return 0;
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
-        if (ctx->output_stream_index[i] != stream_idx)
+        if (ctx->output.channels[i].stream_index != stream_idx)
             continue;
         memset(&output_stats, 0, sizeof(output_stats));
-        media_output_get_stats(&ctx->outputs[i], &output_stats);
+        media_output_get_stats(&ctx->output.channels[i].output, &output_stats);
         if (output_stats.queue_depth > max_depth)
             max_depth = output_stats.queue_depth;
     }
@@ -369,7 +369,7 @@ static MediaAdaptNetworkDecision adaptive_update_network_constraint(MediaGateway
         return decision;
     }
 
-    state = &ctx->adaptive_policy_state;
+    state = &ctx->policy.adaptive;
     network = &ctx->config.policy.network_encode.network;
     aggregate_max_fps = network->action.good.max_fps;
     if (aggregate_max_fps <= 0)
@@ -393,13 +393,13 @@ static MediaAdaptNetworkDecision adaptive_update_network_constraint(MediaGateway
         }
 
         /* 获取该码流对应 RTCP 反馈信息，RTSP 回调已按 session_name 写入 stream_network。 */
-        if (ctx->stats_lock_ready)
-            pthread_mutex_lock(&ctx->stats_lock);
+        if (ctx->metrics.lock_ready)
+            pthread_mutex_lock(&ctx->metrics.lock);
         fraction_lost = stream_network->rtcp_fraction_lost;
         rtt_ms = stream_network->rtcp_rtt_ms;
         jitter_ticks = stream_network->rtcp_jitter;
-        if (ctx->stats_lock_ready)
-            pthread_mutex_unlock(&ctx->stats_lock);
+        if (ctx->metrics.lock_ready)
+            pthread_mutex_unlock(&ctx->metrics.lock);
         jitter_ms = adaptive_rtp_video_jitter_to_ms(jitter_ticks);
 
         max_queue_depth = adaptive_get_stream_output_queue_depth(ctx, stream_idx);
@@ -570,7 +570,7 @@ static int adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNe
         return MEDIA_ERR_INVALID_PARAM;
     }
 
-    state = &ctx->adaptive_policy_state;
+    state = &ctx->policy.adaptive;
     cfg = &ctx->config.policy.network_encode;
     if (cfg->base_fps <= 0)
     {
@@ -650,7 +650,7 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
         return network_decision;
     }
 
-    state = &ctx->adaptive_policy_state;
+    state = &ctx->policy.adaptive;
     global_max_fps = adaptive_get_global_max_fps(ctx);
 
     /* 根据是否开启了RTCP/队列反馈驱动的网络自适应编码参数控制来更新编码参数 */
@@ -714,7 +714,7 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         !ctx->config.policy.network_encode.pacing_enabled)
         return MEDIA_OK;
 
-    state = &ctx->adaptive_policy_state;
+    state = &ctx->policy.adaptive;
     old_target_fps = state->output.target_fps;
 
     /* 取网络反馈决定的帧率和亮度决定的帧率最小值作为最终帧率,此时肯定有一个是有效的 */
@@ -938,7 +938,7 @@ static int media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     }
 
     cfg = &ctx->config.policy.light_fps;
-    state = &ctx->light_fps_state;
+    state = &ctx->policy.light_fps;
     if (state->manual_override) /* TODO：当前是通过light_fps_state结构体中的manual_override字段控制的，可以直接改为ctx->config.policy.light_fps.enabled */
     {
         LOG_DEBUG("[DYNAMIC_FPS] manual override enabled, skipping AE policy update target=%d current=%d",
@@ -957,7 +957,7 @@ static int media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
     state->last_evaluate_ts_us = now_us;
 
     memset(&isp_status, 0, sizeof(isp_status));
-    if (ctx->isp_ready && isp_controller_query_status(&ctx->isp, &isp_status) == 0)
+    if (ctx->video.isp_ready && isp_controller_query_status(&ctx->video.isp, &isp_status) == 0)
     {
         ae_valid = isp_status.ae.valid;
         if (ae_valid)

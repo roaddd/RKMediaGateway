@@ -476,6 +476,143 @@ int media_output_start(MediaOutput *output)
 }
 
 /**
+ * @description: 通过协议回调查询输出通道真实支持的音频编码集合。
+ */
+int media_output_get_audio_capabilities(const MediaOutput *output,
+                                        MediaOutputAudioCapabilities *capabilities)
+{
+    int ret = MEDIA_ERR;
+
+    if (!output || !capabilities)
+    {
+        LOG_ERROR("media_output_get_audio_capabilities failed: output=%p capabilities=%p",
+                  (const void *)output,
+                  (void *)capabilities);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    memset(capabilities, 0, sizeof(*capabilities));
+    if (!output->vtable || !output->vtable->get_audio_capabilities)
+    {
+        LOG_ERROR("media_output_get_audio_capabilities failed: protocol callback missing type=%d name=%s",
+                  output->type,
+                  output->config.name ? output->config.name : "unknown");
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+
+    ret = output->vtable->get_audio_capabilities(output, capabilities);
+    if (ret != MEDIA_OK)
+    {
+        LOG_ERROR("media_output_get_audio_capabilities failed: callback ret=%d type=%d name=%s",
+                  ret,
+                  output->type,
+                  output->config.name ? output->config.name : "unknown");
+        return ret;
+    }
+    if (capabilities->count < 0 || capabilities->count > MEDIA_OUTPUT_MAX_AUDIO_CAPABILITIES)
+    {
+        LOG_ERROR("media_output_get_audio_capabilities failed: invalid capability count=%d type=%d name=%s",
+                  capabilities->count,
+                  output->type,
+                  output->config.name ? output->config.name : "unknown");
+        memset(capabilities, 0, sizeof(*capabilities));
+        return MEDIA_ERR;
+    }
+    return MEDIA_OK;
+}
+
+/**
+ * @description: 根据协议能力集合校验音频编码、采样率和通道数。
+ */
+int media_output_validate_audio_format(const MediaOutput *output,
+                                       MediaCodecType codec,
+                                       int sample_rate,
+                                       int channels)
+{
+    MediaOutputAudioCapabilities capabilities = {0};
+    const MediaOutputAudioCapability *capability = NULL;
+    int ret = MEDIA_ERR;
+    int i = 0;
+
+    if (!output)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: output is NULL codec=%d rate=%d channels=%d",
+                  codec,
+                  sample_rate,
+                  channels);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (codec == MEDIA_CODEC_NONE)
+        return MEDIA_OK;
+    if (codec < MEDIA_CODEC_NONE || (unsigned int)codec >= 64U || sample_rate <= 0 || channels <= 0)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: invalid format codec=%d rate=%d channels=%d name=%s",
+                  codec,
+                  sample_rate,
+                  channels,
+                  output->config.name ? output->config.name : "unknown");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ret = media_output_get_audio_capabilities(output, &capabilities);
+    if (ret != MEDIA_OK)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: query capability ret=%d codec=%d name=%s",
+                  ret,
+                  codec,
+                  output->config.name ? output->config.name : "unknown");
+        return ret;
+    }
+
+    if ((capabilities.codec_mask & MEDIA_OUTPUT_AUDIO_CODEC_MASK(codec)) == 0)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: unsupported codec=%d type=%d name=%s supported_mask=0x%" PRIx64,
+                  codec,
+                  output->type,
+                  output->config.name ? output->config.name : "unknown",
+                  capabilities.codec_mask);
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+
+    for (i = 0; i < capabilities.count; ++i)
+    {
+        if (capabilities.entries[i].codec == codec)
+        {
+            capability = &capabilities.entries[i];
+            break;
+        }
+    }
+    if (!capability)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: capability detail missing codec=%d type=%d name=%s",
+                  codec,
+                  output->type,
+                  output->config.name ? output->config.name : "unknown");
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    if (capability->sample_rate > 0 && sample_rate != capability->sample_rate)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: unsupported sample rate codec=%d rate=%d expected=%d name=%s",
+                  codec,
+                  sample_rate,
+                  capability->sample_rate,
+                  output->config.name ? output->config.name : "unknown");
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    if (channels < capability->min_channels || channels > capability->max_channels)
+    {
+        LOG_ERROR("media_output_validate_audio_format failed: unsupported channels codec=%d channels=%d range=%d..%d name=%s",
+                  codec,
+                  channels,
+                  capability->min_channels,
+                  capability->max_channels,
+                  output->config.name ? output->config.name : "unknown");
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    return MEDIA_OK;
+}
+
+/**
  * @description: 将媒体包放入输出通道队列。
  *
  * 队列满时的策略：

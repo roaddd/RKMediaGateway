@@ -51,12 +51,10 @@ typedef struct {
  * 音频编码运行期资源集合。
  *
  * 音频编码线程直接消费 AudioFrameSource，避免主循环搬运和重复 FIFO。
- * pcm_buffer 是线程私有的编码输入缓存：采集声道与编码声道不同时在这里完成转换。
+ * PCM 声道和采样率适配由 AudioEncoderManager 的私有实现负责。
  */
 typedef struct {
     AudioFrameSource *source; /* 音频采集帧源，生命周期由 mediaGateway run resources 管理。 */
-    uint8_t *pcm_buffer;      /* 转换后的编码输入 PCM，仅由音频编码线程访问。 */
-    size_t pcm_capacity;      /* pcm_buffer 当前容量。 */
     pthread_t thread;         /* 音频编码线程句柄。 */
     int thread_started;       /* 音频编码线程是否已成功启动。 */
 } MediaGatewayAudioEncodeGroup;

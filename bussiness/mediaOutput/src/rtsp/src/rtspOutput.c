@@ -692,6 +692,29 @@ static void rtsp_output_stop(MediaOutput *output) {
     }
 }
 
+/* 查询 RTSP 后端当前能够写入 RTP/SDP 音频 track 的编码集合。 */
+static int rtsp_output_get_audio_capabilities(const MediaOutput *output,
+                                              MediaOutputAudioCapabilities *capabilities) {
+    (void)output;
+
+    if (!capabilities) {
+        LOG_ERROR("rtsp_output_get_audio_capabilities failed: capabilities is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    capabilities->codec_mask = MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_AAC) |
+                               MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711A);
+    capabilities->count = 2;
+    capabilities->entries[0].codec = MEDIA_CODEC_AAC;
+    capabilities->entries[0].sample_rate = 0;
+    capabilities->entries[0].min_channels = 1;
+    capabilities->entries[0].max_channels = 2;
+    capabilities->entries[1].codec = MEDIA_CODEC_G711A;
+    capabilities->entries[1].sample_rate = 8000;
+    capabilities->entries[1].min_channels = 1;
+    capabilities->entries[1].max_channels = 1;
+    return MEDIA_OK;
+}
+
 /* 构建并初始化一个 RTSP output；返回 MEDIA_OK 或统一错误码。 */
 int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *config) {
     static const MediaOutputVTable vtable = {
@@ -701,7 +724,8 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
         rtsp_output_disconnect,
         rtsp_output_stop,
         rtsp_output_set_video_pacer,
-        rtsp_output_get_video_pacer_stats
+        rtsp_output_get_video_pacer_stats,
+        rtsp_output_get_audio_capabilities
     };
     MediaOutputChannelConfig output_config;
     RtspOutputImpl *impl;

@@ -233,6 +233,29 @@ static void gb28181_output_stop(MediaOutput *output) {
     impl->started = 0;
 }
 
+/* 查询 GB28181 PS 音频 PES 当前支持封装的编码集合。 */
+static int gb28181_output_get_audio_capabilities(const MediaOutput *output,
+                                                 MediaOutputAudioCapabilities *capabilities) {
+    (void)output;
+
+    if (!capabilities) {
+        LOG_ERROR("gb28181_output_get_audio_capabilities failed: capabilities is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    capabilities->codec_mask = MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711A) |
+                               MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711U);
+    capabilities->count = 2;
+    capabilities->entries[0].codec = MEDIA_CODEC_G711A;
+    capabilities->entries[0].sample_rate = 8000;
+    capabilities->entries[0].min_channels = 1;
+    capabilities->entries[0].max_channels = 1;
+    capabilities->entries[1].codec = MEDIA_CODEC_G711U;
+    capabilities->entries[1].sample_rate = 8000;
+    capabilities->entries[1].min_channels = 1;
+    capabilities->entries[1].max_channels = 1;
+    return MEDIA_OK;
+}
+
 /*
  * 创建并初始化 GB28181 output。
  * 该函数只做对象构建与通用队列初始化，不会真正建立 SIP/RTP 连接。
@@ -243,7 +266,10 @@ int media_output_setup_gb28181(MediaOutput *output, const MediaOutputGb28181Conf
         gb28181_output_connect,
         gb28181_output_send_packet,
         gb28181_output_disconnect,
-        gb28181_output_stop
+        gb28181_output_stop,
+        NULL,
+        NULL,
+        gb28181_output_get_audio_capabilities
     };
     MediaOutputChannelConfig output_config;
     Gb28181OutputImpl *impl = NULL;

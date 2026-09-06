@@ -895,6 +895,29 @@ static void rtmp_output_stop(MediaOutput *output) {
     free_parameter_set(&impl->pps, &impl->pps_len);
 }
 
+/* 查询传统 FLV/RTMP SoundFormat 当前已经实现的音频编码集合。 */
+static int rtmp_output_get_audio_capabilities(const MediaOutput *output,
+                                              MediaOutputAudioCapabilities *capabilities) {
+    (void)output;
+
+    if (!capabilities) {
+        LOG_ERROR("[RTMP][ERROR] get_audio_capabilities failed: capabilities is NULL\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    capabilities->codec_mask = MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711A) |
+                               MEDIA_OUTPUT_AUDIO_CODEC_MASK(MEDIA_CODEC_G711U);
+    capabilities->count = 2;
+    capabilities->entries[0].codec = MEDIA_CODEC_G711A;
+    capabilities->entries[0].sample_rate = 8000;
+    capabilities->entries[0].min_channels = 1;
+    capabilities->entries[0].max_channels = 1;
+    capabilities->entries[1].codec = MEDIA_CODEC_G711U;
+    capabilities->entries[1].sample_rate = 8000;
+    capabilities->entries[1].min_channels = 1;
+    capabilities->entries[1].max_channels = 1;
+    return MEDIA_OK;
+}
+
 
 int media_output_setup_rtmp(MediaOutput *output, const MediaOutputRtmpConfig *config) {
     static const MediaOutputVTable vtable = {
@@ -902,7 +925,10 @@ int media_output_setup_rtmp(MediaOutput *output, const MediaOutputRtmpConfig *co
         rtmp_output_connect,
         rtmp_output_send_packet,
         rtmp_output_disconnect,
-        rtmp_output_stop
+        rtmp_output_stop,
+        NULL,
+        NULL,
+        rtmp_output_get_audio_capabilities
     };
     MediaOutputChannelConfig output_config;
     RtmpOutputImpl *impl;

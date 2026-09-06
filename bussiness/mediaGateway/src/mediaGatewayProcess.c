@@ -40,17 +40,17 @@ static int ensure_scaled_frame_cache(MediaGatewayCtx *ctx, int stream_idx, size_
                   need_size);
         return -1;
     }
-    if (ctx->scaled_frame_cache_size[stream_idx] >= need_size)
+    if (ctx->video.streams[stream_idx].scaled_frame_cache_size >= need_size)
         return 0;
 
-    new_buf = (uint8_t *)realloc(ctx->scaled_frame_cache[stream_idx], need_size);
+    new_buf = (uint8_t *)realloc(ctx->video.streams[stream_idx].scaled_frame_cache, need_size);
     if (!new_buf)
     {
         LOG_ERROR("realloc scaled frame cache failed stream=%d need=%zu", stream_idx, need_size);
         return -1;
     }
-    ctx->scaled_frame_cache[stream_idx] = new_buf;
-    ctx->scaled_frame_cache_size[stream_idx] = need_size;
+    ctx->video.streams[stream_idx].scaled_frame_cache = new_buf;
+    ctx->video.streams[stream_idx].scaled_frame_cache_size = need_size;
     return 0;
 }
 
@@ -215,11 +215,11 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
         if (scale_nv12_rga_if_available(raw_frame,
                                         capture_width,
                                         capture_height,
-                                        ctx->scaled_frame_cache[stream_idx],
+                                        ctx->video.streams[stream_idx].scaled_frame_cache,
                                         stream_cfg->width,
                                         stream_cfg->height) == 0)
         {
-            *encode_input = ctx->scaled_frame_cache[stream_idx];
+            *encode_input = ctx->video.streams[stream_idx].scaled_frame_cache;
             *encode_input_len = scaled_len;
             *path_used = SCALE_PATH_RGA;
             return 0;
@@ -228,7 +228,7 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
         if (scale_nv12_nearest(raw_frame,
                                capture_width,
                                capture_height,
-                               ctx->scaled_frame_cache[stream_idx],
+                               ctx->video.streams[stream_idx].scaled_frame_cache,
                                stream_cfg->width,
                                stream_cfg->height) != 0)
         {
@@ -241,7 +241,7 @@ static int prepare_stream_encode_input(MediaGatewayCtx *ctx,
             return -1;
         }
 
-        *encode_input = ctx->scaled_frame_cache[stream_idx];
+        *encode_input = ctx->video.streams[stream_idx].scaled_frame_cache;
         *encode_input_len = scaled_len;
         *path_used = SCALE_PATH_CPU_NEAREST;
         return 0;
@@ -280,10 +280,10 @@ static void apply_capture_layout_encoder_options(MediaGatewayCtx *ctx, int strea
 
     stream_cfg = &ctx->config.video.streams[stream_idx];
     source_idx = stream_cfg->source_index;
-    if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count || !ctx->capture_ready[source_idx])
+    if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count || !ctx->video.captures[source_idx].ready)
         return;
 
-    capture_format = &ctx->captures[source_idx].format;
+    capture_format = &ctx->video.captures[source_idx].capture.format;
     if (capture_format->pixelformat != V4L2_PIX_FMT_NV12 ||
         capture_format->num_planes != 1 ||
         stream_cfg->width != capture_format->width ||
@@ -327,12 +327,12 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
     stream_cfg = &ctx->config.video.streams[stream_idx];
     build_encoder_options(stream_cfg, &options);
     apply_capture_layout_encoder_options(ctx, stream_idx, &options);
-    if (ctx->encoder_ready[stream_idx])
+    if (ctx->video.streams[stream_idx].encoder_ready)
     {
-        mpp_encoder_deinit(&ctx->encoders[stream_idx]);
-        ctx->encoder_ready[stream_idx] = 0;
+        mpp_encoder_deinit(&ctx->video.streams[stream_idx].encoder);
+        ctx->video.streams[stream_idx].encoder_ready = 0;
     }
-    if (mpp_encoder_init(&ctx->encoders[stream_idx],
+    if (mpp_encoder_init(&ctx->video.streams[stream_idx].encoder,
                          stream_cfg->width,
                          stream_cfg->height,
                          stream_cfg->fps,
@@ -349,7 +349,7 @@ int media_gateway_reset_encoder(MediaGatewayCtx *ctx, int stream_idx)
                   stream_cfg->gop);
         return -1;
     }
-    ctx->encoder_ready[stream_idx] = 1;
+    ctx->video.streams[stream_idx].encoder_ready = 1;
     return 0;
 }
 
@@ -368,19 +368,19 @@ static void trigger_external_idr_if_needed(MediaGatewayCtx *ctx, int stream_idx)
      * WebRTC 新 video Track 就绪后也会请求 IDR；统一扫描可避免
      * 为每种新协议在 MediaGatewayCtx 中维护一套专用 output 索引。
      */
-    for (output_idx = 0; output_idx < ctx->output_count; ++output_idx)
+    for (output_idx = 0; output_idx < ctx->output.count; ++output_idx)
     {
-        if (ctx->output_stream_index[output_idx] != stream_idx) {
+        if (ctx->output.channels[output_idx].stream_index != stream_idx) {
             continue;
         }
-        if (media_output_consume_external_idr_request(&ctx->outputs[output_idx])) {
+        if (media_output_consume_external_idr_request(&ctx->output.channels[output_idx].output)) {
             need_idr = 1;
         }
     }
 
     if (need_idr)
     {
-        if (mpp_encoder_request_idr(&ctx->encoders[stream_idx]) != 0)
+        if (mpp_encoder_request_idr(&ctx->video.streams[stream_idx].encoder) != 0)
             LOG_WARN("stream=%d failed to request IDR from external output event", stream_idx);
     }
 }
@@ -442,7 +442,7 @@ static int can_encode_stream_dmabuf_direct(const MediaGatewayCtx *ctx,
         return 0;
 
     stream_cfg = &ctx->config.video.streams[stream_idx];
-    encoder = &ctx->encoders[stream_idx];
+    encoder = &ctx->video.streams[stream_idx].encoder;
     if (!frame->capture_buffer || !frame->capture_buffer->capture)
     {
         if (reason) *reason = "frame has no retained capture buffer";
@@ -542,8 +542,8 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                      format->height,
                      format->planes[0].bytesperline,
                      format->planes[0].sizeimage,
-                     ctx->encoders[stream_idx].input.hor_stride,
-                     ctx->encoders[stream_idx].input.ver_stride);
+                     ctx->video.streams[stream_idx].encoder.input.hor_stride,
+                     ctx->video.streams[stream_idx].encoder.input.ver_stride);
         }
         else
         {
@@ -557,7 +557,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
 
     /* Only the matched V4L2 layout can bypass the copy encode path. */
     if (dmabuf_direct &&
-        mpp_encoder_encode_dmabuf(&ctx->encoders[stream_idx],
+        mpp_encoder_encode_dmabuf(&ctx->video.streams[stream_idx].encoder,
                                   dmabuf_fd,
                                   dmabuf_size,
                                   frame->frame_id,
@@ -572,7 +572,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
         return 0;
     }
 
-    if (mpp_encoder_encode_frame(&ctx->encoders[stream_idx],
+    if (mpp_encoder_encode_frame(&ctx->video.streams[stream_idx].encoder,
                                  encode_input,
                                  encode_input_len,
                                  frame->frame_id,
@@ -650,25 +650,25 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
     packet.path_metrics.encode_us = encoder_timing ? encoder_timing->encode_frame_total_us : 0;
     packet.path_metrics.stream_name = ctx->config.video.streams[stream_idx].name;
     /* 打印本包路径延时的条件：1.配置开启了统计选项；2.采样间隔帧数大于0；3.当前采集帧号是采样间隔帧数的倍数 */
-    packet.path_metrics.sample = ctx->bench.enable &&
-                                 ctx->bench.sample_every > 0 &&
-                                 ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
+    packet.path_metrics.sample = ctx->metrics.benchmark.enable &&
+                                 ctx->metrics.benchmark.sample_every > 0 &&
+                                 ((frame->frame_id % (uint64_t)ctx->metrics.benchmark.sample_every) == 0);
     packet.is_key_frame = is_key_frame;
     media_gateway_metrics_log_frame_trace(ctx, stream_idx, frame, &packet, h264_len);
 
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
         /* 检查输出通道是否绑定到当前流 */
-        if (ctx->output_stream_index[i] != stream_idx)
+        if (ctx->output.channels[i].stream_index != stream_idx)
             continue;
         output_hit = 1;
-        media_output_enqueue(&ctx->outputs[i], &packet);
+        media_output_enqueue(&ctx->output.channels[i].output, &packet);
     }
 
     if (output_hit)
     {
-        ctx->stats.streams[stream_idx].frames++;
-        ctx->stats.streams[stream_idx].bytes += h264_len;
+        ctx->metrics.throughput.streams[stream_idx].frames++;
+        ctx->metrics.throughput.streams[stream_idx].bytes += h264_len;
     }
     media_packet_reset(&packet);
     return 0;
@@ -678,7 +678,7 @@ static int enqueue_stream_packet(MediaGatewayCtx *ctx,
  * @description: 将编码后的音频包分发到支持音频的输出。
  */
 static int enqueue_audio_packet(MediaGatewayCtx *ctx,
-                                int stream_idx,
+                                AudioEncoderRuntimeGroupId group_id,
                                 const AudioFrame *frame,
                                 const uint8_t *audio_data,
                                 size_t audio_len,
@@ -689,8 +689,10 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
 {
     MediaBuffer *buffer = NULL;
     MediaPacket packet;
-    int i;
+    int enqueue_ret = MEDIA_OK;
+    int i = 0;
     int output_hit = 0;
+    int result = 0;
 
     if (!ctx || !frame || !audio_data || audio_len == 0)
     {
@@ -701,18 +703,11 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
                   audio_len);
         return -1;
     }
-    if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count)
-    {
-        LOG_ERROR("enqueue_audio_packet failed: invalid stream=%d stream_count=%d",
-                  stream_idx,
-                  ctx->config.video.stream_count);
-        return -1;
-    }
     /* 从media_buffer_pool中获取buffer */
     if (media_buffer_create_copy(audio_data, audio_len, &buffer) != 0)
     {
-        LOG_ERROR("enqueue_audio_packet failed: media_buffer_create_copy stream=%d size=%zu",
-                  stream_idx,
+        LOG_ERROR("enqueue_audio_packet failed: media_buffer_create_copy group_id=%llu size=%zu",
+                  (unsigned long long)group_id,
                   audio_len);
         return -1;
     }
@@ -729,10 +724,10 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     packet.path_metrics.encode_us = encode_done_us >= encode_start_us
                                         ? encode_done_us - encode_start_us
                                         : 0;
-    packet.path_metrics.stream_name = ctx->config.video.streams[stream_idx].name;
-    packet.path_metrics.sample = ctx->bench.enable &&
-                                 ctx->bench.sample_every > 0 &&
-                                 ((frame->frame_id % (uint64_t)ctx->bench.sample_every) == 0);
+    packet.path_metrics.stream_name = NULL;
+    packet.path_metrics.sample = ctx->metrics.benchmark.enable &&
+                                 ctx->metrics.benchmark.sample_every > 0 &&
+                                 ((frame->frame_id % (uint64_t)ctx->metrics.benchmark.sample_every) == 0);
     packet.path_metrics.audio_capture_done_us = frame->path_timing.capture_done_us;
     packet.path_metrics.audio_capture_interval_us = frame->path_timing.capture_interval_us;
     packet.path_metrics.audio_capture_read_us = frame->read_us;
@@ -742,55 +737,84 @@ static int enqueue_audio_packet(MediaGatewayCtx *ctx,
     packet.path_metrics.audio_encode_start_us = encode_start_us;
     packet.path_metrics.audio_encode_done_us = encode_done_us;
 
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
-        if (ctx->output_stream_index[i] != stream_idx)
+        if (ctx->output.channels[i].audio_encoder_group_id != group_id)
             continue;
-        if (ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTSP &&
-            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_RTMP &&
-            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_GB28181 &&
-            ctx->outputs[i].type != MEDIA_OUTPUT_TYPE_WEBRTC)
+        if (ctx->output.channels[i].output.type != MEDIA_OUTPUT_TYPE_RTSP &&
+            ctx->output.channels[i].output.type != MEDIA_OUTPUT_TYPE_RTMP &&
+            ctx->output.channels[i].output.type != MEDIA_OUTPUT_TYPE_GB28181 &&
+            ctx->output.channels[i].output.type != MEDIA_OUTPUT_TYPE_WEBRTC)
         {
             continue;
         }
+        if (ctx->output.channels[i].stream_index < 0 ||
+            ctx->output.channels[i].stream_index >= ctx->config.video.stream_count)
+        {
+            LOG_ERROR("enqueue_audio_packet failed: output=%d invalid stream=%d",
+                      i,
+                      ctx->output.channels[i].stream_index);
+            result = -1;
+            continue;
+        }
+        packet.path_metrics.stream_name = ctx->config.video.streams[ctx->output.channels[i].stream_index].name;
         output_hit = 1;
-        media_output_enqueue(&ctx->outputs[i], &packet);
+        enqueue_ret = media_output_enqueue(&ctx->output.channels[i].output, &packet);
+        if (enqueue_ret != MEDIA_OK)
+        {
+            LOG_ERROR("enqueue_audio_packet failed: output=%d group_id=%llu codec=%d ret=%d",
+                      i,
+                      (unsigned long long)group_id,
+                      codec,
+                      enqueue_ret);
+            result = -1;
+        }
     }
 
     if (output_hit)
     {
-        ctx->stats.audio.frames++;
-        ctx->stats.audio.bytes += audio_len;
+        ctx->metrics.throughput.audio.frames++;
+        ctx->metrics.throughput.audio.bytes += audio_len;
     }
     media_packet_reset(&packet);
-    return 0;
+    return result;
 }
 
 /**
- * @description: 处理一帧 PCM 音频，完成 G711 编码和输出分发。
+ * @description: 使用指定的去重编码组处理一帧 PCM，并投递到绑定该组的全部输出。
  */
-int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
+int media_gateway_process_audio_group(MediaGatewayCtx *ctx,
+                                      const AudioFrame *frame,
+                                      AudioEncoderRuntimeGroupId group_id)
 {
-    const uint8_t *audio_data = NULL;
-    size_t audio_len = 0;
-    uint64_t audio_pts_us = 0;
-    MediaCodecType codec = MEDIA_CODEC_NONE;
-    uint64_t encode_start_us;
-    uint64_t encode_done_us;
-    int stream_idx;
-    int ret;
+    AudioEncoderPcmInput input = {0};
+    AudioEncoderOutput output = {0};
+    MediaGatewayAudioEncoderGroupStats *group_stats = NULL;
+    uint64_t encode_start_us = 0;
+    uint64_t encode_done_us = 0;
+    uint64_t encode_duration_us = 0;
+    size_t stats_index = 0;
+    int encode_ret = 0;
+    int lock_ret = 0;
+    int ret = 0;
 
     if (!ctx || !frame || !frame->data || frame->size == 0)
     {
-        LOG_ERROR("media_gateway_process_audio failed: invalid args ctx=%p frame=%p data=%p size=%zu",
+        LOG_ERROR("media_gateway_process_audio_group failed: invalid args ctx=%p frame=%p data=%p size=%zu group_id=%llu",
                   (void *)ctx,
                   (const void *)frame,
                   frame ? (const void *)frame->data : NULL,
-                  frame ? frame->size : 0);
+                  frame ? frame->size : 0,
+                  (unsigned long long)group_id);
         return -1;
     }
-    if (!ctx->audio_encoder_ready)
+    if (!ctx->audio.encoder_ready || !ctx->audio.encoder_manager)
         return 0;
+    if (group_id == AUDIO_ENCODER_INVALID_GROUP_ID)
+    {
+        LOG_ERROR("media_gateway_process_audio_group failed: invalid group id");
+        return -1;
+    }
     if (frame->format != AUDIO_SAMPLE_FORMAT_S16LE)
     {
         LOG_ERROR("process_gateway_audio failed: unsupported format=%d channels=%d",
@@ -798,82 +822,87 @@ int media_gateway_process_audio(MediaGatewayCtx *ctx, const AudioFrame *frame)
                   frame->channels);
         return -1;
     }
-    if (frame->channels != ctx->config.audio.source.encoder.channels)
+    encode_start_us = media_gateway_get_now_us();
+    input.data = (const int16_t *)frame->data;
+    input.samples_per_channel = frame->samples_per_channel;
+    input.sample_rate = frame->sample_rate;
+    input.channels = frame->channels;
+    input.pts_us = frame->pts_us;
+    encode_ret = audio_encoder_manager_encode(ctx->audio.encoder_manager,
+                                              group_id,
+                                              &input,
+                                              &output);
+    encode_done_us = media_gateway_get_now_us();
+    encode_duration_us = encode_done_us >= encode_start_us
+                             ? encode_done_us - encode_start_us
+                             : 0;
+    stats_index = (size_t)(group_id - 1);
+    if (stats_index >= ctx->metrics.throughput.audio_group_count ||
+        stats_index >= MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS)
     {
-        LOG_ERROR("process_gateway_audio failed: frame channels=%d encoder channels=%d",
-                  frame->channels,
-                  ctx->config.audio.source.encoder.channels);
+        LOG_ERROR("media_gateway_process_audio_group failed: stats group_id=%llu count=%zu",
+                  (unsigned long long)group_id,
+                  ctx->metrics.throughput.audio_group_count);
         return -1;
     }
-    /* 确定音频数据绑定的流索引,因为音频需要跟某一路视频时间线绑定 */
-    stream_idx = ctx->config.audio.source.bind_stream_index;
-    if (stream_idx < 0 || stream_idx >= ctx->config.video.stream_count || !ctx->stream_enabled[stream_idx])
-        return 0;
-
-    encode_start_us = media_gateway_get_now_us();
-    if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_AAC)
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
     {
-        if (aac_encoder_encode_s16le(&ctx->aac_encoder,
-                                     (const int16_t *)frame->data,
-                                     frame->samples_per_channel,
-                                     frame->pts_us,
-                                     &audio_data,
-                                     &audio_len,
-                                     &audio_pts_us,
-                                     &codec) != 0)
-        {
-            LOG_ERROR("process_gateway_audio failed: aac encode frame=%" PRIu64, frame->frame_id);
-            return -1;
-        }
-        if (audio_len == 0)
-            return 0;
+        LOG_ERROR("media_gateway_process_audio_group failed: pthread_mutex_lock ret=%d", lock_ret);
+        return -1;
     }
-    else if (ctx->config.audio.source.encoder.codec == MEDIA_CODEC_OPUS)
-    {
-        /* 输出为单个裸 Opus packet，WebRTC 层可直接放入一个 RTP payload。 */
-        if (opus_audio_encoder_encode_s16le(&ctx->opus_encoder,
-                                            (const int16_t *)frame->data,
-                                            frame->samples_per_channel,
-                                            &audio_data,
-                                            &audio_len,
-                                            &codec) != 0)
-        {
-            LOG_ERROR("process_gateway_audio failed: opus encode frame=%" PRIu64, frame->frame_id);
-            return -1;
-        }
-        audio_pts_us = frame->pts_us;
-    }
+    group_stats = &ctx->metrics.throughput.audio_groups[stats_index];
+    group_stats->input_frames++;
+    group_stats->encode_total_us += encode_duration_us;
+    if (encode_duration_us > group_stats->encode_max_us)
+        group_stats->encode_max_us = encode_duration_us;
+    if (encode_ret != 0)
+        group_stats->encode_failures++;
+    else if (output.size == 0)
+        group_stats->empty_outputs++;
     else
     {
-        if (frame->channels != 1)
-        {
-            LOG_ERROR("process_gateway_audio failed: G711 requires mono channels=%d", frame->channels);
-            return -1;
-        }
-        if (g711_encoder_encode_s16le(&ctx->audio_encoder,
-                                      (const int16_t *)frame->data,
-                                      frame->samples_per_channel,
-                                      &audio_data,
-                                      &audio_len,
-                                      &codec) != 0)
-        {
-            LOG_ERROR("process_gateway_audio failed: g711 encode frame=%" PRIu64, frame->frame_id);
-            return -1;
-        }
-        audio_pts_us = frame->pts_us;
+        group_stats->encoded_packets++;
+        group_stats->encoded_bytes += output.size;
     }
-    encode_done_us = media_gateway_get_now_us();
-    pthread_mutex_lock(&ctx->stats_lock);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_process_audio_group failed: stats pthread_mutex_unlock ret=%d", lock_ret);
+        return -1;
+    }
+    if (encode_ret != 0)
+    {
+        LOG_ERROR("media_gateway_process_audio_group failed: encode group_id=%llu frame=%" PRIu64,
+                  (unsigned long long)group_id,
+                  frame->frame_id);
+        return -1;
+    }
+    /* AAC 可能先缓存 PCM，尚未形成访问单元时不投递空包。 */
+    if (output.size == 0)
+        return 0;
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_process_audio_group failed: enqueue pthread_mutex_lock ret=%d", lock_ret);
+        return -1;
+    }
     ret = enqueue_audio_packet(ctx,
-                               stream_idx,
+                               group_id,
                                frame,
-                               audio_data,
-                               audio_len,
-                               audio_pts_us,
-                               codec,
+                               output.data,
+                               output.size,
+                               output.pts_us,
+                               output.codec,
                                encode_start_us,
                                encode_done_us);
-    pthread_mutex_unlock(&ctx->stats_lock);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_process_audio_group failed: enqueue pthread_mutex_unlock ret=%d", lock_ret);
+        return -1;
+    }
     return ret;
 }
 
@@ -893,9 +922,9 @@ static void record_stream_benchmark(MediaGatewayCtx *ctx,
     uint64_t dqbuf_to_encode_done_us = 0;
     uint64_t dqbuf_to_output_queued_us = 0;
 
-    if (!ctx->bench.enable)
+    if (!ctx->metrics.benchmark.enable)
         return;
-    if ((frame->frame_id % (uint64_t)ctx->bench.sample_every) != 0)
+    if ((frame->frame_id % (uint64_t)ctx->metrics.benchmark.sample_every) != 0)
         return;
 
     output_queued_ts_us = media_gateway_get_now_us();
@@ -959,7 +988,7 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
     MppEncoderTiming encoder_timing = {0};
     int encode_ret;
 
-    if (!ctx->stream_enabled[stream_idx])
+    if (!ctx->video.streams[stream_idx].enabled)
         return 0;
 
     if (ensure_stream_input(ctx, state, stream_idx, frame, &encode_input, &encode_input_len) != 0)
@@ -999,7 +1028,7 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
         return 0;
     }
 
-    pthread_mutex_lock(&ctx->stats_lock);
+    pthread_mutex_lock(&ctx->metrics.lock);
     if (enqueue_stream_packet(ctx,
                               stream_idx,
                               frame,
@@ -1014,13 +1043,13 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
                   frame->frame_id,
                   h264_len,
                   is_key_frame);
-        pthread_mutex_unlock(&ctx->stats_lock);
+        pthread_mutex_unlock(&ctx->metrics.lock);
         return -1;
     }
 
     /*  */
     record_stream_benchmark(ctx, stream_idx, frame, encode_start_ts_us, encode_done_ts_us, &encoder_timing);
     // maybe_record_stream_file(ctx, stream_idx, frame->frame_id, h264_data, h264_len);
-    pthread_mutex_unlock(&ctx->stats_lock);
+    pthread_mutex_unlock(&ctx->metrics.lock);
     return 0;
 }

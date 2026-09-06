@@ -32,6 +32,29 @@ typedef enum {
 
 typedef struct MediaOutput MediaOutput;
 
+#define MEDIA_OUTPUT_MAX_AUDIO_CAPABILITIES 4
+
+/**
+ * @description: 协议对一种音频编码格式的参数约束。
+ */
+typedef struct {
+    MediaCodecType codec; /* 音频编码格式。 */
+    int sample_rate;      /* 固定采样率；0 表示协议层不额外限制。 */
+    int min_channels;     /* 最小通道数。 */
+    int max_channels;     /* 最大通道数。 */
+} MediaOutputAudioCapability;
+
+/**
+ * @description: 协议输出支持的音频编码及其参数约束集合。
+ */
+typedef struct {
+    uint64_t codec_mask; /* 以 MediaCodecType 为位下标的快速查询位图。 */
+    int count;           /* entries 中的有效元素数量。 */
+    MediaOutputAudioCapability entries[MEDIA_OUTPUT_MAX_AUDIO_CAPABILITIES];
+} MediaOutputAudioCapabilities;
+
+#define MEDIA_OUTPUT_AUDIO_CODEC_MASK(codec) (UINT64_C(1) << (unsigned int)(codec))
+
 /**
  * @description: RTSP 输出配置。
  */
@@ -228,6 +251,7 @@ typedef struct {
     void (*stop)(MediaOutput *output);                            /* 停止协议私有资源。 */
     int (*set_video_pacer)(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps); /* 设置视频 RTP 包级 pacer；不支持的协议可为空。 */
     int (*get_video_pacer_stats)(MediaOutput *output, MediaOutputPacerStats *stats); /* 获取视频 RTP pacer 调试统计；不支持的协议可为空。 */
+    int (*get_audio_capabilities)(const MediaOutput *output, MediaOutputAudioCapabilities *capabilities); /* 查询协议当前真实支持的音频编码集合。 */
 } MediaOutputVTable;
 
 /**
@@ -279,6 +303,28 @@ int media_output_setup(MediaOutput *output, const MediaOutputConfig *config);
  */
 /* 返回 MEDIA_OK 表示成功，错误码表示参数非法、协议层启动失败或线程创建失败。 */
 int media_output_start(MediaOutput *output);
+
+/**
+ * @description: 查询指定协议输出当前支持的音频编码集合。
+ * @param output 已完成 setup 的输出通道。
+ * @param capabilities 返回协议音频能力，函数会先清零该结构体。
+ * @return MEDIA_OK 成功，错误码表示参数非法或协议未实现能力查询。
+ */
+int media_output_get_audio_capabilities(const MediaOutput *output,
+                                        MediaOutputAudioCapabilities *capabilities);
+
+/**
+ * @description: 校验指定音频编码及其关键参数是否能够发送到该协议输出。
+ * @param output 已完成 setup 的输出通道。
+ * @param codec 待发送的音频编码格式；MEDIA_CODEC_NONE 表示未启用音频。
+ * @param sample_rate 编码音频采样率。
+ * @param channels 编码音频通道数。
+ * @return MEDIA_OK 表示支持，MEDIA_ERR_UNSUPPORTED 表示协议不支持该格式。
+ */
+int media_output_validate_audio_format(const MediaOutput *output,
+                                       MediaCodecType codec,
+                                       int sample_rate,
+                                       int channels);
 
 /**
  * @description: 将媒体包引用压入对应音频/视频输出队列，不复制底层媒体数据。

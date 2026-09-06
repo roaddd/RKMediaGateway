@@ -6,11 +6,19 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <vector>
 
 static std::map<std::string, std::string> g_values;
 static std::map<std::string, std::string> g_file_values;
 static std::string g_source_path;
 static int g_loaded = 0;
+static std::vector<std::string> g_audio_encoder_group_names;
+
+static const char *kAudioEncoderGroupFields[] = {
+    "codec", "sample_rate", "channels", "input_channel", "aac_bitrate",
+    "aac_profile", "opus_bitrate", "opus_complexity", "opus_vbr",
+    "opus_fec", "opus_dtx", "opus_packet_loss_percent"
+};
 
 static std::string trim_copy(const std::string &s) {
     size_t begin = 0;
@@ -124,7 +132,6 @@ static std::string uppercase_key(std::string value) {
 static std::string toml_path_to_internal_key(const std::string &path) {
     static const std::string audio_capture = "audio.capture.";
     static const std::string audio_runtime = "audio.runtime.";
-    static const std::string audio_encoder = "audio.encoder.";
     std::string suffix;
 
     if (path.compare(0, audio_capture.size(), audio_capture) == 0) {
@@ -135,13 +142,68 @@ static std::string toml_path_to_internal_key(const std::string &path) {
     }
     if (path.compare(0, audio_runtime.size(), audio_runtime) == 0)
         return "AUDIO_" + uppercase_key(path.substr(audio_runtime.size()));
-    if (path.compare(0, audio_encoder.size(), audio_encoder) == 0) {
-        suffix = path.substr(audio_encoder.size());
-        if (suffix == "channels") return "AUDIO_ENCODER_CHANNELS";
-        if (suffix == "input_channel") return "AUDIO_ENCODER_INPUT_CHANNEL";
-        return "AUDIO_" + uppercase_key(path.substr(audio_encoder.size()));
-    }
     return uppercase_key(path);
+}
+
+static std::string audio_encoder_group_key(const std::string &name,
+                                           const std::string &field) {
+    return "AUDIO_ENCODER_GROUP." + name + "." + field;
+}
+
+static int is_audio_encoder_group_field(const std::string &field) {
+    size_t i = 0;
+
+    for (i = 0; i < sizeof(kAudioEncoderGroupFields) / sizeof(kAudioEncoderGroupFields[0]); ++i) {
+        if (field == kAudioEncoderGroupFields[i]) return 1;
+    }
+    return 0;
+}
+
+static int register_audio_encoder_group(const std::string &name) {
+    size_t i = 0;
+
+    if (name.empty() || name.size() >= MEDIA_GATEWAY_AUDIO_ENCODER_GROUP_NAME_SIZE) return -1;
+    for (i = 0; i < name.size(); ++i) {
+        if (!std::isalnum((unsigned char)name[i]) && name[i] != '_' && name[i] != '-') return -1;
+    }
+    for (i = 0; i < g_audio_encoder_group_names.size(); ++i) {
+        if (g_audio_encoder_group_names[i] == name) return 0;
+    }
+    if (g_audio_encoder_group_names.size() >= MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS) return -1;
+
+    g_audio_encoder_group_names.push_back(name);
+    set_value(audio_encoder_group_key(name, "codec").c_str(), "0");
+    set_value(audio_encoder_group_key(name, "sample_rate").c_str(), "0");
+    set_value(audio_encoder_group_key(name, "channels").c_str(), "1");
+    set_value(audio_encoder_group_key(name, "input_channel").c_str(), "0");
+    set_value(audio_encoder_group_key(name, "aac_bitrate").c_str(), "32000");
+    set_value(audio_encoder_group_key(name, "aac_profile").c_str(), "2");
+    set_value(audio_encoder_group_key(name, "opus_bitrate").c_str(), "24000");
+    set_value(audio_encoder_group_key(name, "opus_complexity").c_str(), "6");
+    set_value(audio_encoder_group_key(name, "opus_vbr").c_str(), "1");
+    set_value(audio_encoder_group_key(name, "opus_fec").c_str(), "1");
+    set_value(audio_encoder_group_key(name, "opus_dtx").c_str(), "0");
+    set_value(audio_encoder_group_key(name, "opus_packet_loss_percent").c_str(), "10");
+    return 0;
+}
+
+static int parse_audio_encoder_group_path(const std::string &path,
+                                          std::string *internal_key) {
+    static const std::string prefix = "audio.encoder_groups.";
+    std::string suffix;
+    std::string name;
+    std::string field;
+    std::string::size_type dot_pos;
+
+    if (path.compare(0, prefix.size(), prefix) != 0) return 0;
+    suffix = path.substr(prefix.size());
+    dot_pos = suffix.find('.');
+    if (dot_pos == std::string::npos || suffix.find('.', dot_pos + 1) != std::string::npos) return -1;
+    name = suffix.substr(0, dot_pos);
+    field = suffix.substr(dot_pos + 1);
+    if (!is_audio_encoder_group_field(field) || register_audio_encoder_group(name) != 0) return -1;
+    *internal_key = audio_encoder_group_key(name, field);
+    return 1;
 }
 
 /* 解析 TOML 基本字符串，并处理配置中常用的转义字符。 */
@@ -213,6 +275,7 @@ static int load_toml_values(const char *config_path) {
         std::string path;
         std::string parsed_value;
         std::string::size_type eq_pos;
+        int group_path_ret = 0;
 
         if (trimmed.empty() || trimmed[0] == '#') {
             continue;
@@ -266,7 +329,13 @@ static int load_toml_values(const char *config_path) {
         }
 
         path = section.empty() ? key : section + "." + key;
-        key = toml_path_to_internal_key(path);
+        group_path_ret = parse_audio_encoder_group_path(path, &key);
+        if (group_path_ret < 0) {
+            std::fprintf(stderr, "%s:%d: invalid audio encoder group key: %s\n",
+                         config_path, line_number, path.c_str());
+            return -1;
+        }
+        if (group_path_ret == 0) key = toml_path_to_internal_key(path);
         if (g_values.find(key) == g_values.end()) {
             std::fprintf(stderr, "%s:%d: unknown TOML key: %s\n",
                          config_path, line_number, path.c_str());
@@ -361,6 +430,7 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "RTSP_PASSWORD").c_str(), "123456");
     set_value_int((p + "RTSP_QUEUE_CAPACITY").c_str(), 32);
     set_value_int((p + "RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT").c_str(), 0);
+    set_value((p + "RTSP_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "RTMP_NAME").c_str(), is_main ? "rtmp-main" : "rtmp-sub");
     set_value((p + "RTMP_PUBLISH_URL").c_str(), "");
@@ -374,6 +444,7 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "RTMP_VIDEO_BITRATE").c_str(), bitrate);
     set_value((p + "RTMP_VIDEO_CODEC_NAME").c_str(), "H264");
     set_value((p + "RTMP_ENCODER_NAME").c_str(), "RKMediaGateway");
+    set_value((p + "RTMP_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "GB28181_NAME").c_str(), is_main ? "gb28181-main" : "gb28181-sub");
     set_value((p + "GB28181_SERVER_IP").c_str(), "192.168.1.1");
@@ -398,12 +469,14 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "GB28181_CHANNEL_ID").c_str(), "34020000001320000001");
     set_value((p + "GB28181_USER_AGENT").c_str(), "RKMediaGateway-GB28181/1.0");
     set_value_int((p + "GB28181_QUEUE_CAPACITY").c_str(), 64);
+    set_value((p + "GB28181_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "WEBRTC_NAME").c_str(), is_main ? "webrtc-main" : "webrtc-sub");
     set_value((p + "WEBRTC_BIND_ADDRESS").c_str(), "0.0.0.0");
     set_value_int((p + "WEBRTC_PORT").c_str(), is_main ? 8000 : 8001);
     set_value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str(), 32);
     set_value_int((p + "WEBRTC_VIDEO_FPS").c_str(), fps);
+    set_value((p + "WEBRTC_AUDIO_ENCODER_GROUP").c_str(), "");
 }
 
 static void set_audio_defaults(void) {
@@ -417,23 +490,11 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_SOURCE_SLOTS", 8);
     set_value_int("AUDIO_RETRY_MS", 5);
     set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
-    set_value_int("AUDIO_CODEC", MEDIA_CODEC_NONE);
-    set_value_int("AUDIO_ENCODER_CHANNELS", 1);
-    set_value_int("AUDIO_ENCODER_INPUT_CHANNEL", 0);
-    set_value_int("AUDIO_G711_MODE", G711_ENCODER_MODE_ALAW);
-    set_value_int("AUDIO_AAC_BITRATE", 32000);
-    set_value_int("AUDIO_AAC_PROFILE", 2);
-    set_value_int("AUDIO_OPUS_BITRATE", 24000);
-    set_value_int("AUDIO_OPUS_COMPLEXITY", 6);
-    set_value_int("AUDIO_OPUS_VBR", 1);
-    set_value_int("AUDIO_OPUS_FEC", 1);
-    set_value_int("AUDIO_OPUS_DTX", 0);
-    set_value_int("AUDIO_OPUS_PACKET_LOSS_PERCENT", 10);
-    set_value_int("AUDIO_BIND_STREAM_INDEX", 0);
 }
 
 static void load_defaults(void) {
     g_values.clear();
+    g_audio_encoder_group_names.clear();
 
     set_value_int("GATEWAY_ENABLE_RTSP", 1);
     set_value_int("GATEWAY_ENABLE_RTMP", 0);
@@ -611,6 +672,10 @@ static void fill_capture_source(CaptureSourceConfig *source, const char *prefix)
 }
 
 static void fill_audio_source(AudioSourceConfig *audio) {
+    size_t i = 0;
+    MediaGatewayAudioEncoderGroupConfig *group = NULL;
+    std::string name;
+
     audio->enabled = value_int("AUDIO_ENABLE");
     audio->capture.device_name = value_string("AUDIO_DEVICE");
     audio->capture.sample_rate = value_int("AUDIO_SAMPLE_RATE");
@@ -621,19 +686,24 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->runtime.source_slots = value_int("AUDIO_SOURCE_SLOTS");
     audio->runtime.retry_ms = value_int("AUDIO_RETRY_MS");
     audio->runtime.max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
-    audio->encoder.codec = (MediaCodecType)value_int("AUDIO_CODEC");
-    audio->encoder.channels = value_int("AUDIO_ENCODER_CHANNELS");
-    audio->encoder.input_channel = value_int("AUDIO_ENCODER_INPUT_CHANNEL");
-    audio->encoder.g711.mode = (G711EncoderMode)value_int("AUDIO_G711_MODE");
-    audio->encoder.aac.bitrate = value_int("AUDIO_AAC_BITRATE");
-    audio->encoder.aac.profile = value_int("AUDIO_AAC_PROFILE");
-    audio->encoder.opus.bitrate = value_int("AUDIO_OPUS_BITRATE");
-    audio->encoder.opus.complexity = value_int("AUDIO_OPUS_COMPLEXITY");
-    audio->encoder.opus.vbr = value_int("AUDIO_OPUS_VBR");
-    audio->encoder.opus.fec = value_int("AUDIO_OPUS_FEC");
-    audio->encoder.opus.dtx = value_int("AUDIO_OPUS_DTX");
-    audio->encoder.opus.packet_loss_percent = value_int("AUDIO_OPUS_PACKET_LOSS_PERCENT");
-    audio->bind_stream_index = value_int("AUDIO_BIND_STREAM_INDEX");
+    audio->encoder_group_count = (int)g_audio_encoder_group_names.size();
+    for (i = 0; i < g_audio_encoder_group_names.size(); ++i) {
+        name = g_audio_encoder_group_names[i];
+        group = &audio->encoder_groups[i];
+        std::snprintf(group->name, sizeof(group->name), "%s", name.c_str());
+        group->encoder.codec = (MediaCodecType)value_int(audio_encoder_group_key(name, "codec").c_str());
+        group->encoder.sample_rate = value_int(audio_encoder_group_key(name, "sample_rate").c_str());
+        group->encoder.channels = value_int(audio_encoder_group_key(name, "channels").c_str());
+        group->encoder.input_channel = value_int(audio_encoder_group_key(name, "input_channel").c_str());
+        group->encoder.aac.bitrate = value_int(audio_encoder_group_key(name, "aac_bitrate").c_str());
+        group->encoder.aac.profile = value_int(audio_encoder_group_key(name, "aac_profile").c_str());
+        group->encoder.opus.bitrate = value_int(audio_encoder_group_key(name, "opus_bitrate").c_str());
+        group->encoder.opus.complexity = value_int(audio_encoder_group_key(name, "opus_complexity").c_str());
+        group->encoder.opus.vbr = value_int(audio_encoder_group_key(name, "opus_vbr").c_str());
+        group->encoder.opus.fec = value_int(audio_encoder_group_key(name, "opus_fec").c_str());
+        group->encoder.opus.dtx = value_int(audio_encoder_group_key(name, "opus_dtx").c_str());
+        group->encoder.opus.packet_loss_percent = value_int(audio_encoder_group_key(name, "opus_packet_loss_percent").c_str());
+    }
 }
 
 static void fill_isp_source(IspSourceConfig *isp) {
@@ -759,6 +829,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->rtsp.password = value_string((p + "RTSP_PASSWORD").c_str());
     stream->rtsp.queue_capacity = value_int((p + "RTSP_QUEUE_CAPACITY").c_str());
     stream->rtsp.immediate_sps_pps_on_new_client = value_int((p + "RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT").c_str());
+    stream->rtsp_audio.encoder_group = value_string((p + "RTSP_AUDIO_ENCODER_GROUP").c_str());
 
     stream->rtmp.name = value_string((p + "RTMP_NAME").c_str());
     stream->rtmp.publish_url = value_string((p + "RTMP_PUBLISH_URL").c_str());
@@ -772,6 +843,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->rtmp.video_bitrate = value_int((p + "RTMP_VIDEO_BITRATE").c_str());
     stream->rtmp.video_codec_name = value_string((p + "RTMP_VIDEO_CODEC_NAME").c_str());
     stream->rtmp.encoder_name = value_string((p + "RTMP_ENCODER_NAME").c_str());
+    stream->rtmp_audio.encoder_group = value_string((p + "RTMP_AUDIO_ENCODER_GROUP").c_str());
 
     stream->gb28181.name = value_string((p + "GB28181_NAME").c_str());
     stream->gb28181.server_ip = value_string((p + "GB28181_SERVER_IP").c_str());
@@ -796,6 +868,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->gb28181.channel_id = value_string((p + "GB28181_CHANNEL_ID").c_str());
     stream->gb28181.user_agent = value_string((p + "GB28181_USER_AGENT").c_str());
     stream->gb28181.queue_capacity = value_int((p + "GB28181_QUEUE_CAPACITY").c_str());
+    stream->gb28181_audio.encoder_group = value_string((p + "GB28181_AUDIO_ENCODER_GROUP").c_str());
 
     snprintf(stream->webrtc.name, sizeof(stream->webrtc.name), "%s",
              value_string((p + "WEBRTC_NAME").c_str()));
@@ -804,6 +877,7 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->webrtc.port = value_int((p + "WEBRTC_PORT").c_str());
     stream->webrtc.queue_capacity = value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str());
     stream->webrtc.video_fps = value_int((p + "WEBRTC_VIDEO_FPS").c_str());
+    stream->webrtc_audio.encoder_group = value_string((p + "WEBRTC_AUDIO_ENCODER_GROUP").c_str());
 }
 
 int def_value_init(const char *config_path) {

@@ -21,11 +21,11 @@ static void reset_throughput_window(MediaGatewayCtx *ctx)
 
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        ctx->stats.streams[i].frames = 0;
-        ctx->stats.streams[i].bytes = 0;
+        ctx->metrics.throughput.streams[i].frames = 0;
+        ctx->metrics.throughput.streams[i].bytes = 0;
     }
-    ctx->stats.audio.frames = 0;
-    ctx->stats.audio.bytes = 0;
+    ctx->metrics.throughput.audio.frames = 0;
+    ctx->metrics.throughput.audio.bytes = 0;
 }
 
 /**
@@ -40,17 +40,17 @@ static void log_output_stats(MediaGatewayCtx *ctx)
     MediaOutputStats stats = {0};
     int i = 0;
 
-    for (i = 0; i < ctx->output_count; ++i)
+    for (i = 0; i < ctx->output.count; ++i)
     {
         memset(&stats, 0, sizeof(stats));
-        media_output_get_stats(&ctx->outputs[i], &stats);
+        media_output_get_stats(&ctx->output.channels[i].output, &stats);
         LOG_INFO("[OUTPUT] idx=%d stream=%d name=%s type=%d connected=%d queue=%d video_queue=%d audio_queue=%d sent=%" PRIu64
                  " bytes=%" PRIu64 " dropped=%" PRIu64 " send_failures=%" PRIu64
                  " reconnects=%" PRIu64 " wait_key=%d",
                  i,
-                 ctx->output_stream_index[i],
-                 ctx->outputs[i].config.name ? ctx->outputs[i].config.name : "unknown",
-                 ctx->outputs[i].type,
+                 ctx->output.channels[i].stream_index,
+                 ctx->output.channels[i].output.config.name ? ctx->output.channels[i].output.config.name : "unknown",
+                 ctx->output.channels[i].output.type,
                  stats.connected,
                  stats.queue_depth,
                  stats.video_queue_depth,
@@ -78,7 +78,7 @@ static void log_isp_status(MediaGatewayCtx *ctx)
     if (!ctx->config.input.isp.enabled)
         return;
 
-    if (isp_controller_query_status(&ctx->isp, &status) != 0)
+    if (isp_controller_query_status(&ctx->video.isp, &status) != 0)
     {
         LOG_WARN("[ISP_STAT] query failed");
         return;
@@ -183,12 +183,19 @@ static void log_isp_status(MediaGatewayCtx *ctx)
 void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
 {
     uint64_t now = media_gateway_get_now_us();
-    uint64_t span_us = now - ctx->stats.last_ts_us;
+    uint64_t span_us = now - ctx->metrics.throughput.last_ts_us;
     double span_sec;
     double fps;
     double kbps;
+    double sfps = 0.0;
+    double skbps = 0.0;
+    double afps = 0.0;
+    double akbps = 0.0;
+    double audio_group_avg_us = 0.0;
+    MediaGatewayAudioEncoderGroupStats *audio_group_stats = NULL;
     uint64_t total_frames = 0;
     uint64_t total_bytes = 0;
+    size_t audio_group_index = 0;
     int i;
 
     if (span_us < (uint64_t)ctx->config.system.runtime.stats_interval_sec * 1000000ULL)
@@ -197,8 +204,8 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
     span_sec = (double)span_us / 1000000.0;
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
-        total_frames += ctx->stats.streams[i].frames;
-        total_bytes += ctx->stats.streams[i].bytes;
+        total_frames += ctx->metrics.throughput.streams[i].frames;
+        total_bytes += ctx->metrics.throughput.streams[i].bytes;
     }
     fps = (span_sec > 0.0) ? ((double)total_frames / span_sec) : 0.0;
     kbps = (span_sec > 0.0) ? ((double)total_bytes * 8.0 / 1000.0 / span_sec) : 0.0;
@@ -207,36 +214,60 @@ void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
 
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
-        double sfps;
-        double skbps;
-        if (!ctx->stream_enabled[i])
+        if (!ctx->video.streams[i].enabled)
             continue;
-        sfps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].frames / span_sec) : 0.0;
-        skbps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+        sfps = (span_sec > 0.0) ? ((double)ctx->metrics.throughput.streams[i].frames / span_sec) : 0.0;
+        skbps = (span_sec > 0.0) ? ((double)ctx->metrics.throughput.streams[i].bytes * 8.0 / 1000.0 / span_sec) : 0.0;
         LOG_WARN("[STAT] stream=%d name=%s fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  i,
                  ctx->config.video.streams[i].name ? ctx->config.video.streams[i].name : "unknown",
                  sfps,
                  skbps,
-                 ctx->stats.streams[i].frames,
-                 ctx->stats.streams[i].bytes);
+                 ctx->metrics.throughput.streams[i].frames,
+                 ctx->metrics.throughput.streams[i].bytes);
     }
     if (ctx->config.audio.source.enabled)
     {
-        double afps = (span_sec > 0.0) ? ((double)ctx->stats.audio.frames / span_sec) : 0.0;
-        double akbps = (span_sec > 0.0) ? ((double)ctx->stats.audio.bytes * 8.0 / 1000.0 / span_sec) : 0.0;
+        afps = (span_sec > 0.0) ? ((double)ctx->metrics.throughput.audio.frames / span_sec) : 0.0;
+        akbps = (span_sec > 0.0) ? ((double)ctx->metrics.throughput.audio.bytes * 8.0 / 1000.0 / span_sec) : 0.0;
         LOG_WARN("[STAT] audio fps=%.2f bitrate=%.2fkbps frames=%" PRIu64 " bytes=%" PRIu64,
                  afps,
                  akbps,
-                 ctx->stats.audio.frames,
-                 ctx->stats.audio.bytes);
+                 ctx->metrics.throughput.audio.frames,
+                 ctx->metrics.throughput.audio.bytes);
+        for (audio_group_index = 0;
+             audio_group_index < ctx->metrics.throughput.audio_group_count &&
+             audio_group_index < MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS;
+             ++audio_group_index)
+        {
+            audio_group_stats = &ctx->metrics.throughput.audio_groups[audio_group_index];
+            audio_group_avg_us = audio_group_stats->input_frames > 0
+                                     ? (double)audio_group_stats->encode_total_us /
+                                           (double)audio_group_stats->input_frames
+                                     : 0.0;
+            LOG_WARN("[AUDIO_GROUP_STAT] id=%llu name=%s codec=%d rate=%d channels=%d input=%" PRIu64
+                     " packets=%" PRIu64 " empty=%" PRIu64 " failures=%" PRIu64
+                     " bytes=%" PRIu64 " avg_encode_us=%.2f max_encode_us=%" PRIu64,
+                     (unsigned long long)audio_group_stats->group_id,
+                     audio_group_stats->name,
+                     audio_group_stats->codec,
+                     audio_group_stats->sample_rate,
+                     audio_group_stats->channels,
+                     audio_group_stats->input_frames,
+                     audio_group_stats->encoded_packets,
+                     audio_group_stats->empty_outputs,
+                     audio_group_stats->encode_failures,
+                     audio_group_stats->encoded_bytes,
+                     audio_group_avg_us,
+                     audio_group_stats->encode_max_us);
+        }
     }
 
     log_output_stats(ctx);
     log_isp_status(ctx); /* ISP 状态日志过于频繁且冗长，默认注释掉，需要时再打开 */
     media_gateway_bench_log_and_reset_if_due(ctx);
     reset_throughput_window(ctx);
-    ctx->stats.last_ts_us = now;
+    ctx->metrics.throughput.last_ts_us = now;
 }
 
 /**
@@ -256,19 +287,19 @@ void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSna
         return;
 
     memset(snapshot, 0, sizeof(*snapshot));
-    if (ctx->stats_lock_ready)
-        pthread_mutex_lock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_lock(&ctx->metrics.lock);
     now = media_gateway_get_now_us();
-    span_us = now - ctx->stats.last_ts_us;
+    span_us = now - ctx->metrics.throughput.last_ts_us;
     if (span_us > 0)
     {
         span_sec = (double)span_us / 1000000.0;
     }
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
-        snapshot->streams[i].fps = (span_sec > 0.0) ? ((double)ctx->stats.streams[i].frames / span_sec) : 0.0;
-        snapshot->streams[i].bytes = ctx->stats.streams[i].bytes;
+        snapshot->streams[i].fps = (span_sec > 0.0) ? ((double)ctx->metrics.throughput.streams[i].frames / span_sec) : 0.0;
+        snapshot->streams[i].bytes = ctx->metrics.throughput.streams[i].bytes;
     }
-    if (ctx->stats_lock_ready)
-        pthread_mutex_unlock(&ctx->stats_lock);
+    if (ctx->metrics.lock_ready)
+        pthread_mutex_unlock(&ctx->metrics.lock);
 }

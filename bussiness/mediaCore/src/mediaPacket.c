@@ -194,7 +194,7 @@ int media_buffer_create_copy(const uint8_t *data, size_t size, MediaBuffer **out
         buffer->capacity = size;
     }
 
-    memcpy(buffer->data, data, size);
+    memcpy(buffer->data, data, size); /* todo:当前音频还是采用 memcpy，原因是什么呢 */
     buffer->size = size;
     /*
      * 初始引用属于生产者栈上的 MediaPacket；每入一个输出队列会通过
