@@ -6,12 +6,6 @@
 /docs
 *.md
 /thirdparty/*
-!/thirdparty/rtspServer/
-/thirdparty/rtspServer/*
-!/thirdparty/rtspServer/inc/
-/thirdparty/rtspServer/inc/*
-!/thirdparty/rtspServer/inc/rtsp_server_api.h
-!/thirdparty/datachannel/
 /test
 !/test/
 /test/*
