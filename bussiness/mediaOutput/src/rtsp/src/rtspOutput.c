@@ -247,7 +247,7 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
     MediaCodecType codec;
     int sample_rate;
     int channels;
-    int profile;
+    int aac_object_type;
     enum AUDIO_e rtsp_audio_type;
 
     codec = impl->config.audio_codec;
@@ -257,13 +257,13 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
 
     sample_rate = (impl->config.audio_sample_rate > 0) ? impl->config.audio_sample_rate : 8000;
     channels = (impl->config.audio_channels > 0) ? impl->config.audio_channels : 1;
-    profile = (impl->config.aac_profile > 0) ? impl->config.aac_profile : 2;
+    aac_object_type = (impl->config.aac_object_type > 0) ? impl->config.aac_object_type : 2;
 
     if (codec == MEDIA_CODEC_AAC) {
         rtsp_audio_type = AUDIO_AAC;
     } else if (codec == MEDIA_CODEC_G711A) {
         rtsp_audio_type = AUDIO_PCMA;
-        profile = 0;
+        aac_object_type = 0;
     } else {
         LOG_WARN("rtsp_output_start skip unsupported declared audio codec=%d session=%s",
                  codec,
@@ -271,7 +271,11 @@ static int rtsp_output_add_audio_track(RtspOutputImpl *impl) {
         return MEDIA_OK;
     }
 
-    if (sessionAddAudio(impl->session, rtsp_audio_type, profile, sample_rate, channels) < 0) {
+    if (sessionAddAudio(impl->session,
+                        rtsp_audio_type,
+                        aac_object_type,
+                        sample_rate,
+                        channels) < 0) {
         LOG_ERROR("rtsp_output_start failed: sessionAddAudio session=%s codec=%d sample_rate=%d channels=%d",
                   impl->config.session_name ? impl->config.session_name : "unknown",
                   codec,

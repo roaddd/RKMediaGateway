@@ -145,7 +145,7 @@ static void gateway_debug_append_rtsp_config_compact(char *reply,
                                rtsp->audio_codec,
                                rtsp->audio_sample_rate,
                                rtsp->audio_channels,
-                               rtsp->aac_profile);
+                               rtsp->aac_object_type);
 }
 
 /**

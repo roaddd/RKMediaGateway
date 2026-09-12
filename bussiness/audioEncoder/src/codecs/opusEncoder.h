@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mediaPacket.h"
+#include "audioEncoder.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,7 +19,7 @@ typedef struct {
     int enable_fec;        /* 是否启用带内 FEC。 */
     int enable_dtx;        /* 是否启用 DTX。 */
     int packet_loss_percent; /* 预期丢包率 0..100，供 FEC 决策使用。 */
-    int application;       /* OPUS_APPLICATION_*；0 时默认 VOIP。 */
+    AudioEncoderOpusApplication application; /* Opus 优化模式；INVALID 时默认 VOIP。 */
     int max_packet_bytes;  /* 编码输出缓冲容量。 */
 } OpusEncoderConfig;
 

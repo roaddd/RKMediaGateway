@@ -3,7 +3,6 @@
 #include "codecs/aacEncoder.h"
 #include "codecs/g711Encoder.h"
 #include "logger.h"
-#include "opus_defines.h"
 #include "codecs/opusEncoder.h"
 
 #include <functional>
@@ -17,7 +16,7 @@ const int kDefaultG711MaxSamples = 320;
 const int kDefaultAacSampleRate = 8000;
 const int kDefaultAacMaxSamples = 1024;
 const int kDefaultAacBitrate = 32000;
-const int kDefaultAacProfile = 2;
+const AudioEncoderAacObjectType kDefaultAacObjectType = AUDIO_ENCODER_AAC_OBJECT_TYPE_LC;
 const int kDefaultOpusSampleRate = 48000;
 const int kDefaultOpusBitrate = 24000;
 const int kDefaultOpusComplexity = 6;
@@ -30,11 +29,20 @@ bool isSupportedOpusSampleRate(int sample_rate)
            sample_rate == 24000 || sample_rate == 48000;
 }
 
-bool isSupportedOpusApplication(int application)
+bool isSupportedOpusApplication(AudioEncoderOpusApplication application)
 {
-    return application == OPUS_APPLICATION_VOIP ||
-           application == OPUS_APPLICATION_AUDIO ||
-           application == OPUS_APPLICATION_RESTRICTED_LOWDELAY;
+    return application == AUDIO_ENCODER_OPUS_APPLICATION_VOIP ||
+           application == AUDIO_ENCODER_OPUS_APPLICATION_AUDIO ||
+           application == AUDIO_ENCODER_OPUS_APPLICATION_RESTRICTED_LOW_DELAY;
+}
+
+bool isSupportedAacObjectType(AudioEncoderAacObjectType object_type)
+{
+    return object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_LC ||
+           object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_HE ||
+           object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_LD ||
+           object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_HE_V2 ||
+           object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_ELD;
 }
 
 void hashCombine(size_t *seed, int value)
@@ -56,13 +64,13 @@ AudioEncoderKey::AudioEncoderKey()
       max_samples_per_frame(0),
       capture_channel_index(0),
       bitrate(0),
-      profile(0),
+      aac_object_type(AUDIO_ENCODER_AAC_OBJECT_TYPE_INVALID),
       complexity(0),
       enable_vbr(0),
       enable_fec(0),
       enable_dtx(0),
       packet_loss_percent(0),
-      application(0),
+      opus_application(AUDIO_ENCODER_OPUS_APPLICATION_INVALID),
       max_packet_bytes(0)
 {
 }
@@ -75,13 +83,13 @@ bool AudioEncoderKey::operator==(const AudioEncoderKey &other) const
            max_samples_per_frame == other.max_samples_per_frame &&
            capture_channel_index == other.capture_channel_index &&
            bitrate == other.bitrate &&
-           profile == other.profile &&
+           aac_object_type == other.aac_object_type &&
            complexity == other.complexity &&
            enable_vbr == other.enable_vbr &&
            enable_fec == other.enable_fec &&
            enable_dtx == other.enable_dtx &&
            packet_loss_percent == other.packet_loss_percent &&
-           application == other.application &&
+           opus_application == other.opus_application &&
            max_packet_bytes == other.max_packet_bytes;
 }
 
@@ -100,13 +108,13 @@ size_t AudioEncoderKeyHash::operator()(const AudioEncoderKey &key) const
     hashCombine(&seed, key.max_samples_per_frame);
     hashCombine(&seed, key.capture_channel_index);
     hashCombine(&seed, key.bitrate);
-    hashCombine(&seed, key.profile);
+    hashCombine(&seed, static_cast<int>(key.aac_object_type));
     hashCombine(&seed, key.complexity);
     hashCombine(&seed, key.enable_vbr);
     hashCombine(&seed, key.enable_fec);
     hashCombine(&seed, key.enable_dtx);
     hashCombine(&seed, key.packet_loss_percent);
-    hashCombine(&seed, key.application);
+    hashCombine(&seed, static_cast<int>(key.opus_application));
     hashCombine(&seed, key.max_packet_bytes);
     return seed;
 }
@@ -156,8 +164,13 @@ int normalizeAudioEncoderConfig(const AudioEncoderConfig &config,
             result.max_samples_per_frame = kDefaultAacMaxSamples;
         if (result.aac.bitrate <= 0)
             result.aac.bitrate = kDefaultAacBitrate;
-        if (result.aac.profile <= 0)
-            result.aac.profile = kDefaultAacProfile;
+        if (result.aac.object_type == AUDIO_ENCODER_AAC_OBJECT_TYPE_INVALID)
+            result.aac.object_type = kDefaultAacObjectType;
+        if (!isSupportedAacObjectType(result.aac.object_type)) {
+            LOG_ERROR("normalizeAudioEncoderConfig failed: unsupported AAC object_type=%d",
+                      static_cast<int>(result.aac.object_type));
+            return -1;
+        }
         if (result.encoder_channels != 1 && result.encoder_channels != 2) {
             LOG_ERROR("normalizeAudioEncoderConfig failed: AAC channels=%d expected=1..2", result.encoder_channels);
             return -1;
@@ -169,8 +182,8 @@ int normalizeAudioEncoderConfig(const AudioEncoderConfig &config,
             result.opus.bitrate = kDefaultOpusBitrate;
         if (result.opus.complexity < 0 || result.opus.complexity > 10)
             result.opus.complexity = kDefaultOpusComplexity;
-        if (result.opus.application == 0)
-            result.opus.application = OPUS_APPLICATION_VOIP;
+        if (result.opus.application == AUDIO_ENCODER_OPUS_APPLICATION_INVALID)
+            result.opus.application = AUDIO_ENCODER_OPUS_APPLICATION_VOIP;
         if (result.opus.max_packet_bytes <= 0)
             result.opus.max_packet_bytes = kDefaultOpusPacketBytes;
         result.opus.enable_vbr = result.opus.enable_vbr ? 1 : 0;
@@ -184,7 +197,7 @@ int normalizeAudioEncoderConfig(const AudioEncoderConfig &config,
         }
         if (!isSupportedOpusApplication(result.opus.application)) {
             LOG_ERROR("normalizeAudioEncoderConfig failed: unsupported Opus application=%d",
-                      result.opus.application);
+                      static_cast<int>(result.opus.application));
             return -1;
         }
         if (result.encoder_channels != 1 && result.encoder_channels != 2) {
@@ -226,7 +239,7 @@ int makeAudioEncoderKey(const AudioEncoderConfig &config, AudioEncoderKey *key)
     result.capture_channel_index = normalized.capture_channel_index;
     if (normalized.codec == MEDIA_CODEC_AAC) {
         result.bitrate = normalized.aac.bitrate;
-        result.profile = normalized.aac.profile;
+        result.aac_object_type = normalized.aac.object_type;
     } else if (normalized.codec == MEDIA_CODEC_OPUS) {
         result.bitrate = normalized.opus.bitrate;
         result.complexity = normalized.opus.complexity;
@@ -234,7 +247,7 @@ int makeAudioEncoderKey(const AudioEncoderConfig &config, AudioEncoderKey *key)
         result.enable_fec = normalized.opus.enable_fec;
         result.enable_dtx = normalized.opus.enable_dtx;
         result.packet_loss_percent = normalized.opus.packet_loss_percent;
-        result.application = normalized.opus.application;
+        result.opus_application = normalized.opus.application;
         result.max_packet_bytes = normalized.opus.max_packet_bytes;
     }
     *key = result;
@@ -362,14 +375,14 @@ public:
         native_config.sample_rate = config.sample_rate;
         native_config.channels = config.encoder_channels;
         native_config.bitrate = config.aac.bitrate;
-        native_config.profile = config.aac.profile;
+        native_config.object_type = config.aac.object_type;
         native_config.max_samples_per_frame = config.max_samples_per_frame;
         if (aac_encoder_init(&ctx_, &native_config) != 0) {
-            LOG_ERROR("AacAudioEncoderAdapter initialize failed: rate=%d channels=%d bitrate=%d profile=%d max_samples=%d",
+            LOG_ERROR("AacAudioEncoderAdapter initialize failed: rate=%d channels=%d bitrate=%d object_type=%d max_samples=%d",
                       config.sample_rate,
                       config.encoder_channels,
                       config.aac.bitrate,
-                      config.aac.profile,
+                      static_cast<int>(config.aac.object_type),
                       config.max_samples_per_frame);
             return -1;
         }

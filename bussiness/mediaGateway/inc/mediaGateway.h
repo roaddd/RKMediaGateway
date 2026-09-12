@@ -138,8 +138,8 @@ typedef struct {
 } MediaGatewayAudioRuntimeConfig;
 
 typedef struct {
-    int bitrate;                     /* AAC 目标码率，单位 bit/s。 */
-    int profile;                     /* AAC object type，2 表示 AAC-LC。 */
+    int bitrate;                            /* AAC 目标码率，单位 bit/s。 */
+    AudioEncoderAacObjectType object_type; /* AAC Audio Object Type。 */
 } MediaGatewayAudioAacConfig;
 
 typedef struct {
@@ -149,6 +149,7 @@ typedef struct {
     int fec;                         /* 是否启用 Opus 带内 FEC。 */
     int dtx;                         /* 是否启用 Opus DTX。 */
     int packet_loss_percent;         /* Opus 预期丢包率 0..100。 */
+    AudioEncoderOpusApplication application; /* Opus 内容与时延优化模式。 */
 } MediaGatewayAudioOpusConfig;
 
 typedef struct {

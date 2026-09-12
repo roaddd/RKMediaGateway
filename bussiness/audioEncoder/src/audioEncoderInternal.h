@@ -9,10 +9,14 @@ namespace rkmedia {
 
 /** @description: AAC 编码器私有参数。 */
 struct AudioEncoderAacOptions {
-    int bitrate; /* 目标码率，单位 bit/s。 */
-    int profile; /* AAC object type，2 表示 AAC-LC。 */
+    int bitrate;                            /* 目标码率，单位 bit/s。 */
+    AudioEncoderAacObjectType object_type; /* AAC Audio Object Type。 */
 
-    AudioEncoderAacOptions() : bitrate(32000), profile(2) {}
+    AudioEncoderAacOptions()
+        : bitrate(32000),
+          object_type(AUDIO_ENCODER_AAC_OBJECT_TYPE_LC)
+    {
+    }
 };
 
 /** @description: Opus 编码器私有参数。 */
@@ -23,7 +27,7 @@ struct AudioEncoderOpusOptions {
     int enable_fec;          /* 是否启用带内 FEC。 */
     int enable_dtx;          /* 是否启用 DTX。 */
     int packet_loss_percent; /* 预期丢包率，范围 0..100。 */
-    int application;         /* OPUS_APPLICATION_*；0 表示使用底层默认值。 */
+    AudioEncoderOpusApplication application; /* Opus 内容与时延优化模式。 */
     int max_packet_bytes;    /* 单个 Opus packet 的最大输出缓冲字节数。 */
 
     AudioEncoderOpusOptions()
@@ -33,7 +37,7 @@ struct AudioEncoderOpusOptions {
           enable_fec(1),
           enable_dtx(0),
           packet_loss_percent(10),
-          application(0),
+          application(AUDIO_ENCODER_OPUS_APPLICATION_INVALID),
           max_packet_bytes(4000)
     {
     }
@@ -79,13 +83,13 @@ struct AudioEncoderKey {
     int max_samples_per_frame;
     int capture_channel_index;
     int bitrate;
-    int profile;
+    AudioEncoderAacObjectType aac_object_type;
     int complexity;
     int enable_vbr;
     int enable_fec;
     int enable_dtx;
     int packet_loss_percent;
-    int application;
+    AudioEncoderOpusApplication opus_application;
     int max_packet_bytes;
 
     AudioEncoderKey();

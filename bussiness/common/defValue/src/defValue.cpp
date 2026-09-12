@@ -16,8 +16,8 @@ static std::vector<std::string> g_audio_encoder_group_names;
 
 static const char *kAudioEncoderGroupFields[] = {
     "codec", "sample_rate", "channels", "input_channel", "aac_bitrate",
-    "aac_profile", "opus_bitrate", "opus_complexity", "opus_vbr",
-    "opus_fec", "opus_dtx", "opus_packet_loss_percent"
+    "aac_object_type", "opus_bitrate", "opus_complexity", "opus_vbr",
+    "opus_fec", "opus_dtx", "opus_packet_loss_percent", "opus_application"
 };
 
 static std::string trim_copy(const std::string &s) {
@@ -177,13 +177,14 @@ static int register_audio_encoder_group(const std::string &name) {
     set_value(audio_encoder_group_key(name, "channels").c_str(), "1");
     set_value(audio_encoder_group_key(name, "input_channel").c_str(), "0");
     set_value(audio_encoder_group_key(name, "aac_bitrate").c_str(), "32000");
-    set_value(audio_encoder_group_key(name, "aac_profile").c_str(), "2");
+    set_value(audio_encoder_group_key(name, "aac_object_type").c_str(), "2");
     set_value(audio_encoder_group_key(name, "opus_bitrate").c_str(), "24000");
     set_value(audio_encoder_group_key(name, "opus_complexity").c_str(), "6");
     set_value(audio_encoder_group_key(name, "opus_vbr").c_str(), "1");
     set_value(audio_encoder_group_key(name, "opus_fec").c_str(), "1");
     set_value(audio_encoder_group_key(name, "opus_dtx").c_str(), "0");
     set_value(audio_encoder_group_key(name, "opus_packet_loss_percent").c_str(), "10");
+    set_value(audio_encoder_group_key(name, "opus_application").c_str(), "1");
     return 0;
 }
 
@@ -696,13 +697,16 @@ static void fill_audio_source(AudioSourceConfig *audio) {
         group->encoder.channels = value_int(audio_encoder_group_key(name, "channels").c_str());
         group->encoder.input_channel = value_int(audio_encoder_group_key(name, "input_channel").c_str());
         group->encoder.aac.bitrate = value_int(audio_encoder_group_key(name, "aac_bitrate").c_str());
-        group->encoder.aac.profile = value_int(audio_encoder_group_key(name, "aac_profile").c_str());
+        group->encoder.aac.object_type = static_cast<AudioEncoderAacObjectType>(
+            value_int(audio_encoder_group_key(name, "aac_object_type").c_str()));
         group->encoder.opus.bitrate = value_int(audio_encoder_group_key(name, "opus_bitrate").c_str());
         group->encoder.opus.complexity = value_int(audio_encoder_group_key(name, "opus_complexity").c_str());
         group->encoder.opus.vbr = value_int(audio_encoder_group_key(name, "opus_vbr").c_str());
         group->encoder.opus.fec = value_int(audio_encoder_group_key(name, "opus_fec").c_str());
         group->encoder.opus.dtx = value_int(audio_encoder_group_key(name, "opus_dtx").c_str());
         group->encoder.opus.packet_loss_percent = value_int(audio_encoder_group_key(name, "opus_packet_loss_percent").c_str());
+        group->encoder.opus.application = static_cast<AudioEncoderOpusApplication>(
+            value_int(audio_encoder_group_key(name, "opus_application").c_str()));
     }
 }
 

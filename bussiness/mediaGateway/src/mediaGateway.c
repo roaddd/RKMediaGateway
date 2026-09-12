@@ -1035,6 +1035,14 @@ static int is_valid_opus_frame_samples(int sample_rate, int samples_per_channel)
            scaled_samples == (int64_t)sample_rate * 24;
 }
 
+/** @description: 判断 Opus application 是否为公共接口支持的有限选项。 */
+static int is_valid_opus_application(AudioEncoderOpusApplication application)
+{
+    return application == AUDIO_ENCODER_OPUS_APPLICATION_VOIP ||
+           application == AUDIO_ENCODER_OPUS_APPLICATION_AUDIO ||
+           application == AUDIO_ENCODER_OPUS_APPLICATION_RESTRICTED_LOW_DELAY;
+}
+
 static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig *src)
 {
     int i = 0;
@@ -1231,7 +1239,8 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
                 return config_error_int("audio.encoder_groups[].sample_rate", audio_encoder->sample_rate, "must be 8000 for G711");
             if (audio_encoder->codec == MEDIA_CODEC_AAC &&
                 (require_positive_int("audio.encoder_groups[].aac_bitrate", audio_encoder->aac.bitrate) != 0 ||
-                 require_positive_int("audio.encoder_groups[].aac_profile", audio_encoder->aac.profile) != 0))
+                 require_positive_int("audio.encoder_groups[].aac_object_type",
+                                      audio_encoder->aac.object_type) != 0))
                 return -1;
             if (audio_encoder->codec == MEDIA_CODEC_OPUS)
             {
@@ -1247,6 +1256,10 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
                     return config_error_int("audio.encoder_groups[].opus_complexity", audio_encoder->opus.complexity, "must be between 0 and 10");
                 if (audio_encoder->opus.packet_loss_percent < 0 || audio_encoder->opus.packet_loss_percent > 100)
                     return config_error_int("audio.encoder_groups[].opus_packet_loss_percent", audio_encoder->opus.packet_loss_percent, "must be between 0 and 100");
+                if (!is_valid_opus_application(audio_encoder->opus.application))
+                    return config_error_int("audio.encoder_groups[].opus_application",
+                                            audio_encoder->opus.application,
+                                            "must be 1 (VOIP), 2 (AUDIO), or 3 (RESTRICTED_LOW_DELAY)");
             }
         }
     }
@@ -1485,7 +1498,7 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
             output_config.protocol.rtsp.audio_codec = audio_group->encoder.codec;
             output_config.protocol.rtsp.audio_sample_rate = audio_group->encoder.sample_rate;
             output_config.protocol.rtsp.audio_channels = audio_group->encoder.channels;
-            output_config.protocol.rtsp.aac_profile = audio_group->encoder.aac.profile;
+            output_config.protocol.rtsp.aac_object_type = audio_group->encoder.aac.object_type;
         }
         else
         {
@@ -2137,7 +2150,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
             if (group->encoder.codec == MEDIA_CODEC_AAC)
             {
                 encoder_params.codec_params.aac.bitrate = group->encoder.aac.bitrate;
-                encoder_params.codec_params.aac.profile = group->encoder.aac.profile;
+                encoder_params.codec_params.aac.object_type = group->encoder.aac.object_type;
             }
             else if (group->encoder.codec == MEDIA_CODEC_OPUS)
             {
@@ -2147,6 +2160,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
                 encoder_params.codec_params.opus.enable_fec = group->encoder.opus.fec;
                 encoder_params.codec_params.opus.enable_dtx = group->encoder.opus.dtx;
                 encoder_params.codec_params.opus.packet_loss_percent = group->encoder.opus.packet_loss_percent;
+                encoder_params.codec_params.opus.application = group->encoder.opus.application;
             }
             group_id = AUDIO_ENCODER_INVALID_GROUP_ID;
             reused = 0;

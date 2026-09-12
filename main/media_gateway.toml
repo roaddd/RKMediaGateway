@@ -456,7 +456,7 @@ sample_rate = 48000
 channels = 1
 input_channel = 0
 aac_bitrate = 32000
-aac_profile = 2
+aac_object_type = 2
 
 # -----------------------------------------------------------------------------
 # G711 A-law：8 kHz 单声道，适用于 RTSP/WebRTC/GB28181/RTMP
@@ -490,6 +490,8 @@ opus_vbr = true
 opus_fec = true
 opus_dtx = false
 opus_packet_loss_percent = 10
+# 1=VOIP，2=AUDIO（音乐/一般音频），3=RESTRICTED_LOW_DELAY。
+opus_application = 1
 
 # =============================================================================
 # 主码流基础编码参数

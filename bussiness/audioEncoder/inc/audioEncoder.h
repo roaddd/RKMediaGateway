@@ -16,10 +16,28 @@ typedef uint64_t AudioEncoderRuntimeGroupId;
 
 typedef struct AudioEncoderManagerHandle AudioEncoderManagerHandle;
 
+/** @description: 项目支持的 AAC Audio Object Type，不暴露 FDK-AAC 枚举。 */
+typedef enum {
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_INVALID = 0, /* 未指定，归一化为 AAC-LC。 */
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_LC = 2,      /* AAC Low Complexity。 */
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_HE = 5,      /* HE-AAC，包含 SBR。 */
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_LD = 23,     /* ER AAC Low Delay。 */
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_HE_V2 = 29,  /* HE-AAC v2，包含 SBR 和 PS。 */
+    AUDIO_ENCODER_AAC_OBJECT_TYPE_ELD = 39     /* ER AAC Enhanced Low Delay。 */
+} AudioEncoderAacObjectType;
+
+/** @description: Opus 编码器针对输入内容和时延目标采用的优化模式。 */
+typedef enum {
+    AUDIO_ENCODER_OPUS_APPLICATION_INVALID = 0,              /* 未指定，归一化为 VOIP。 */
+    AUDIO_ENCODER_OPUS_APPLICATION_VOIP = 1,                 /* 优化语音清晰度和窄带语音质量。 */
+    AUDIO_ENCODER_OPUS_APPLICATION_AUDIO = 2,                /* 优化音乐及一般音频质量。 */
+    AUDIO_ENCODER_OPUS_APPLICATION_RESTRICTED_LOW_DELAY = 3  /* 优化极低时延，弱化语音专用处理。 */
+} AudioEncoderOpusApplication;
+
 /** @description: AAC 编码格式专用参数。 */
 typedef struct {
-    int bitrate; /* AAC 目标码率，单位 bit/s。 */
-    int profile; /* AAC object type，例如 2 表示 AAC-LC。 */
+    int bitrate;                            /* AAC 目标码率，单位 bit/s。 */
+    AudioEncoderAacObjectType object_type; /* AAC Audio Object Type。 */
 } AudioEncoderAacParams;
 
 /** @description: Opus 编码格式专用参数。 */
@@ -30,7 +48,7 @@ typedef struct {
     int enable_fec;          /* 是否启用带内前向纠错：0=禁用，非 0=启用。 */
     int enable_dtx;          /* 是否启用非连续传输：0=禁用，非 0=启用。 */
     int packet_loss_percent; /* 预期网络丢包率，范围 0～100，单位百分比。 */
-    int application;         /* OPUS_APPLICATION_*；0 表示使用模块默认的 VOIP 模式。 */
+    AudioEncoderOpusApplication application; /* Opus 优化模式；INVALID 归一化为 VOIP。 */
     int max_packet_bytes;    /* 单个编码包的最大输出缓冲区大小，单位字节。 */
 } AudioEncoderOpusParams;
 

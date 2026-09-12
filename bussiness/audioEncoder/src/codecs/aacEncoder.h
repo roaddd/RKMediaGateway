@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "mediaPacket.h"
+#include "audioEncoder.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -14,7 +14,7 @@ typedef struct {
     int sample_rate;             /* 输入 PCM 采样率。 */
     int channels;                /* 输入声道数，支持 mono/stereo。 */
     int bitrate;                 /* AAC 目标码率，单位 bit/s。 */
-    int profile;                 /* AAC object type，2 表示 AAC-LC。 */
+    AudioEncoderAacObjectType object_type; /* AAC Audio Object Type。 */
     int max_samples_per_frame;   /* 输入侧单次喂入的每声道采样数，用于校验。 */
 } AacEncoderConfig;
 

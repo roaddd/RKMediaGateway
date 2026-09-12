@@ -16,6 +16,7 @@ configure_file(${PROJECT_SOURCE_DIR}/main/media_gateway.toml
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
@@ -60,7 +61,9 @@ set(THIRDPARTY_DATACHANNEL_INC_DIR ${THIRDPARTY_DATACHANNEL_ROOT}/inc)
 set(THIRDPARTY_DATACHANNEL_LIB ${THIRDPARTY_DATACHANNEL_ROOT}/lib/libdatachannel.so.0.24.5)
 set(THIRDPARTY_OPUS_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/opus)
 set(THIRDPARTY_OPUS_LIB ${THIRDPARTY_OPUS_ROOT}/lib/libopus.a)
-set(FDK_AAC_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/fdk-aac CACHE PATH "Root path of FDK-AAC installation")
+set(THIRDPARTY_FDK_AAC_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/fdk-aac)
+set(THIRDPARTY_FDK_AAC_INC_DIR ${THIRDPARTY_FDK_AAC_ROOT}/inc)
+set(THIRDPARTY_FDK_AAC_LIB ${THIRDPARTY_FDK_AAC_ROOT}/lib/libfdk-aac.a)
 set(EXOSIP_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/exosip_include)
 set(OPENSSL_COMPAT_INCLUDE_DIR ${CMAKE_BINARY_DIR}/generated/openssl_include)
 
@@ -83,6 +86,7 @@ include_directories(${THIRDPARTY_DATACHANNEL_INC_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
+file(GLOB AUDIO_PLAYBACK_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/src/*.cpp)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
 file(GLOB_RECURSE AUDIO_ENCODER_C_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.c)
 file(GLOB_RECURSE AUDIO_ENCODER_CPP_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.cpp)
@@ -104,7 +108,6 @@ file(GLOB debug_command_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/debugCommand/
 file(GLOB SYSTEM_DEBUG_SRC ${PROJECT_SOURCE_DIR}/bussiness/systemDebug/src/*.c)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
-option(ENABLE_FDK_AAC "Build AAC encoder support with FDK-AAC" ON)
 option(ENABLE_RKAIQ "Build RKAIQ/ISP lifecycle support" ON)
 set(RKAIQ_ISP_HW_VERSION "V21" CACHE STRING "RKAIQ ISP hardware version: V20 or V21")
 set(RTMP_ROOT "${THIRDPARTY_RTMP_ROOT}" CACHE PATH "Root path of librtmp installation")
@@ -134,7 +137,20 @@ function(target_enable_opus_encoder target_name)
     target_link_libraries(${target_name} PRIVATE ${THIRDPARTY_OPUS_LIB})
 endfunction()
 
-# Audio capture is a required capability for every target that compiles audioCapture.
+# Link the bundled RK3568 FDK-AAC library statically so CMake does not search the target sysroot.
+function(target_enable_fdk_aac_encoder target_name)
+    if(NOT EXISTS ${THIRDPARTY_FDK_AAC_INC_DIR}/aacenc_lib.h)
+        message(FATAL_ERROR
+            "FDK-AAC encoder header not found: ${THIRDPARTY_FDK_AAC_INC_DIR}/aacenc_lib.h")
+    endif()
+    if(NOT EXISTS ${THIRDPARTY_FDK_AAC_LIB})
+        message(FATAL_ERROR "FDK-AAC static library not found: ${THIRDPARTY_FDK_AAC_LIB}")
+    endif()
+    target_include_directories(${target_name} PRIVATE ${THIRDPARTY_FDK_AAC_INC_DIR})
+    target_link_libraries(${target_name} PRIVATE ${THIRDPARTY_FDK_AAC_LIB})
+endfunction()
+
+# ALSA is a required capability for every target that compiles audio input or output modules.
 # Fail at configure time instead of producing a binary that can only reject audio at runtime.
 function(target_link_alsa_audio target_name)
     if(NOT ALSA_INCLUDE_DIR OR NOT ALSA_LIBRARY)
@@ -174,22 +190,7 @@ endif()
 find_path(ALSA_INCLUDE_DIR NAMES alsa/asoundlib.h)
 find_library(ALSA_LIBRARY NAMES asound)
 if(ALSA_INCLUDE_DIR AND ALSA_LIBRARY)
-    message(STATUS "ALSA audio capture dependency found")
-endif()
-
-if(ENABLE_FDK_AAC)
-    find_path(FDK_AAC_INCLUDE_DIR
-        NAMES aacenc_lib.h
-        HINTS ${FDK_AAC_ROOT}/inc ${FDK_AAC_ROOT}/include
-        PATH_SUFFIXES fdk-aac)
-    find_library(FDK_AAC_LIBRARY
-        NAMES fdk-aac fdk_aac
-        HINTS ${FDK_AAC_ROOT}/lib)
-    if(FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        message(STATUS "FDK-AAC encoder enabled")
-    else()
-        message(WARNING "ENABLE_FDK_AAC=ON but FDK-AAC headers/library not found; AAC config will report unsupported at runtime")
-    endif()
+    message(STATUS "ALSA audio input/output dependency found")
 endif()
 
 if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
@@ -204,37 +205,25 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
     target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
     target_link_alsa_audio(audio_pipeline_test)
     target_enable_opus_encoder(audio_pipeline_test)
-    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        target_include_directories(audio_pipeline_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
-        target_link_libraries(audio_pipeline_test PRIVATE ${FDK_AAC_LIBRARY})
-        target_compile_definitions(audio_pipeline_test PRIVATE ENABLE_FDK_AAC=1)
-    endif()
+    target_enable_fdk_aac_encoder(audio_pipeline_test)
     set_target_properties(audio_pipeline_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()
 
 if(BUILD_TARGET STREQUAL "audio_multi_encoder_test" OR BUILD_TARGET STREQUAL "all")
-    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        add_executable(audio_multi_encoder_test
-            ${PROJECT_SOURCE_DIR}/main/main_audio_multi_encoder_test.cpp
-            ${MEDIA_CORE_SRC}
-            ${AUDIO_CAPTURE_SRC}
-            ${AUDIO_FRAME_SOURCE_SRC}
-            ${AUDIO_ENCODER_SRC}
-            ${UTIL_SRC}
-        )
-        target_link_libraries(audio_multi_encoder_test PRIVATE logger pthread m)
-        target_link_alsa_audio(audio_multi_encoder_test)
-        target_enable_opus_encoder(audio_multi_encoder_test)
-        target_include_directories(audio_multi_encoder_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
-        target_link_libraries(audio_multi_encoder_test PRIVATE ${FDK_AAC_LIBRARY})
-        target_compile_definitions(audio_multi_encoder_test PRIVATE ENABLE_FDK_AAC=1)
-    elseif(BUILD_TARGET STREQUAL "audio_multi_encoder_test")
-        message(FATAL_ERROR "audio_multi_encoder_test requires ENABLE_FDK_AAC=ON and FDK-AAC headers/library")
-    else()
-        message(WARNING "audio_multi_encoder_test is skipped because FDK-AAC is unavailable")
-    endif()
+    add_executable(audio_multi_encoder_test
+        ${PROJECT_SOURCE_DIR}/main/main_audio_multi_encoder_test.cpp
+        ${MEDIA_CORE_SRC}
+        ${AUDIO_CAPTURE_SRC}
+        ${AUDIO_FRAME_SOURCE_SRC}
+        ${AUDIO_ENCODER_SRC}
+        ${UTIL_SRC}
+    )
+    target_link_libraries(audio_multi_encoder_test PRIVATE logger pthread m)
+    target_link_alsa_audio(audio_multi_encoder_test)
+    target_enable_opus_encoder(audio_multi_encoder_test)
+    target_enable_fdk_aac_encoder(audio_multi_encoder_test)
 endif()
 
 if(ENABLE_RTMP)
@@ -311,6 +300,18 @@ if(BUILD_TARGET STREQUAL "audio_capture_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "audio_playback_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(audio_playback_test
+        ${PROJECT_SOURCE_DIR}/main/main_audio_playback_test.cpp
+        ${AUDIO_PLAYBACK_SRC}
+    )
+    target_link_libraries(audio_playback_test PRIVATE logger pthread m)
+    target_link_alsa_audio(audio_playback_test)
+    set_target_properties(audio_playback_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(video0_fps_test
         ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
@@ -375,11 +376,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         endif()
     endif()
     target_link_alsa_audio(rtsp_gateway)
-    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        target_include_directories(rtsp_gateway PRIVATE ${FDK_AAC_INCLUDE_DIR})
-        target_link_libraries(rtsp_gateway PRIVATE ${FDK_AAC_LIBRARY})
-        target_compile_definitions(rtsp_gateway PRIVATE ENABLE_FDK_AAC=1)
-    endif()
+    target_enable_fdk_aac_encoder(rtsp_gateway)
     set_target_properties(rtsp_gateway PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -426,11 +423,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         endif()
     endif()
     target_link_alsa_audio(dual_output_test)
-    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        target_include_directories(dual_output_test PRIVATE ${FDK_AAC_INCLUDE_DIR})
-        target_link_libraries(dual_output_test PRIVATE ${FDK_AAC_LIBRARY})
-        target_compile_definitions(dual_output_test PRIVATE ENABLE_FDK_AAC=1)
-    endif()
+    target_enable_fdk_aac_encoder(dual_output_test)
     set_target_properties(dual_output_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -469,11 +462,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${OPENSSL_COMPAT_INCLUDE_DIR}
     )
     target_link_alsa_audio(all_services)
-    if(ENABLE_FDK_AAC AND FDK_AAC_INCLUDE_DIR AND FDK_AAC_LIBRARY)
-        target_include_directories(all_services PRIVATE ${FDK_AAC_INCLUDE_DIR})
-        target_link_libraries(all_services PRIVATE ${FDK_AAC_LIBRARY})
-        target_compile_definitions(all_services PRIVATE ENABLE_FDK_AAC=1)
-    endif()
+    target_enable_fdk_aac_encoder(all_services)
     set_target_properties(all_services PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
@@ -481,13 +470,12 @@ endif()
 
 message(STATUS "BUILD_TARGET=${BUILD_TARGET}")
 message(STATUS "ENABLE_RTMP=${ENABLE_RTMP}")
-message(STATUS "ENABLE_FDK_AAC=${ENABLE_FDK_AAC}")
 message(STATUS "ENABLE_RKAIQ=${ENABLE_RKAIQ}")
 message(STATUS "RKAIQ_ISP_HW_VERSION=${RKAIQ_ISP_HW_VERSION}")
 message(STATUS "ALSA_INCLUDE_DIR=${ALSA_INCLUDE_DIR}")
 message(STATUS "ALSA_LIBRARY=${ALSA_LIBRARY}")
-message(STATUS "FDK_AAC_INCLUDE_DIR=${FDK_AAC_INCLUDE_DIR}")
-message(STATUS "FDK_AAC_LIBRARY=${FDK_AAC_LIBRARY}")
+message(STATUS "THIRDPARTY_FDK_AAC_INC_DIR=${THIRDPARTY_FDK_AAC_INC_DIR}")
+message(STATUS "THIRDPARTY_FDK_AAC_LIB=${THIRDPARTY_FDK_AAC_LIB}")
 message(STATUS "LIBRTMP_INCLUDE_DIR=${LIBRTMP_INCLUDE_DIR}")
 message(STATUS "LIBRTMP_LIBRARY=${LIBRTMP_LIBRARY}")
 message(STATUS "EXOSIP_COMPAT_INCLUDE_DIR=${EXOSIP_COMPAT_INCLUDE_DIR}")

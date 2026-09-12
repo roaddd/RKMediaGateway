@@ -424,7 +424,7 @@ static rkmedia::AudioEncoderConfig make_cpp_config(const AudioEncoderParams *par
     /* codec 是联合体的判别字段，只读取当前编码格式对应的专用参数。 */
     if (params->codec == MEDIA_CODEC_AAC) {
         config.aac.bitrate = params->codec_params.aac.bitrate;
-        config.aac.profile = params->codec_params.aac.profile;
+        config.aac.object_type = params->codec_params.aac.object_type;
     } else if (params->codec == MEDIA_CODEC_OPUS) {
         config.opus.bitrate = params->codec_params.opus.bitrate;
         config.opus.complexity = params->codec_params.opus.complexity;
@@ -451,7 +451,7 @@ static void fill_c_params(const rkmedia::AudioEncoderConfig &config,
     /* 只回填当前编码格式真正生效的私有参数，避免调用方误读无关默认值。 */
     if (config.codec == MEDIA_CODEC_AAC) {
         params->codec_params.aac.bitrate = config.aac.bitrate;
-        params->codec_params.aac.profile = config.aac.profile;
+        params->codec_params.aac.object_type = config.aac.object_type;
     } else if (config.codec == MEDIA_CODEC_OPUS) {
         params->codec_params.opus.bitrate = config.opus.bitrate;
         params->codec_params.opus.complexity = config.opus.complexity;

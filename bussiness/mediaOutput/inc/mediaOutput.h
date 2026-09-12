@@ -71,7 +71,7 @@ typedef struct {
     MediaCodecType audio_codec; /* RTSP SDP 中声明的音频编码，支持 G711A/PCMA 或 AAC。 */
     int audio_sample_rate;      /* RTSP 音频采样率。 */
     int audio_channels;         /* RTSP 音频声道数。 */
-    int aac_profile;            /* AAC object type，2 表示 AAC-LC。 */
+    int aac_object_type;        /* AAC Audio Object Type，2 表示 AAC-LC。 */
     struct NetFeedbackCbInfo *feedback_holder; /* RTCP/协议网络反馈回调入口，由业务层注入。 */
 } MediaOutputRtspConfig;
 

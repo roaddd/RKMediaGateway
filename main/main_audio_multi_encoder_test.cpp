@@ -138,7 +138,7 @@ int main(int argc, char **argv)
     aac_config.input_channel = 0;
     aac_config.max_samples_per_frame = 960;
     aac_config.codec_params.aac.bitrate = 32000;
-    aac_config.codec_params.aac.profile = 2;
+    aac_config.codec_params.aac.object_type = AUDIO_ENCODER_AAC_OBJECT_TYPE_LC;
     reused = 0;
     if (audio_encoder_manager_register(manager, &aac_config, &aac_group_id, &reused) != 0 || reused) {
         fprintf(stderr, "[AUDIO_MULTI][ERROR] AAC group register failed reused=%d\n", reused);
@@ -155,6 +155,7 @@ int main(int argc, char **argv)
     opus_config.codec_params.opus.enable_vbr = 1;
     opus_config.codec_params.opus.enable_fec = 1;
     opus_config.codec_params.opus.packet_loss_percent = 10;
+    opus_config.codec_params.opus.application = AUDIO_ENCODER_OPUS_APPLICATION_VOIP;
     reused = 0;
     if (audio_encoder_manager_register(manager, &opus_config, &opus_group_id, &reused) != 0 || reused) {
         fprintf(stderr, "[AUDIO_MULTI][ERROR] Opus group register failed reused=%d\n", reused);

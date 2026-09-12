@@ -25,6 +25,34 @@ bool isSupportedFrameSize(int rate, int samples)
            samples == rate / 50 || samples == rate / 25 || samples == 3 * rate / 50;
 }
 
+/**
+ * @description: 将项目自有的 Opus application 转换为 libopus 原生常量。
+ * 第三方常量只存在于本实现文件，避免穿透到公共配置和模块接口。
+ */
+int toNativeOpusApplication(AudioEncoderOpusApplication application, int *native_application)
+{
+    if (!native_application) {
+        LOG_ERROR("toNativeOpusApplication failed: native_application is NULL");
+        return -1;
+    }
+
+    switch (application) {
+    case AUDIO_ENCODER_OPUS_APPLICATION_VOIP:
+        *native_application = OPUS_APPLICATION_VOIP;
+        return 0;
+    case AUDIO_ENCODER_OPUS_APPLICATION_AUDIO:
+        *native_application = OPUS_APPLICATION_AUDIO;
+        return 0;
+    case AUDIO_ENCODER_OPUS_APPLICATION_RESTRICTED_LOW_DELAY:
+        *native_application = OPUS_APPLICATION_RESTRICTED_LOWDELAY;
+        return 0;
+    default:
+        LOG_ERROR("toNativeOpusApplication failed: unsupported application=%d",
+                  static_cast<int>(application));
+        return -1;
+    }
+}
+
 /*
  * C++ 编码核心使用 RAII 管理 libopus handle 和复用输出缓冲。
  * 网关仍由 C 实现，因此文件末尾仅暴露轻量 extern "C" 适配函数。
@@ -45,10 +73,17 @@ public:
     bool initialize()
     {
         int error = OPUS_OK;
+        int native_application = 0;
+
+        if (toNativeOpusApplication(config_.application, &native_application) != 0) {
+            LOG_ERROR("opus encoder initialize failed: application=%d",
+                      static_cast<int>(config_.application));
+            return false;
+        }
 
         encoder_ = opus_encoder_create(config_.sample_rate,
                                        config_.channels,
-                                       config_.application,
+                                       native_application,
                                        &error);
         if (!encoder_ || error != OPUS_OK) {
             LOG_ERROR("opus_encoder_create failed: %s", opus_strerror(error));
@@ -104,7 +139,8 @@ OpusEncoderConfig normalizeConfig(const OpusEncoderConfig *config)
     if (result.channels <= 0) result.channels = kDefaultChannels;
     if (result.bitrate <= 0) result.bitrate = kDefaultBitrate;
     if (result.complexity < 0 || result.complexity > 10) result.complexity = kDefaultComplexity;
-    if (result.application == 0) result.application = OPUS_APPLICATION_VOIP;
+    if (result.application == AUDIO_ENCODER_OPUS_APPLICATION_INVALID)
+        result.application = AUDIO_ENCODER_OPUS_APPLICATION_VOIP;
     if (result.max_packet_bytes <= 0) result.max_packet_bytes = kDefaultPacketBytes;
     return result;
 }
@@ -146,9 +182,10 @@ extern "C" int opus_audio_encoder_init(OpusEncoderCtx *ctx, const OpusEncoderCon
     ctx->config = normalized;
     ctx->handle = encoder;
     ctx->initialized = 1;
-    LOG_INFO("opus encoder init success: rate=%d channels=%d bitrate=%d complexity=%d vbr=%d fec=%d dtx=%d",
+    LOG_INFO("opus encoder init success: rate=%d channels=%d bitrate=%d complexity=%d application=%d vbr=%d fec=%d dtx=%d",
              normalized.sample_rate, normalized.channels, normalized.bitrate, normalized.complexity,
-             normalized.enable_vbr, normalized.enable_fec, normalized.enable_dtx);
+             static_cast<int>(normalized.application), normalized.enable_vbr,
+             normalized.enable_fec, normalized.enable_dtx);
     return 0;
 }
 
