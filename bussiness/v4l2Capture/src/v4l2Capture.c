@@ -134,6 +134,7 @@ static int media_find_entity_by_dev(int media_fd,
     return -1;
 }
 
+#ifdef ENABLE_RKAIQ
 /**
  * @description: 根据 media entity 名称查找 entity。
  * @param {int} media_fd /dev/mediaX 文件描述符。
@@ -170,6 +171,7 @@ static int media_find_entity_by_name(int media_fd,
 
     return -1;
 }
+#endif
 
 #ifdef ENABLE_RKAIQ
 /**
