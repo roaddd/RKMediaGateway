@@ -103,6 +103,9 @@ int main(int argc, char **argv) {
     size_t period_sample_count = 0;
     int exit_code = EXIT_SUCCESS;
 
+    /* 测试期间每条日志立即落入文件，便于使用 tail -f 实时观察初始化和错误信息。 */
+    log_set_immediate_flush(1);
+
     memset(&config, 0, sizeof(config));
     memset(&actual_config, 0, sizeof(actual_config));
     memset(&stats, 0, sizeof(stats));

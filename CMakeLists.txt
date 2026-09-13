@@ -16,6 +16,7 @@ configure_file(${PROJECT_SOURCE_DIR}/main/media_gateway.toml
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioDecoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/inc)
@@ -86,6 +87,7 @@ include_directories(SYSTEM ${THIRDPARTY_DATACHANNEL_INC_DIR})
 
 file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
+file(GLOB_RECURSE AUDIO_DECODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioDecoder/src/*.cpp)
 file(GLOB AUDIO_PLAYBACK_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/src/*.cpp)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
 file(GLOB_RECURSE AUDIO_ENCODER_C_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.c)
@@ -129,7 +131,7 @@ function(target_enable_webrtc_output target_name)
 endfunction()
 
 # Link the bundled RK3568 libopus statically so deployment does not depend on libopus.so.
-function(target_enable_opus_encoder target_name)
+function(target_enable_opus_codec target_name)
     if(NOT EXISTS ${THIRDPARTY_OPUS_LIB})
         message(FATAL_ERROR "libopus not found: ${THIRDPARTY_OPUS_LIB}")
     endif()
@@ -204,7 +206,7 @@ if(BUILD_TARGET STREQUAL "audio_pipeline_test" OR BUILD_TARGET STREQUAL "all")
     )
     target_link_libraries(audio_pipeline_test PRIVATE logger pthread m)
     target_link_alsa_audio(audio_pipeline_test)
-    target_enable_opus_encoder(audio_pipeline_test)
+    target_enable_opus_codec(audio_pipeline_test)
     target_enable_fdk_aac_encoder(audio_pipeline_test)
     set_target_properties(audio_pipeline_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
@@ -222,7 +224,7 @@ if(BUILD_TARGET STREQUAL "audio_multi_encoder_test" OR BUILD_TARGET STREQUAL "al
     )
     target_link_libraries(audio_multi_encoder_test PRIVATE logger pthread m)
     target_link_alsa_audio(audio_multi_encoder_test)
-    target_enable_opus_encoder(audio_multi_encoder_test)
+    target_enable_opus_codec(audio_multi_encoder_test)
     target_enable_fdk_aac_encoder(audio_multi_encoder_test)
 endif()
 
@@ -312,6 +314,20 @@ if(BUILD_TARGET STREQUAL "audio_playback_test" OR BUILD_TARGET STREQUAL "all")
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "audio_decoder_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(audio_decoder_test
+        ${PROJECT_SOURCE_DIR}/main/main_audio_decoder_test.cpp
+        ${AUDIO_DECODER_SRC}
+        ${AUDIO_PLAYBACK_SRC}
+    )
+    target_link_libraries(audio_decoder_test PRIVATE logger pthread m)
+    target_link_alsa_audio(audio_decoder_test)
+    target_enable_opus_codec(audio_decoder_test)
+    set_target_properties(audio_decoder_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "video0_fps_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(video0_fps_test
         ${PROJECT_SOURCE_DIR}/main/main_video0_fps_test.cpp
@@ -360,7 +376,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
     )
     target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(rtsp_gateway)
-    target_enable_opus_encoder(rtsp_gateway)
+    target_enable_opus_codec(rtsp_gateway)
     if(ENABLE_RKAIQ)
         target_compile_definitions(rtsp_gateway PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(rtsp_gateway PRIVATE rkaiq)
@@ -407,7 +423,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
     )
     target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(dual_output_test)
-    target_enable_opus_encoder(dual_output_test)
+    target_enable_opus_codec(dual_output_test)
     if(ENABLE_RKAIQ)
         target_compile_definitions(dual_output_test PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(dual_output_test PRIVATE rkaiq)
@@ -451,7 +467,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
     )
     target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(all_services)
-    target_enable_opus_encoder(all_services)
+    target_enable_opus_codec(all_services)
     if(ENABLE_RKAIQ)
         target_compile_definitions(all_services PRIVATE ENABLE_RKAIQ=1)
         target_link_libraries(all_services PRIVATE rkaiq)
