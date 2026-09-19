@@ -1,12 +1,3 @@
-/*
- * @Author: huangkelong
- * @Date: 2026-05-17 23:45:25
- * @LastEditTime: 2026-05-19 23:19:45
- * @LastEditors: huangkelong
- * @Description: 媒体输出路径指标相关函数实现
- * @FilePath: \Fork\RKMediaGateway\bussiness\mediaOutput\src\mediaOutputPathMetrics.c
- * 可以输入预定的版权声明、个性签名、空行等
- */
 #include "mediaOutputPathMetrics.h"
 
 #include "logger.h"

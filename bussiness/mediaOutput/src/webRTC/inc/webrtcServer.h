@@ -1,7 +1,7 @@
 #ifndef __WEBRTC_SERVER_H__
 #define __WEBRTC_SERVER_H__
 
-#include "websocketServer.h"
+#include "websocketListener.h"
 #include "webrtcSession.h"
 #include "webrtcTypes.h"
 
@@ -23,6 +23,8 @@ struct WebRtcServerMediaCounters {
     uint64_t audioBroadcastTargets = 0;  /* 音频包成功发送到的 session 总次数，一包广播给多个 session 会累计多次。 */
     uint64_t videoNoReadySession = 0;    /* 视频帧到达时没有任何可发送 video Track 的次数。 */
     uint64_t audioNoReadySession = 0;    /* 音频包到达时没有任何可发送 audio Track 的次数。 */
+    uint64_t incomingAudioPackets = 0;   /* 所有 session 收到的有效音频 RTP 包数。 */
+    uint64_t incomingAudioPayloadBytes = 0; /* 所有入站音频编码负载字节数。 */
 };
 
 /*
@@ -74,11 +76,13 @@ private:
     void handleClient(const std::shared_ptr<communication::WebSocketConnection> &connection);
     void removeSession(int id);
     void requestVideoKeyframe(int sessionId, WebRtcKeyframeRequestReason reason);
+    /* 汇总会话上报的有效浏览器音频包；本阶段不执行解码和播放。 */
+    void handleIncomingAudioPacket(const WebRtcIncomingAudioPacket &packet);
     void recordVideoIdrRequestConsumed(const std::chrono::steady_clock::time_point &now);
 
 private:
     WebRtcServerConfig config_; /* 启动时保存的监听、音视频格式等配置。 */
-    std::shared_ptr<communication::WebSocketServer> wsServer_; /* WebSocket 信令监听服务。 */
+    std::shared_ptr<communication::WebSocketListener> wsListener_; /* WebSocket 信令监听实例。 */
     std::map<int, std::shared_ptr<WebRtcSession>> sessions_; /* 按内部 session ID 管理的浏览器会话表。 */
     mutable std::mutex mutex_; /* 保护运行状态、会话表、统计和关键帧调度状态。 */
     int nextSessionId_; /* 下一个分配给新浏览器连接的内部 session ID。 */

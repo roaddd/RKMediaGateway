@@ -7,6 +7,7 @@
         wsConnectBtn: document.getElementById("wsConnectBtn"),
         wsCloseBtn: document.getElementById("wsCloseBtn"),
         receiveVideo: document.getElementById("receiveVideo"),
+        sendMicrophone: document.getElementById("sendMicrophone"),
         startBtn: document.getElementById("startBtn"),
         pingBtn: document.getElementById("pingBtn"),
         statusBtn: document.getElementById("statusBtn"),
@@ -38,6 +39,7 @@
     let pc = null;
     let dc = null;
     let pendingLocalCandidates = [];
+    let localAudioStream = null;
     let keyFrameWorker = null;
     let keyFramePort = null;
     let videoReceiver = null;
@@ -438,6 +440,10 @@
             pc.close();
             pc = null;
         }
+        if (localAudioStream) {
+            localAudioStream.getTracks().forEach((track) => track.stop());
+            localAudioStream = null;
+        }
 
         pendingLocalCandidates = [];
         els.remoteVideo.srcObject = null;
@@ -456,8 +462,10 @@
     async function startOffer() {
         const peer = createPeerConnection();
         const receiveVideo = els.receiveVideo.checked;
+        const sendMicrophone = els.sendMicrophone.checked;
         let offer;
         let videoTransceiver;
+        let microphoneTrack;
 
         bindDataChannel(peer.createDataChannel("ipc"));
         log("创建本地 DataChannel：ipc");
@@ -469,10 +477,32 @@
              */
             videoTransceiver = peer.addTransceiver("video", { direction: "recvonly" });
             attachKeyFrameTest(videoTransceiver.receiver);
-            peer.addTransceiver("audio", { direction: "recvonly" });
-            log("已启用音视频接收，Offer 将包含 video/audio recvonly m-line");
+            log("已启用视频接收，Offer 将包含 video recvonly m-line");
         } else {
-            log("当前为纯 DataChannel 模式，Offer 不包含视频 m-line");
+            log("未启用视频接收，Offer 不包含 video m-line");
+        }
+
+        /*
+         * 麦克风权限必须由用户点击“创建 Offer”后申请。启用时使用 sendrecv，既把浏览器
+         * Opus RTP 发给设备，也继续接收设备音频；未启用时保留原来的 recvonly 行为。
+         */
+        if (sendMicrophone) {
+            localAudioStream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false,
+            });
+            microphoneTrack = localAudioStream.getAudioTracks()[0];
+            if (!microphoneTrack) {
+                throw new Error("浏览器未返回可用的麦克风轨道");
+            }
+            peer.addTransceiver(microphoneTrack, {
+                direction: "sendrecv",
+                streams: [localAudioStream],
+            });
+            log("麦克风已启用，Offer 将包含 audio sendrecv m-line");
+        } else if (receiveVideo) {
+            peer.addTransceiver("audio", { direction: "recvonly" });
+            log("麦克风未启用，Offer 将包含 audio recvonly m-line");
         }
 
         offer = await peer.createOffer();
@@ -603,7 +633,10 @@
         }
     };
     els.startBtn.onclick = () => {
-        startOffer().catch((err) => log(`创建 Offer 失败：${err.message}`));
+        startOffer().catch((err) => {
+            log(`创建 Offer 失败：${err.message}`);
+            closePeerConnection();
+        });
     };
     els.resetBtn.onclick = closePeerConnection;
     els.pingBtn.onclick = () => sendIpcObject({ cmd: "ping", ts: Date.now() });

@@ -1,5 +1,7 @@
 #include "../inc/webrtcServer.h"
 
+#include "websocketConnection.h"
+
 #include <exception>
 #include <rtc/global.hpp>
 #include <vector>
@@ -29,7 +31,7 @@ WebRtcServer::~WebRtcServer()
  */
 bool WebRtcServer::start(const WebRtcServerConfig &config)
 {
-    std::shared_ptr<communication::WebSocketServer> wsServer;
+    std::shared_ptr<communication::WebSocketListener> wsListener;
 
     config_ = config;
     try {
@@ -37,16 +39,16 @@ bool WebRtcServer::start(const WebRtcServerConfig &config)
         /**
          * 后面做公网 WebSocketClient 注册模式，最好是一个统一信令层，而不是每个输出通道都自己起一个 server
          */
-        wsServer = std::make_shared<communication::WebSocketServer>();
+        wsListener = std::make_shared<communication::WebSocketListener>();
     } catch (const std::exception &e) {
         LOG_ERROR("[WEBRTC] create websocket server failed: %s", e.what());
         return false;
     }
-    wsServer->onClient([this](const std::shared_ptr<communication::WebSocketConnection> &connection) {
+    wsListener->registerClientCallback([this](const std::shared_ptr<communication::WebSocketConnection> &connection) {
         handleClient(connection);
     });
 
-    if (!wsServer->start(config.bindAddress, config.port)) {
+    if (!wsListener->start(config.bindAddress, config.port)) {
         LOG_ERROR("[WEBRTC] websocket server start failed bind=%s port=%u",
                   config.bindAddress.c_str(),
                   config.port);
@@ -55,13 +57,13 @@ bool WebRtcServer::start(const WebRtcServerConfig &config)
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        wsServer_ = wsServer;
+        wsListener_ = wsListener;
         running_ = true;
     }
 
     LOG_INFO("[WEBRTC] server started bind=%s port=%u",
              config.bindAddress.c_str(),
-             wsServer->port());
+             wsListener->port());
     return true;
 }
 
@@ -69,26 +71,26 @@ bool WebRtcServer::start(const WebRtcServerConfig &config)
 void WebRtcServer::stop()
 {
     std::map<int, std::shared_ptr<WebRtcSession>> sessions;
-    std::shared_ptr<communication::WebSocketServer> wsServer;
+    std::shared_ptr<communication::WebSocketListener> wsListener;
     std::map<int, std::shared_ptr<WebRtcSession>>::iterator iter;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_ && !wsServer_) {
+        if (!running_ && !wsListener_) {
             LOG_DEBUG("[WEBRTC] server stop ignored: already stopped");
             return;
         }
         running_ = false;
-        wsServer = wsServer_;
+        wsListener = wsListener_;
         sessions.swap(sessions_);
-        wsServer_.reset();
+        wsListener_.reset();
     }
 
     for (iter = sessions.begin(); iter != sessions.end(); ++iter) {
         iter->second->close();
     }
-    if (wsServer) {
-        wsServer->stop();
+    if (wsListener) {
+        wsListener->stop();
     }
 }
 
@@ -335,6 +337,8 @@ void WebRtcServer::getStats(WebRtcServerStats &stats) const
         stats.audioBroadcastTargets = mediaCounters_.audioBroadcastTargets;
         stats.videoNoReadySession = mediaCounters_.videoNoReadySession;
         stats.audioNoReadySession = mediaCounters_.audioNoReadySession;
+        stats.incomingAudioPackets = mediaCounters_.incomingAudioPackets;
+        stats.incomingAudioPayloadBytes = mediaCounters_.incomingAudioPayloadBytes;
         stats.pendingVideoKeyframeRequest = keyframeState_.pendingVideoKeyframeRequest;
         stats.pendingPliKeyframeRequest = keyframeState_.pendingPliKeyframeRequest;
         stats.videoKeyframeRequests = keyframeState_.videoKeyframeRequests;
@@ -397,6 +401,7 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
             return;
         }
         id = nextSessionId_++;
+        /* 为每一个新来的WebSocket连接创建WebRtcSession对象 */
         session = std::make_shared<WebRtcSession>(
             id,
             config_,
@@ -406,6 +411,9 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
             },
             [this](int sessionId, WebRtcKeyframeRequestReason reason) {
                 requestVideoKeyframe(sessionId, reason);
+            },
+            [this](const WebRtcIncomingAudioPacket &packet) {
+                handleIncomingAudioPacket(packet);
             });
         sessions_[id] = session;
     }
@@ -414,7 +422,43 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
              id,
              connection->remoteAddress().c_str(),
              connection->path().c_str());
+    
     session->start();
+}
+
+/**
+ * @brief 汇总浏览器到设备的有效音频 RTP 包。
+ *
+ * WebRtcAudioReceiver 已经完成 RTP 边界校验和 payload 拷贝。本阶段 server 只累计
+ * 可观测数据，不直接解码或写 ALSA；下一阶段可在这里把 packet 投递到抖动缓冲队列。
+ */
+void WebRtcServer::handleIncomingAudioPacket(const WebRtcIncomingAudioPacket &packet)
+{
+    uint64_t packetCount = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            LOG_WARN("[WEBRTC] session=%d incoming audio ignored: server not running",
+                     packet.sessionId);
+            return;
+        }
+        ++mediaCounters_.incomingAudioPackets;
+        mediaCounters_.incomingAudioPayloadBytes += packet.payload.size();
+        packetCount = mediaCounters_.incomingAudioPackets;
+    }
+
+    /* 每 250 包（20 ms Opus 时约 5 秒）打印一次采样日志，避免逐包日志干扰媒体线程。 */
+    if (packetCount == 1 || packetCount % 250 == 0) {
+        LOG_INFO("[WEBRTC] incoming audio: session=%d packets=%llu pt=%u ssrc=%u seq=%u timestamp=%u payload=%zu",
+                 packet.sessionId,
+                 static_cast<unsigned long long>(packetCount),
+                 static_cast<unsigned int>(packet.payloadType),
+                 static_cast<unsigned int>(packet.ssrc),
+                 static_cast<unsigned int>(packet.sequenceNumber),
+                 static_cast<unsigned int>(packet.rtpTimestamp),
+                 packet.payload.size());
+    }
 }
 
 /*

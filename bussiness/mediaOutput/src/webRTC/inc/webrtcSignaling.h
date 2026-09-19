@@ -34,6 +34,8 @@ bool signaling_select_audio_payload_type(const std::string &sdp,
                                          WebRtcAudioCodec codec,
                                          uint8_t &payloadType);
 bool signaling_offer_has_audio(const std::string &sdp);
+/* 浏览器的 audio Offer 是否允许向设备发送 RTP；未写方向时按 sendrecv 处理。 */
+bool signaling_audio_offer_can_send(const std::string &sdp);
 
 } // namespace webrtc
 } // namespace rkmedia

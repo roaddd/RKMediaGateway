@@ -139,7 +139,8 @@ static void debug_print_media_summary(char *reply,
                                "    video timing   : last_pli=%s last_idr_request=%s last_idr_input=%s\n"
                                "                     pli_to_request=%s request_to_idr_input=%s\n"
                                "    audio input     : frames=%llu bytes=%llu\n"
-                               "    audio broadcast : targets=%llu no_ready=%llu\n",
+                               "    audio broadcast : targets=%llu no_ready=%llu\n"
+                               "    audio receive   : rtp_packets=%llu payload_bytes=%llu\n",
                                static_cast<unsigned long long>(stats.inputVideoFrames),
                                static_cast<unsigned long long>(stats.inputVideoBytes),
                                static_cast<unsigned long long>(stats.videoBroadcastTargets),
@@ -158,7 +159,9 @@ static void debug_print_media_summary(char *reply,
                                static_cast<unsigned long long>(stats.inputAudioFrames),
                                static_cast<unsigned long long>(stats.inputAudioBytes),
                                static_cast<unsigned long long>(stats.audioBroadcastTargets),
-                               static_cast<unsigned long long>(stats.audioNoReadySession));
+                               static_cast<unsigned long long>(stats.audioNoReadySession),
+                               static_cast<unsigned long long>(stats.incomingAudioPackets),
+                               static_cast<unsigned long long>(stats.incomingAudioPayloadBytes));
 }
 
 /* 打印每个浏览器 session 的连接状态表格。 */
@@ -296,6 +299,51 @@ static void debug_print_session_counter_table(char *reply,
     }
 }
 
+/* 打印浏览器到设备的音频 RTP 接收质量和最近包位置。 */
+static void debug_print_incoming_audio_table(
+    char *reply,
+    size_t *offset,
+    const std::vector<WebRtcSessionStats> &sessions)
+{
+    size_t i = 0;
+
+    if (sessions.empty()) {
+        return;
+    }
+
+    debug_command_reply_append(reply,
+                               offset,
+                               "\n  incoming audio RTP\n"
+                               "    %-4s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n"
+                               "    %-4s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n",
+                               "id", "packets", "payload", "bad", "bad_pt", "rtcp",
+                               "gaps", "dup", "reorder", "ssrc_chg", "last_ssrc",
+                               "last_seq", "last_ts",
+                               "----", "----------", "----------", "--------", "--------",
+                               "--------", "--------", "--------", "--------", "--------",
+                               "----------", "--------", "----------");
+
+    for (i = 0; i < sessions.size(); ++i) {
+        debug_command_reply_append(
+            reply,
+            offset,
+            "    %-4d %10llu %10llu %8llu %8llu %8llu %8llu %8llu %8llu %8llu %10u %8u %10u\n",
+            sessions[i].id,
+            static_cast<unsigned long long>(sessions[i].incomingAudioPackets),
+            static_cast<unsigned long long>(sessions[i].incomingAudioPayloadBytes),
+            static_cast<unsigned long long>(sessions[i].incomingAudioMalformed),
+            static_cast<unsigned long long>(sessions[i].incomingAudioPtMismatch),
+            static_cast<unsigned long long>(sessions[i].incomingAudioRtcpPackets),
+            static_cast<unsigned long long>(sessions[i].incomingAudioSequenceGaps),
+            static_cast<unsigned long long>(sessions[i].incomingAudioDuplicates),
+            static_cast<unsigned long long>(sessions[i].incomingAudioOutOfOrder),
+            static_cast<unsigned long long>(sessions[i].incomingAudioSsrcChanges),
+            static_cast<unsigned int>(sessions[i].incomingAudioLastSsrc),
+            static_cast<unsigned int>(sessions[i].incomingAudioLastSequence),
+            static_cast<unsigned int>(sessions[i].incomingAudioLastTimestamp));
+    }
+}
+
 /* 打印 PLI 测试的 session 级状态，便于确认 IDR 是否已抑制、是否由 PLI 或超时恢复。 */
 static void debug_print_pli_test_table(char *reply,
                                        size_t *offset,
@@ -393,6 +441,7 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
         debug_print_media_summary(output, &offset, stats);
         debug_print_session_state_table(output, &offset, stats.sessions);
         debug_print_session_counter_table(output, &offset, stats.sessions);
+        debug_print_incoming_audio_table(output, &offset, stats.sessions);
         debug_print_pli_test_table(output, &offset, stats.sessions);
     }
 

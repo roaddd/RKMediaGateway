@@ -11,6 +11,7 @@
 #   ./build.sh gb28181_device Release
 #   ./build.sh webrtc_peerconnection_test Release
 #   ./build.sh webrtc_ws_server_test Release
+#   ./build.sh webrtc_audio_receiver_test Release
 #   ./build.sh all Release
 #   ./build.sh clean
 
@@ -73,4 +74,4 @@ fi
 
 echo -e "${GREEN}=== Build succeeded ===${NC}"
 echo "Artifacts: ${BUILD_DIR}"
-ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|rtsp_gateway|dual_output_test|audio_capture_test|audio_pipeline_test|audio_multi_encoder_test|audio_playback_test|audio_decoder_test|gb28181_device|webrtc_peerconnection_test|webrtc_ws_server_test"
+ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|rtsp_gateway|dual_output_test|audio_capture_test|audio_pipeline_test|audio_multi_encoder_test|audio_playback_test|audio_decoder_test|gb28181_device|webrtc_peerconnection_test|webrtc_ws_server_test|webrtc_audio_receiver_test"

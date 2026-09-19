@@ -1,13 +1,4 @@
-﻿/*** 
- * @Author: huangkelong
- * @Date: 2026-04-27 23:38:26
- * @LastEditTime: 2026-05-06 23:11:36
- * @LastEditors: huangkelong
- * @Description: 主程序入口，初始化媒体网关并运行
- * @FilePath: \RKMediaGateway\main\main_all_services.cpp
- * @Copyright (c) 2026 by huangkelong, All Rights Reserved.
- */
-#include <stdio.h>
+﻿#include <stdio.h>
 
 #include "defValue.h"
 #include "logger.h"

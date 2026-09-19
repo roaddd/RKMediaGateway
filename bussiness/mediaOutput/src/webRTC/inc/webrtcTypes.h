@@ -55,6 +55,24 @@ struct WebRtcAudioFrame {
     bool traceSample;       /* 是否打印本帧 sendFrame 调用耗时。 */
 };
 
+/**
+ * @brief 从浏览器收到并完成 RTP 头解析的单个音频包。
+ *
+ * payload 使用独立存储，回调返回后也不会引用 libdatachannel 的临时接收缓冲区。
+ * 本阶段只建立入站媒体边界；后续抖动缓冲、Opus 解码和播放模块直接消费该结构。
+ */
+struct WebRtcIncomingAudioPacket {
+    int sessionId;             /* 产生该包的 WebRTC 会话 ID。 */
+    WebRtcAudioCodec codec;    /* SDP 已协商的音频编码格式。 */
+    uint8_t payloadType;       /* RTP PT，必须与当前 audio m-line 协商结果一致。 */
+    uint32_t ssrc;             /* 浏览器音频发送源的 RTP SSRC。 */
+    uint16_t sequenceNumber;   /* RTP 序号，用于后续排序、丢包检测和 NACK。 */
+    uint32_t rtpTimestamp;     /* RTP 媒体时间戳；Opus 时钟固定为 48000 Hz。 */
+    bool marker;               /* RTP M 位；音频中通常不依赖它划分编码帧。 */
+    uint64_t arrivalTimeUs;    /* 包抵达设备接收回调的单调时钟时间，单位微秒。 */
+    std::vector<uint8_t> payload; /* 去除 RTP 头、扩展头和 padding 后的编码负载。 */
+};
+
 /*
  * 单个浏览器 WebRTC 会话的运行统计快照。
  * 该结构只用于调试命令输出，调用方拿到的是某一时刻的副本，不直接持有 WebRtcSession 内部锁。
@@ -91,6 +109,20 @@ struct WebRtcSessionStats {
     uint64_t audioBytes;            /* 成功发送到音频 Track 的音频包字节数。 */
     uint64_t audioNotReady;         /* 音频 Track 未就绪导致丢弃的次数。 */
     uint64_t audioSendFail;         /* 音频包检查或发送失败次数。 */
+    uint64_t incomingAudioPackets;  /* 成功解析的浏览器入站音频 RTP 包数。 */
+    uint64_t incomingAudioRtpBytes; /* 入站音频完整 RTP 包字节数。 */
+    uint64_t incomingAudioPayloadBytes; /* 入站音频编码负载字节数。 */
+    uint64_t incomingAudioMalformed; /* 头部、扩展或 padding 非法的音频包数。 */
+    uint64_t incomingAudioPtMismatch; /* PT 与当前 SDP 协商结果不一致的包数。 */
+    uint64_t incomingAudioRtcpPackets; /* audio Track 回调中收到的 RTCP 包数。 */
+    uint64_t incomingAudioSequenceGaps; /* 根据 RTP 序号估算的缺包数。 */
+    uint64_t incomingAudioDuplicates; /* 重复到达的 RTP 包数。 */
+    uint64_t incomingAudioOutOfOrder; /* 乱序到达的 RTP 包数。 */
+    uint64_t incomingAudioSsrcChanges; /* 浏览器切换音频 SSRC 的次数。 */
+    bool hasIncomingAudioPacket; /* 是否已有有效入站音频 RTP。 */
+    uint32_t incomingAudioLastSsrc; /* 最近入站音频 RTP 的 SSRC。 */
+    uint16_t incomingAudioLastSequence; /* 最近入站音频 RTP 的序号。 */
+    uint32_t incomingAudioLastTimestamp; /* 最近入站音频 RTP 的时间戳。 */
     uint64_t dataChannelRxMessages; /* DataChannel 收到的 IPC 消息数量。 */
     uint64_t dataChannelTxMessages; /* DataChannel 发出的 IPC 回复数量。 */
     uint64_t dataChannelRxBytes;    /* DataChannel 收到的 IPC 消息字节数。 */
@@ -118,6 +150,8 @@ struct WebRtcServerStats {
     uint64_t audioBroadcastTargets;         /* 音频包累计成功发送到多少个 session。 */
     uint64_t videoNoReadySession;           /* 输入视频帧没有任何可发送 session 的次数。 */
     uint64_t audioNoReadySession;           /* 输入音频包没有任何可发送 session 的次数。 */
+    uint64_t incomingAudioPackets;          /* 浏览器到设备的有效音频 RTP 包总数。 */
+    uint64_t incomingAudioPayloadBytes;     /* 浏览器到设备的音频编码负载总字节数。 */
     bool pendingVideoKeyframeRequest;       /* 是否有新就绪 WebRTC 会话正在等待编码器输出 IDR。 */
     bool pendingPliKeyframeRequest;         /* 是否有因 PLI 限频而延迟执行的 IDR 请求。 */
     uint64_t videoKeyframeRequests;         /* 已进入编码器请求队列的 IDR 请求次数，同一时刻多个请求会合并。 */

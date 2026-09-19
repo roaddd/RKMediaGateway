@@ -84,13 +84,15 @@ WebRtcSession::WebRtcSession(int id,
                              const WebRtcServerConfig &config,
                              const std::shared_ptr<communication::WebSocketConnection> &connection,
                              const WebRtcSessionClosedCallback &closedCallback,
-                             const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback)
+                             const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback,
+                             const WebRtcSessionIncomingAudioCallback &incomingAudioCallback)
 {
     id_ = id;
     config_ = config;
     transport_.connection = connection;
     closedCallback_ = closedCallback;
     keyframeRequestCallback_ = keyframeRequestCallback;
+    incomingAudioCallback_ = incomingAudioCallback;
     state_.closed = false;
     state_.waitingForVideoKeyframe = false;
     state_.pliTestSuppressingVideo = false;
@@ -186,7 +188,7 @@ void WebRtcSession::start()
     }
 
     weakSession = shared_from_this();
-    transport_.connection->onOpen([weakSession]() {
+    transport_.connection->registerOpenCallback([weakSession]() {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -194,7 +196,7 @@ void WebRtcSession::start()
             LOG_INFO("[WEBRTC] session=%d websocket open", session->id_);
         }
     });
-    transport_.connection->onClosed([weakSession]() {
+    transport_.connection->registerCloseCallback([weakSession]() {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -203,7 +205,7 @@ void WebRtcSession::start()
             session->close();
         }
     });
-    transport_.connection->onError([weakSession](const std::string &error) {
+    transport_.connection->registerErrorCallback([weakSession](const std::string &error) {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -211,7 +213,7 @@ void WebRtcSession::start()
             LOG_ERROR("[WEBRTC] session=%d websocket error=%s", session->id_, error.c_str());
         }
     });
-    transport_.connection->onText([weakSession](const std::string &message) {
+    transport_.connection->registerTextMessageCallback([weakSession](const std::string &message) {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -240,6 +242,7 @@ void WebRtcSession::close()
         connection = transport_.connection;
         transport_.videoTrack.reset();
         transport_.audioTrack.reset();
+        audioReceiver_.reset();
         transport_.dc.reset();
         transport_.pc.reset();
         transport_.connection.reset();
@@ -332,6 +335,8 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     std::shared_ptr<rtc::DataChannel> dc;
     std::shared_ptr<rtc::Track> videoTrack;
     std::shared_ptr<rtc::Track> audioTrack;
+    std::shared_ptr<WebRtcAudioReceiver> audioReceiver;
+    WebRtcAudioReceiverStats audioReceiverStats;
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -339,6 +344,7 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     dc = transport_.dc;
     videoTrack = transport_.videoTrack;
     audioTrack = transport_.audioTrack;
+    audioReceiver = audioReceiver_;
     stats.id = id_;
     stats.remoteAddress = state_.remoteAddress;
     stats.path = state_.path;
@@ -374,6 +380,24 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.dataChannelTxMessages = counters_.dataChannelTxMessages;
     stats.dataChannelRxBytes = counters_.dataChannelRxBytes;
     stats.dataChannelTxBytes = counters_.dataChannelTxBytes;
+
+    if (audioReceiver) {
+        audioReceiver->getStats(audioReceiverStats);
+    }
+    stats.incomingAudioPackets = audioReceiverStats.rtpPackets;
+    stats.incomingAudioRtpBytes = audioReceiverStats.rtpBytes;
+    stats.incomingAudioPayloadBytes = audioReceiverStats.payloadBytes;
+    stats.incomingAudioMalformed = audioReceiverStats.malformedPackets;
+    stats.incomingAudioPtMismatch = audioReceiverStats.unexpectedPayloadTypePackets;
+    stats.incomingAudioRtcpPackets = audioReceiverStats.rtcpPackets;
+    stats.incomingAudioSequenceGaps = audioReceiverStats.sequenceGapPackets;
+    stats.incomingAudioDuplicates = audioReceiverStats.duplicatePackets;
+    stats.incomingAudioOutOfOrder = audioReceiverStats.outOfOrderPackets;
+    stats.incomingAudioSsrcChanges = audioReceiverStats.ssrcChanges;
+    stats.hasIncomingAudioPacket = audioReceiverStats.hasRtpPacket;
+    stats.incomingAudioLastSsrc = audioReceiverStats.lastSsrc;
+    stats.incomingAudioLastSequence = audioReceiverStats.lastSequenceNumber;
+    stats.incomingAudioLastTimestamp = audioReceiverStats.lastRtpTimestamp;
 }
 
 /* 判断当前位置是否是 Annex-B 起始码。 */
@@ -801,6 +825,7 @@ void WebRtcSession::handleOffer(const std::string &message)
         return;
     }
 
+    /* 创建 PeerConnection */
     createPeerConnection();
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -844,7 +869,10 @@ void WebRtcSession::handleOffer(const std::string &message)
             close();
             return;
         }
-        addAudioTrack(audioMid, audioPayloadType, config_.audioCodec);
+        addAudioTrack(audioMid,
+                      audioPayloadType,
+                      config_.audioCodec,
+                      signaling_audio_offer_can_send(signaling.sdp));
     }
 
     offer.reset(new rtc::Description(signaling.sdp, "offer"));
@@ -924,7 +952,7 @@ void WebRtcSession::sendDescription(const rtc::Description &description)
         connection = transport_.connection;
     }
     if (!connection || !connection->isOpen()) {
-        LOG_WARN("[WEBRTC] session=%d send description failed: websocket not open", id_);
+        LOG_ERROR("[WEBRTC] session=%d send description failed: websocket not open", id_);
         return;
     }
 
@@ -1193,12 +1221,15 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
 }
 
 /*
- * 添加 G711/Opus sendonly Track，并配置对应音频 RTP/RTCP 处理链。
+ * 添加 G711/Opus 音频 Track，并配置对应 RTP/RTCP 处理链。
  * 调用时机：收到浏览器 Offer 后，确认 m=audio、mid 和目标 codec PT 都可用时调用。
+ * 浏览器 Offer 为 recvonly 时保持设备 sendonly；浏览器允许发送麦克风时改为 sendrecv，
+ * 并安装入站 RTP 回调。本函数只建立传输边界，不在 libdatachannel 回调内解码或播放。
  */
 void WebRtcSession::addAudioTrack(const std::string &mid,
                                   uint8_t payloadType,
-                                  WebRtcAudioCodec codec)
+                                  WebRtcAudioCodec codec,
+                                  bool receiveRemoteAudio)
 {
     rtc::Description::Audio audio;
     std::shared_ptr<rtc::PeerConnection> pc;
@@ -1208,6 +1239,8 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
     std::shared_ptr<rtc::RtcpSrReporter> srReporter;
     std::shared_ptr<rtc::RtcpNackResponder> nackResponder;
     std::weak_ptr<WebRtcSession> weakSession;
+    std::shared_ptr<WebRtcAudioReceiver> audioReceiver;
+    WebRtcAudioReceiverConfig receiverConfig;
     std::string cname;
     std::string msid;
     uint32_t ssrc;
@@ -1234,9 +1267,12 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
     /*
      * mid 和 payloadType 都来自浏览器 Offer。
-     * 设备端只决定发送 PCMA 还是 PCMU，不能把本地固定 PT 强塞给浏览器。
+     * 设备端只决定使用 PCMA、PCMU 还是 Opus，不能把本地固定 PT 强塞给浏览器。
      */
-    audio = rtc::Description::Audio(mid, rtc::Description::Direction::SendOnly);
+    audio = rtc::Description::Audio(
+        mid,
+        receiveRemoteAudio ? rtc::Description::Direction::SendRecv
+                           : rtc::Description::Direction::SendOnly);
     if (codec == WEBRTC_AUDIO_CODEC_PCMA) {
         audio.addPCMACodec(payloadType);
     } else if (codec == WEBRTC_AUDIO_CODEC_PCMU) {
@@ -1273,6 +1309,52 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
     track->setMediaHandler(packetizer);
 
     weakSession = shared_from_this();
+    receiverConfig.sessionId = id_;
+    receiverConfig.codec = codec;
+    receiverConfig.payloadType = payloadType;
+    audioReceiver = std::make_shared<WebRtcAudioReceiver>(
+        receiverConfig,
+        [weakSession](const WebRtcIncomingAudioPacket &packet) {
+            std::shared_ptr<WebRtcSession> session;
+            WebRtcSessionIncomingAudioCallback callback;
+
+            session = weakSession.lock();
+            if (!session) {
+                LOG_ERROR("[WEBRTC] session=%d audio track callback failed: session not found", packet.sessionId);
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(session->mutex_);
+                callback = session->incomingAudioCallback_;
+            }
+            if (callback) {
+                callback(packet);
+            }
+        });
+
+    /*
+     * libdatachannel 在解密 SRTP 后把 RTP/RTCP 原始字节交给 Track。接收器负责去除
+     * RTP 可变头部并复制 Opus payload；这里不执行解码，避免网络回调被 ALSA 阻塞。
+     */
+    if (receiveRemoteAudio) {
+        track->onMessage([weakSession](rtc::binary message) {
+            std::shared_ptr<WebRtcSession> session;
+
+            session = weakSession.lock();
+            if (session) {
+                session->handleIncomingAudioMessage(std::move(message));
+            }
+        }, [weakSession](std::string message) {
+            std::shared_ptr<WebRtcSession> session;
+
+            session = weakSession.lock();
+            if (session) {
+                LOG_ERROR("[WEBRTC] session=%d audio track rejected text message bytes=%zu",
+                          session->id_,
+                          message.size());
+            }
+        });
+    }
     /*
      * onOpen 调用时机：
      * - Answer 已完成协商，ICE、DTLS 和 SRTP 已建立。
@@ -1325,13 +1407,52 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
     {
         std::lock_guard<std::mutex> lock(mutex_);
         transport_.audioTrack = track;
+        audioReceiver_ = audioReceiver;
     }
 
-    LOG_INFO("[WEBRTC] session=%d add audio track mid=%s pt=%u codec=%d",
+    LOG_INFO("[WEBRTC] session=%d add audio track mid=%s pt=%u codec=%d direction=%s",
              id_,
              mid.c_str(),
-             payloadType,
-             static_cast<int>(codec));
+             static_cast<unsigned int>(payloadType),
+             static_cast<int>(codec),
+             receiveRemoteAudio ? "sendrecv" : "sendonly");
+}
+
+/**
+ * 把 Track 回调交付的单个 RTP/RTCP 消息送入独立接收边界。
+ * arrivalTimeUs 使用 steady_clock，只用于同机时延与抖动计算，不作为墙上时钟。
+ */
+void WebRtcSession::handleIncomingAudioMessage(rtc::binary message)
+{
+    std::shared_ptr<WebRtcAudioReceiver> receiver;
+    uint64_t arrivalTimeUs = 0;
+    MediaResult result = MEDIA_ERR;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        receiver = audioReceiver_;
+    }
+    if (!receiver) {
+        LOG_ERROR("[WEBRTC] session=%d incoming audio rejected: receiver is NULL", id_);
+        return;
+    }
+    if (message.empty()) {
+        LOG_ERROR("[WEBRTC] session=%d incoming audio rejected: empty Track message", id_);
+        return;
+    }
+
+    arrivalTimeUs = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    result = receiver->handlePacket(reinterpret_cast<const uint8_t *>(message.data()),
+                                    message.size(),
+                                    arrivalTimeUs);
+    if (result != MEDIA_OK) {
+        LOG_ERROR("[WEBRTC] session=%d incoming audio handling failed: result=%d bytes=%zu",
+                  id_,
+                  static_cast<int>(result),
+                  message.size());
+    }
 }
 
 } // namespace webrtc

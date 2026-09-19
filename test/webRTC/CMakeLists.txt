@@ -2,6 +2,19 @@ set(THIRDPARTY_DATACHANNEL_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/datachannel)
 set(THIRDPARTY_DATACHANNEL_INC_DIR ${THIRDPARTY_DATACHANNEL_ROOT}/inc)
 set(THIRDPARTY_DATACHANNEL_LIB ${THIRDPARTY_DATACHANNEL_ROOT}/lib/libdatachannel.so.0.24.5)
 
+if(BUILD_TARGET STREQUAL "webrtc_audio_receiver_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(webrtc_audio_receiver_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_audio_receiver_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_test_logger_stub.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/webrtcAudioReceiver.cpp
+    )
+    target_link_libraries(webrtc_audio_receiver_test PRIVATE pthread)
+    target_compile_features(webrtc_audio_receiver_test PRIVATE cxx_std_17)
+    set_target_properties(webrtc_audio_receiver_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "webrtc_peerconnection_test" OR BUILD_TARGET STREQUAL "all")
     if(NOT EXISTS ${THIRDPARTY_DATACHANNEL_LIB})
         message(FATAL_ERROR "libdatachannel not found: ${THIRDPARTY_DATACHANNEL_LIB}")

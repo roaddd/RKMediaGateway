@@ -287,6 +287,27 @@ static std::string get_audio_section(const std::string &sdp)
 }
 
 /*
+ * 判断浏览器是否允许在 audio m-line 上向设备发送媒体。
+ * SDP 未显式写方向时按 sendrecv 缺省语义处理；recvonly/inactive 表示浏览器
+ * 不发送麦克风 RTP，此时设备端继续使用原有的 sendonly Track。
+ */
+bool signaling_audio_offer_can_send(const std::string &sdp)
+{
+    std::string section;
+
+    section = get_audio_section(sdp);
+    if (section.empty()) {
+        LOG_ERROR("[WEBRTC][SIGNALING] inspect audio direction failed: audio section missing");
+        return false;
+    }
+    if (section.find("a=inactive") != std::string::npos ||
+        section.find("a=recvonly") != std::string::npos) {
+        return false;
+    }
+    return true;
+}
+
+/*
  * 从浏览器 Offer 的 video 媒体段中提取 mid。
  *
  * mid 是 SDP 中每个 m-line 的媒体标识，例如：

@@ -1,7 +1,8 @@
 #ifndef __WEBRTC_SESSION_H__
 #define __WEBRTC_SESSION_H__
 
-#include "websocketServer.h"
+#include "websocketConnection.h"
+#include "webrtcAudioReceiver.h"
 #include "webrtcTypes.h"
 
 #include <chrono>
@@ -19,6 +20,8 @@ namespace webrtc {
 
 typedef std::function<void(int)> WebRtcSessionClosedCallback;
 typedef std::function<void(int, WebRtcKeyframeRequestReason)> WebRtcSessionKeyframeRequestCallback;
+typedef std::function<void(const WebRtcIncomingAudioPacket &)>
+    WebRtcSessionIncomingAudioCallback;
 
 /* 单个浏览器会话持有的 WebRTC 信令和媒体传输对象。 */
 struct WebRtcSessionTransport {
@@ -26,7 +29,7 @@ struct WebRtcSessionTransport {
     std::shared_ptr<rtc::PeerConnection> pc; /* libdatachannel PeerConnection。 */
     std::shared_ptr<rtc::DataChannel> dc; /* 浏览器创建的 IPC DataChannel。 */
     std::shared_ptr<rtc::Track> videoTrack; /* H264 sendonly 视频 Track。 */
-    std::shared_ptr<rtc::Track> audioTrack; /* G711/Opus sendonly 音频 Track。 */
+    std::shared_ptr<rtc::Track> audioTrack; /* 可按 Offer 协商为 sendonly/sendrecv 的音频 Track。 */
 };
 
 /* 单个浏览器会话的连接状态和可读状态文本，仅在 mutex_ 保护下读写。 */
@@ -78,7 +81,8 @@ public:
                   const WebRtcServerConfig &config,
                   const std::shared_ptr<communication::WebSocketConnection> &connection,
                   const WebRtcSessionClosedCallback &closedCallback,
-                  const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback);
+                  const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback,
+                  const WebRtcSessionIncomingAudioCallback &incomingAudioCallback);
     ~WebRtcSession();
 
     void start();
@@ -98,7 +102,12 @@ private:
     void createPeerConnection();
     void bindDataChannel(const std::shared_ptr<rtc::DataChannel> &dc);
     void addH264VideoTrack(const std::string &mid, uint8_t payloadType);
-    void addAudioTrack(const std::string &mid, uint8_t payloadType, WebRtcAudioCodec codec);
+    void addAudioTrack(const std::string &mid,
+                       uint8_t payloadType,
+                       WebRtcAudioCodec codec,
+                       bool receiveRemoteAudio);
+    /* 解析 audio Track 收到的 RTP/RTCP，并把有效编码负载交给 server。 */
+    void handleIncomingAudioMessage(rtc::binary message);
     void sendDescription(const rtc::Description &description);
     void sendCandidate(const rtc::Candidate &candidate);
     void handleIpcMessage(const std::string &message);
@@ -112,6 +121,8 @@ private:
     mutable std::mutex mutex_; /* 保护 transport_、state_ 和 counters_。 */
     WebRtcSessionClosedCallback closedCallback_; /* 会话关闭后通知 WebRtcServer 从会话表移除。 */
     WebRtcSessionKeyframeRequestCallback keyframeRequestCallback_; /* 上报新会话或 PLI/FIR 的 IDR 请求。 */
+    WebRtcSessionIncomingAudioCallback incomingAudioCallback_; /* 向 server 交付浏览器音频包。 */
+    std::shared_ptr<WebRtcAudioReceiver> audioReceiver_; /* audio Track 的 RTP 解析与统计对象。 */
     WebRtcSessionTransport transport_; /* WebSocket、PeerConnection、Track 等资源所有权。 */
     WebRtcSessionRuntimeState state_; /* 会话生命周期、协商和关键帧门控状态。 */
     WebRtcSessionCounters counters_; /* 信令、媒体和 DataChannel 的累计计数。 */
