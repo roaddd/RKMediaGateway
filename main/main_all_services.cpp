@@ -45,6 +45,11 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->audio.source.capture.channels,
              config->audio.source.capture.period_frames,
              config->audio.source.encoder_group_count);
+    LOG_INFO("[MAIN_CFG] parsed audio mixer enabled=%d card=%s control=%s value=%s",
+             config->audio.source.capture.mixer.enabled,
+             config->audio.source.capture.mixer.card_name ? config->audio.source.capture.mixer.card_name : "unknown",
+             config->audio.source.capture.mixer.control_name ? config->audio.source.capture.mixer.control_name : "unknown",
+             config->audio.source.capture.mixer.value_name ? config->audio.source.capture.mixer.value_name : "unknown");
     for (i = 0; i < config->audio.source.encoder_group_count; ++i)
     {
         audio_group = &config->audio.source.encoder_groups[i];

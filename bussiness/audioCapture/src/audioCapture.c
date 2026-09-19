@@ -16,38 +16,205 @@ static uint64_t audio_capture_now_us(void) {
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 
-/* 设备名兜底，避免上层传空字符串导致 ALSA open 行为不可控。 */
-static const char *audio_capture_safe_device(const char *device_name) {
-    return (device_name && device_name[0] != '\0') ? device_name : AUDIO_CAPTURE_DEFAULT_DEVICE;
+/**
+ * @description: 设置并回读校验枚举型 ALSA Mixer 采集路由。
+ * @param {AudioCaptureMixerConfig *} config 需要应用的 Mixer 控件和值。
+ * @return {int} 0 表示设置及回读成功，-1 表示失败。
+ */
+static int audio_capture_configure_mixer(const AudioCaptureMixerConfig *config) {
+    snd_mixer_t *mixer = NULL;
+    snd_mixer_elem_t *element = NULL;
+    snd_mixer_selem_id_t *element_id = NULL;
+    const char *operation = "open";
+    char item_name[128] = {0};
+    unsigned int item_count = 0;
+    unsigned int item_index = 0;
+    unsigned int target_index = 0;
+    unsigned int actual_index = 0;
+    int target_found = 0;
+    int result = -1;
+    int ret = 0;
+    int close_ret = 0;
+
+    if (!config || !config->card_name || !config->control_name || !config->value_name) {
+        LOG_ERROR("audio_capture_configure_mixer failed: invalid config=%p card=%p control=%p value=%p",
+                  (const void *)config,
+                  config ? (const void *)config->card_name : NULL,
+                  config ? (const void *)config->control_name : NULL,
+                  config ? (const void *)config->value_name : NULL);
+        return -1;
+    }
+
+    /*
+     * Mixer 句柄只在初始化阶段短暂存在。采集线程后续只操作 PCM，
+     * 因而不会把控制卡生命周期或锁引入实时采集路径。
+     */
+    operation = "open";
+    ret = snd_mixer_open(&mixer, 0);
+    if (ret < 0) goto alsa_failed;
+
+    operation = "attach";
+    ret = snd_mixer_attach(mixer, config->card_name);
+    if (ret < 0) goto alsa_failed;
+
+    operation = "register simple elements";
+    ret = snd_mixer_selem_register(mixer, NULL, NULL);
+    if (ret < 0) goto alsa_failed;
+
+    operation = "load controls";
+    ret = snd_mixer_load(mixer);
+    if (ret < 0) goto alsa_failed;
+
+    /* 按控件名称和 index=0 定位 amixer 中显示的枚举型 Simple Mixer 控件。 */
+    snd_mixer_selem_id_alloca(&element_id);
+    snd_mixer_selem_id_set_index(element_id, 0);
+    snd_mixer_selem_id_set_name(element_id, config->control_name);
+    element = snd_mixer_find_selem(mixer, element_id);
+    if (!element) {
+        LOG_ERROR("audio_capture_configure_mixer failed: control not found card=%s control=%s",
+                  config->card_name,
+                  config->control_name);
+        goto cleanup;
+    }
+    if (!snd_mixer_selem_is_enumerated(element)) {
+        LOG_ERROR("audio_capture_configure_mixer failed: control is not enumerated card=%s control=%s",
+                  config->card_name,
+                  config->control_name);
+        goto cleanup;
+    }
+
+    /* 枚举控件的每个 item，按名称寻找配置要求的输入路径。 */
+    operation = "get enum item count";
+    ret = snd_mixer_selem_get_enum_items(element, &item_count);
+    if (ret < 0) goto alsa_failed;
+    for (item_index = 0; item_index < item_count; ++item_index) {
+        memset(item_name, 0, sizeof(item_name));
+        operation = "get enum item name";
+        ret = snd_mixer_selem_get_enum_item_name(element,
+                                                  item_index,
+                                                  sizeof(item_name),
+                                                  item_name);
+        if (ret < 0) goto alsa_failed;
+        if (strcmp(item_name, config->value_name) == 0) {
+            target_index = item_index;
+            target_found = 1;
+            break;
+        }
+    }
+    if (!target_found) {
+        LOG_ERROR("audio_capture_configure_mixer failed: value not found card=%s control=%s value=%s items=%u",
+                  config->card_name,
+                  config->control_name,
+                  config->value_name,
+                  item_count);
+        goto cleanup;
+    }
+
+    /* Simple Mixer 的单值枚举控件使用 FRONT_LEFT 作为第一个逻辑通道。 */
+    operation = "set enum item";
+    ret = snd_mixer_selem_set_enum_item(element,
+                                        SND_MIXER_SCHN_FRONT_LEFT,
+                                        target_index);
+    if (ret < 0) goto alsa_failed;
+
+    /*
+     * 设置成功并不直接等价于硬件路由已经符合预期，因此立即读取同一控件。
+     * 只有回读 item 与目标 item 一致，才允许继续打开采集 PCM。
+     */
+    operation = "read back enum item";
+    ret = snd_mixer_selem_get_enum_item(element,
+                                        SND_MIXER_SCHN_FRONT_LEFT,
+                                        &actual_index);
+    if (ret < 0) goto alsa_failed;
+    if (actual_index != target_index) {
+        LOG_ERROR("audio_capture_configure_mixer failed: readback mismatch card=%s control=%s expected=%s expected_index=%u actual_index=%u",
+                  config->card_name,
+                  config->control_name,
+                  config->value_name,
+                  target_index,
+                  actual_index);
+        goto cleanup;
+    }
+
+    LOG_INFO("audio capture mixer configured: card=%s control=%s value=%s index=%u",
+             config->card_name,
+             config->control_name,
+             config->value_name,
+             target_index);
+    result = 0;
+    goto cleanup;
+
+alsa_failed:
+    LOG_ERROR("audio_capture_configure_mixer failed: operation=%s card=%s control=%s value=%s err=%s",
+              operation,
+              config->card_name,
+              config->control_name,
+              config->value_name,
+              snd_strerror(ret));
+
+cleanup:
+    if (mixer) {
+        close_ret = snd_mixer_close(mixer);
+        if (close_ret < 0) {
+            LOG_ERROR("audio_capture_configure_mixer failed: close card=%s err=%s",
+                      config->card_name,
+                      snd_strerror(close_ret));
+            result = -1;
+        }
+    }
+    return result;
 }
 
-/* 归一化配置：所有默认值、边界修正和当前能力检查集中在入口完成。 */
-static int audio_capture_normalize_config(AudioCaptureConfig *dst, const AudioCaptureConfig *src) {
-    memset(dst, 0, sizeof(*dst));
-    if (src) {
-        *dst = *src;
-    }
-
-    dst->device_name = audio_capture_safe_device(dst->device_name);
-    if (dst->sample_rate <= 0) dst->sample_rate = AUDIO_CAPTURE_DEFAULT_SAMPLE_RATE;
-    if (dst->channels <= 0) dst->channels = AUDIO_CAPTURE_DEFAULT_CHANNELS;
-    if (dst->format == 0) dst->format = AUDIO_SAMPLE_FORMAT_S16LE;
-    if (dst->period_frames <= 0) dst->period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
-    if (dst->buffer_periods <= 0) dst->buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
-
-    if (dst->channels > 2) {
-        LOG_ERROR("audio_capture_normalize_config failed: unsupported channel count=%d", dst->channels);
+/**
+ * @description: 校验音频采集配置；本函数不会填充默认值或修改调用方参数。
+ * @param {AudioCaptureConfig *} config 待校验的完整音频采集配置。
+ * @return {int} 0 表示配置合法，-1 表示配置不完整或包含当前模块不支持的值。
+ */
+static int audio_capture_validate_config(const AudioCaptureConfig *config) {
+    if (!config) {
+        LOG_ERROR("audio_capture_validate_config failed: config is NULL");
         return -1;
     }
-    if (dst->format != AUDIO_SAMPLE_FORMAT_S16LE) {
-        LOG_ERROR("audio_capture_normalize_config failed: unsupported sample format=%d", dst->format);
+    if (!config->device_name || config->device_name[0] == '\0') {
+        LOG_ERROR("audio_capture_validate_config failed: device_name is empty");
         return -1;
     }
-    if (dst->period_frames < 40) {
-        dst->period_frames = 40;
+    if (config->sample_rate <= 0) {
+        LOG_ERROR("audio_capture_validate_config failed: sample_rate must be positive, actual=%d",
+                  config->sample_rate);
+        return -1;
     }
-    if (dst->buffer_periods < 2) {
-        dst->buffer_periods = 2;
+    if (config->channels != 1 && config->channels != 2) {
+        LOG_ERROR("audio_capture_validate_config failed: unsupported channel count=%d, expected=1 or 2",
+                  config->channels);
+        return -1;
+    }
+    if (config->format != AUDIO_SAMPLE_FORMAT_S16LE) {
+        LOG_ERROR("audio_capture_validate_config failed: unsupported sample format=%d",
+                  config->format);
+        return -1;
+    }
+    if (config->period_frames <= 0) {
+        LOG_ERROR("audio_capture_validate_config failed: period_frames must be positive, actual=%d",
+                  config->period_frames);
+        return -1;
+    }
+    if (config->buffer_periods < 2) {
+        LOG_ERROR("audio_capture_validate_config failed: buffer_periods must be at least 2, actual=%d",
+                  config->buffer_periods);
+        return -1;
+    }
+    if (config->mixer.enabled != 0 && config->mixer.enabled != 1) {
+        LOG_ERROR("audio_capture_validate_config failed: mixer enabled must be 0 or 1, actual=%d",
+                  config->mixer.enabled);
+        return -1;
+    }
+    if (config->mixer.enabled &&
+        (!config->mixer.card_name || config->mixer.card_name[0] == '\0' ||
+         !config->mixer.control_name || config->mixer.control_name[0] == '\0' ||
+         !config->mixer.value_name || config->mixer.value_name[0] == '\0')) {
+        LOG_ERROR("audio_capture_validate_config failed: enabled mixer requires non-empty card/control/value");
+        return -1;
     }
     return 0;
 }
@@ -139,7 +306,7 @@ static int audio_capture_recover(AudioCaptureCtx *ctx, int err) {
  * 性能策略：period_buffer 在这里一次性分配，后续 read_frame 热路径不做 malloc/free。
  */
 int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
-    AudioCaptureConfig normalized;
+    AudioCaptureConfig requested_config;
     int bytes_per_sample;
     size_t period_buffer_size;
 
@@ -149,14 +316,15 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
     }
     memset(ctx, 0, sizeof(*ctx));
 
-    if (audio_capture_normalize_config(&normalized, config) != 0) {
-        LOG_ERROR("audio_capture_init failed: normalize config");
+    if (audio_capture_validate_config(config) != 0) {
+        LOG_ERROR("audio_capture_init failed: invalid config");
         return -1;
     }
+    requested_config = *config;
     /* 获取每个声道的一个采样点占多少字节 */
-    bytes_per_sample = audio_capture_bytes_per_sample(normalized.format);
+    bytes_per_sample = audio_capture_bytes_per_sample(requested_config.format);
     if (bytes_per_sample <= 0) {
-        LOG_ERROR("audio_capture_init failed: bytes_per_sample format=%d", normalized.format);
+        LOG_ERROR("audio_capture_init failed: bytes_per_sample format=%d", requested_config.format);
         return -1;
     }
     /*
@@ -164,17 +332,33 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
      * _near 参数协商后再分配，因为驱动返回的实际 period 可能大于请求值。
      */
     ctx->bytes_per_sample = bytes_per_sample;
-    ctx->frame_bytes = normalized.channels * bytes_per_sample;
-    ctx->config = normalized;
+    ctx->frame_bytes = requested_config.channels * bytes_per_sample;
+    ctx->config = requested_config;
+
+    /*
+     * PCM 采集只会搬运当前硬件路由提供的数据，本身不会自动选择麦克风。
+     * 因此必须在 snd_pcm_open() 之前应用并回读 Mixer 路由，避免设备启动后
+     * Capture MIC Path 仍为 MIC OFF，造成“RTP 正常发送但浏览器听不到声音”。
+     */
+    if (requested_config.mixer.enabled &&
+        audio_capture_configure_mixer(&requested_config.mixer) != 0) {
+        LOG_ERROR("audio_capture_init failed: configure mixer card=%s control=%s value=%s",
+                  requested_config.mixer.card_name,
+                  requested_config.mixer.control_name,
+                  requested_config.mixer.value_name);
+        audio_capture_deinit(ctx);
+        return -1;
+    }
 
     {
         snd_pcm_t *pcm = NULL;
         snd_pcm_hw_params_t *hw_params = NULL;
         snd_pcm_sw_params_t *sw_params = NULL;
-        snd_pcm_uframes_t period_frames = (snd_pcm_uframes_t)normalized.period_frames;
-        snd_pcm_uframes_t buffer_frames = (snd_pcm_uframes_t)(normalized.period_frames * normalized.buffer_periods);
-        unsigned int rate = (unsigned int)normalized.sample_rate;
-        snd_pcm_format_t alsa_format = audio_capture_to_alsa_format(normalized.format);
+        snd_pcm_uframes_t period_frames = (snd_pcm_uframes_t)requested_config.period_frames;
+        snd_pcm_uframes_t buffer_frames = (snd_pcm_uframes_t)requested_config.period_frames *
+                                          (snd_pcm_uframes_t)requested_config.buffer_periods;
+        unsigned int rate = (unsigned int)requested_config.sample_rate;
+        snd_pcm_format_t alsa_format = audio_capture_to_alsa_format(requested_config.format);
         int dir = 0;
         int ret;
 
@@ -182,10 +366,10 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
          * 1. 打开阻塞式采集 PCM。
          * 最后一个参数为 0，snd_pcm_readi() 在请求的数据尚未准备好时会阻塞等待。
          */
-        ret = snd_pcm_open(&pcm, normalized.device_name, SND_PCM_STREAM_CAPTURE, 0);
+        ret = snd_pcm_open(&pcm, requested_config.device_name, SND_PCM_STREAM_CAPTURE, 0);
         if (ret < 0) {
             LOG_ERROR("audio_capture_init failed: open device=%s err=%s",
-                      normalized.device_name,
+                      requested_config.device_name,
                       snd_strerror(ret));
             audio_capture_deinit(ctx);
             return -1;
@@ -207,7 +391,7 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
         ret = snd_pcm_hw_params_set_format(pcm, hw_params, alsa_format);
         if (ret < 0) goto alsa_failed;
         /* 一个 PCM frame 同时包含所有声道各一个 sample。 */
-        ret = snd_pcm_hw_params_set_channels(pcm, hw_params, (unsigned int)normalized.channels);
+        ret = snd_pcm_hw_params_set_channels(pcm, hw_params, (unsigned int)requested_config.channels);
         if (ret < 0) goto alsa_failed;
         /* _near 允许驱动选择最接近的采样率，并通过 rate 返回实际值。 */
         ret = snd_pcm_hw_params_set_rate_near(pcm, hw_params, &rate, &dir);
@@ -243,15 +427,14 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
         ret = snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_frames);
         if (ret < 0) goto alsa_failed;
 
-        normalized.sample_rate = (int)rate;
-        normalized.period_frames = (int)period_frames;
-        ctx->config = normalized;
+        ctx->config.sample_rate = (int)rate;
+        ctx->config.period_frames = (int)period_frames;
 
         /*
          * 4. 按“实际 period × 声道数 × 每 sample 字节数”分配用户态缓存。
          * read_frame() 会把一个完整 period 填入这里，再把该内存借给上层使用。
          */
-        period_buffer_size = (size_t)period_frames * normalized.channels * bytes_per_sample;
+        period_buffer_size = (size_t)period_frames * requested_config.channels * bytes_per_sample;
         ctx->period_buffer = (uint8_t *)malloc(period_buffer_size);
         if (!ctx->period_buffer) {
             LOG_ERROR("audio_capture_init failed: period buffer alloc size=%zu", period_buffer_size);
@@ -296,17 +479,17 @@ int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config) {
 
         ctx->initialized = 1;
         printf("[AUDIO] capture ready device=%s rate=%d channels=%d period_frames=%d buffer_frames=%lu requested_buffer_periods=%d\n",
-               normalized.device_name,
-               normalized.sample_rate,
-               normalized.channels,
-               normalized.period_frames,
+               ctx->config.device_name,
+               ctx->config.sample_rate,
+               ctx->config.channels,
+               ctx->config.period_frames,
                (unsigned long)buffer_frames,
-               normalized.buffer_periods);
+               ctx->config.buffer_periods);
         return 0;
 
 alsa_failed:
         LOG_ERROR("audio_capture_init failed: configure device=%s err=%s",
-                  normalized.device_name,
+                  requested_config.device_name,
                   snd_strerror(ret));
         audio_capture_deinit(ctx);
         return -1;

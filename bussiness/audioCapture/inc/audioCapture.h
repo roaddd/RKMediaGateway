@@ -19,12 +19,20 @@ typedef enum {
 } AudioSampleFormat;
 
 typedef struct {
+    int enabled;                    /* 是否在打开 PCM 前自动配置采集输入路由。 */
+    const char *card_name;          /* ALSA 控制卡名称，例如 hw:0；它不是 hw:0,0 形式的 PCM 设备名。 */
+    const char *control_name;       /* 枚举型 Mixer 控件名称，例如 Capture MIC Path。 */
+    const char *value_name;         /* 需要选中的枚举值，例如 Main Mic。 */
+} AudioCaptureMixerConfig;
+
+typedef struct {
     const char *device_name;     /* ALSA PCM 设备名，例如 default 或 hw:0,0。 */
     int sample_rate;             /* 采样率，语音链路通常使用 8000Hz。 */
     int channels;                /* ALSA 硬件采集声道数；可在编码前转换为不同的编码声道数。 */
     AudioSampleFormat format;    /* PCM 样本格式。 */
     int period_frames;           /* 一个 ALSA period 包含的 PCM 帧数；当前模块每次向上层返回一个完整 period。 */
     int buffer_periods;          /* ALSA PCM 环形缓冲区期望包含的 period 数，用于平衡延迟和抗调度抖动能力。 */
+    AudioCaptureMixerConfig mixer; /* 可选的采集输入路由；启用时先配置并校验路由，再打开 PCM。 */
 } AudioCaptureConfig;
 
 typedef struct {
@@ -62,7 +70,7 @@ typedef struct {
 /**
  * @description: 初始化 ALSA 音频采集设备，并预分配周期缓冲区。
  * @param {AudioCaptureCtx *} ctx 音频采集上下文。
- * @param {AudioCaptureConfig *} config 输入配置，可为 NULL 使用默认值。
+ * @param {AudioCaptureConfig *} config 完整输入配置，不可为 NULL；非法参数直接返回失败。
  * @return {int} 0 成功，-1 失败。
  */
 int audio_capture_init(AudioCaptureCtx *ctx, const AudioCaptureConfig *config);

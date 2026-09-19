@@ -129,6 +129,7 @@ typedef struct {
     AudioSampleFormat format;        /* 采集 PCM 格式，当前支持 S16LE。 */
     int period_frames;               /* 每个采集周期的 PCM frame 数；每个 frame 包含所有采集声道。 */
     int buffer_periods;              /* ALSA 设备缓冲周期数。 */
+    AudioCaptureMixerConfig mixer;   /* PCM 启动前需要应用的 ALSA 采集输入路由。 */
 } MediaGatewayAudioCaptureConfig;
 
 typedef struct {

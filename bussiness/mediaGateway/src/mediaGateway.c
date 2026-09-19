@@ -1171,6 +1171,19 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             return config_error_int("audio.format", dst->audio.source.capture.format, "is unsupported");
         if (dst->audio.source.capture.channels != 1 && dst->audio.source.capture.channels != 2)
             return config_error_int("audio.capture.channels", dst->audio.source.capture.channels, "must be 1 or 2");
+        if (dst->audio.source.capture.mixer.enabled != 0 &&
+            dst->audio.source.capture.mixer.enabled != 1)
+            return config_error_int("audio.capture.mixer.enabled",
+                                    dst->audio.source.capture.mixer.enabled,
+                                    "must be 0 or 1");
+        if (dst->audio.source.capture.mixer.enabled &&
+            (require_non_empty_string("audio.capture.mixer.card",
+                                      dst->audio.source.capture.mixer.card_name) != 0 ||
+             require_non_empty_string("audio.capture.mixer.capture_path_control",
+                                      dst->audio.source.capture.mixer.control_name) != 0 ||
+             require_non_empty_string("audio.capture.mixer.capture_path_value",
+                                      dst->audio.source.capture.mixer.value_name) != 0))
+            return -1;
         if (dst->audio.source.encoder_group_count <= 0 ||
             dst->audio.source.encoder_group_count > MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS)
             return config_error_int("audio.encoder_group_count", dst->audio.source.encoder_group_count, "must be between 1 and MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS");
@@ -1378,6 +1391,12 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         dst->audio.source.capture.period_frames = AUDIO_CAPTURE_DEFAULT_PERIOD_FRAMES;
     if (dst->audio.source.capture.buffer_periods <= 0)
         dst->audio.source.capture.buffer_periods = AUDIO_CAPTURE_DEFAULT_BUFFER_PERIODS;
+    dst->audio.source.capture.mixer.card_name =
+        safe_str(dst->audio.source.capture.mixer.card_name, "hw:0");
+    dst->audio.source.capture.mixer.control_name =
+        safe_str(dst->audio.source.capture.mixer.control_name, "Capture MIC Path");
+    dst->audio.source.capture.mixer.value_name =
+        safe_str(dst->audio.source.capture.mixer.value_name, "Main Mic");
     if (dst->audio.source.runtime.source_slots <= 0)
         dst->audio.source.runtime.source_slots = AUDIO_FRAME_SOURCE_DEFAULT_SLOTS;
     if (dst->audio.source.runtime.retry_ms <= 0)
@@ -2073,6 +2092,7 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
         audio_capture_config.format = ctx->config.audio.source.capture.format;
         audio_capture_config.period_frames = ctx->config.audio.source.capture.period_frames;
         audio_capture_config.buffer_periods = ctx->config.audio.source.capture.buffer_periods;
+        audio_capture_config.mixer = ctx->config.audio.source.capture.mixer;
         if (audio_capture_init(&ctx->audio.capture, &audio_capture_config) != 0)
         {
             LOG_ERROR("init audio capture failed: device=%s rate=%d channels=%d",

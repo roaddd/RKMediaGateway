@@ -488,6 +488,10 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_FORMAT", AUDIO_SAMPLE_FORMAT_S16LE);
     set_value_int("AUDIO_PERIOD_FRAMES", 160);
     set_value_int("AUDIO_BUFFER_PERIODS", 4);
+    set_value_int("AUDIO_MIXER_ENABLED", 0);
+    set_value("AUDIO_MIXER_CARD", "hw:0");
+    set_value("AUDIO_MIXER_CAPTURE_PATH_CONTROL", "Capture MIC Path");
+    set_value("AUDIO_MIXER_CAPTURE_PATH_VALUE", "Main Mic");
     set_value_int("AUDIO_SOURCE_SLOTS", 8);
     set_value_int("AUDIO_RETRY_MS", 5);
     set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
@@ -684,6 +688,10 @@ static void fill_audio_source(AudioSourceConfig *audio) {
     audio->capture.format = (AudioSampleFormat)value_int("AUDIO_FORMAT");
     audio->capture.period_frames = value_int("AUDIO_PERIOD_FRAMES");
     audio->capture.buffer_periods = value_int("AUDIO_BUFFER_PERIODS");
+    audio->capture.mixer.enabled = value_int("AUDIO_MIXER_ENABLED");
+    audio->capture.mixer.card_name = value_string("AUDIO_MIXER_CARD");
+    audio->capture.mixer.control_name = value_string("AUDIO_MIXER_CAPTURE_PATH_CONTROL");
+    audio->capture.mixer.value_name = value_string("AUDIO_MIXER_CAPTURE_PATH_VALUE");
     audio->runtime.source_slots = value_int("AUDIO_SOURCE_SLOTS");
     audio->runtime.retry_ms = value_int("AUDIO_RETRY_MS");
     audio->runtime.max_consecutive_failures = value_int("AUDIO_MAX_CONSECUTIVE_FAILURES");
