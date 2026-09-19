@@ -187,12 +187,25 @@ bool signaling_parse_message(const std::string &json, SignalingMessage &message)
     json_get_string(json, "candidate", message.candidate);
     json_get_string(json, "mid", message.mid);
     json_get_string(json, "sdpMid", message.mid);
-    json_get_string(json, "cmd", message.cmd);
     if (message.type.empty()) {
-        LOG_WARN("[WEBRTC][SIGNALING] parse message failed: type missing bytes=%zu", json.size());
+        LOG_ERROR("[WEBRTC][SIGNALING] parse message failed: type missing bytes=%zu", json.size());
         return false;
     }
 
+    return true;
+}
+
+/* 解析 DataChannel IPC 命令，不套用 WebSocket 信令的 type 字段约束。 */
+bool signaling_parse_ipc_command(const std::string &json, std::string &command)
+{
+    bool parsed = false;
+
+    command.clear();
+    parsed = json_get_string(json, "cmd", command);
+    if (!parsed || command.empty()) {
+        LOG_ERROR("[WEBRTC][IPC] parse command failed: cmd missing bytes=%zu", json.size());
+        return false;
+    }
     return true;
 }
 

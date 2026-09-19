@@ -692,7 +692,7 @@ void WebRtcSession::handleWsText(const std::string &message)
     }
 
     if (!signaling_parse_message(message, signaling)) {
-        LOG_WARN("[WEBRTC] session=%d invalid signaling message bytes=%zu", id_, message.size());
+        LOG_ERROR("[WEBRTC] session=%d invalid signaling message bytes=%zu", id_, message.size());
         return;
     }
 
@@ -720,11 +720,18 @@ void WebRtcSession::createPeerConnection()
         LOG_ERROR("[WEBRTC] session=%d create PeerConnection failed", id_);
         return;
     }
+    /*
+     * libdatachannel 可能在网络线程异步触发以下回调。回调只持有 weak_ptr，避免
+     * PeerConnection 持有回调、回调再持有 WebRtcSession 所形成的引用环；会话已经
+     * 销毁时 lock() 返回空指针，迟到的异步事件会被安全忽略。
+     */
     weakSession = shared_from_this();
 
     /*
-     * onLocalDescription 调用时机：
-     * setLocalDescription(answer) 后由 libdatachannel 生成本地 SDP 时触发。
+     * 触发者：libdatachannel 的 SDP 协商状态机。
+     * 触发时机：handleOffer() 显式调用 setLocalDescription(Answer)，并完成本地
+     * Answer SDP 生成后触发。由于关闭了自动协商，本回调不会自行创建 Offer。
+     * 当前处理：把生成的 Answer 包装成 JSON，通过 WebSocket 信令通道返回浏览器。
      */
     pc->onLocalDescription([weakSession](rtc::Description description) {
         std::shared_ptr<WebRtcSession> session;
@@ -736,8 +743,11 @@ void WebRtcSession::createPeerConnection()
     });
 
     /*
-     * onLocalCandidate 调用时机：
-     * ICE gathering 过程中发现本地 candidate 时触发，需要通过 WebSocket 发给浏览器。
+     * 触发者：libdatachannel 内部的 ICE Agent。
+     * 触发时机：设置本地描述后启动 ICE gathering；每发现一个可用于建立连接的本地
+     * candidate（例如设备网卡的 IP 和 UDP 端口）就触发一次。
+     * 当前处理：立即通过 WebSocket 发送 trickle ICE candidate，让浏览器加入远端候选。
+     * gathering 完成不是通过空 candidate 表示，而由 onGatheringStateChange 通知。
      */
     pc->onLocalCandidate([weakSession](rtc::Candidate candidate) {
         std::shared_ptr<WebRtcSession> session;
@@ -749,8 +759,10 @@ void WebRtcSession::createPeerConnection()
     });
 
     /*
-     * onDataChannel 调用时机：
-     * 浏览器 Offer 方 createDataChannel("ipc") 后，设备端 setRemoteDescription 时会收到该回调。
+     * 触发者：libdatachannel 的 SCTP/DataChannel 处理层。
+     * 触发时机：浏览器调用 createDataChannel("ipc")，并在 ICE、DTLS 和 SCTP 建立后向
+     * 设备发送 DataChannel OPEN 控制消息；设备识别到这条由远端创建的通道时触发。
+     * 当前处理：保存 DataChannel，并继续注册 open、close 和文本消息回调。
      */
     pc->onDataChannel([weakSession](std::shared_ptr<rtc::DataChannel> dc) {
         std::shared_ptr<WebRtcSession> session;
@@ -761,6 +773,12 @@ void WebRtcSession::createPeerConnection()
         }
     });
 
+    /*
+     * 触发者：libdatachannel 汇总 ICE、DTLS、SCTP 等底层传输状态后的连接状态机。
+     * 触发时机：PeerConnection 在 New、Connecting、Connected、Disconnected、Failed、
+     * Closed 等整体状态之间切换时触发。它描述整条 WebRTC 连接是否可用，不只代表 ICE。
+     * 当前处理：保存可读状态供 getWebRTC 查询，并记录状态变化日志。
+     */
     pc->onStateChange([weakSession](rtc::PeerConnection::State state) {
         std::shared_ptr<WebRtcSession> session;
 
@@ -775,6 +793,13 @@ void WebRtcSession::createPeerConnection()
         }
     });
 
+    /*
+     * 触发者：libdatachannel 内部的 ICE Agent。
+     * 触发时机：收到双方 candidate 后进行连通性检查，并在 New、Checking、Connected、
+     * Completed、Disconnected、Failed、Closed 之间切换时触发。Connected 表示已找到
+     * 可用候选对，Completed 表示本轮 ICE 检查已经完成。
+     * 当前处理：单独保存 ICE 状态，便于区分“网络候选连接失败”和后续 DTLS/SCTP 问题。
+     */
     pc->onIceStateChange([weakSession](rtc::PeerConnection::IceState state) {
         std::shared_ptr<WebRtcSession> session;
 
@@ -789,6 +814,12 @@ void WebRtcSession::createPeerConnection()
         }
     });
 
+    /*
+     * 触发者：libdatachannel 内部的 ICE candidate 收集器。
+     * 触发时机：本地候选收集从 New 进入 InProgress，以及所有当前可发现候选收集完成
+     * 进入 Complete 时触发。它只表示“候选是否收集完”，不表示 ICE 一定已经连通。
+     * 当前处理：保存收集状态供调试查询，并记录状态变化日志。
+     */
     pc->onGatheringStateChange([weakSession](rtc::PeerConnection::GatheringState state) {
         std::shared_ptr<WebRtcSession> session;
 
@@ -803,6 +834,7 @@ void WebRtcSession::createPeerConnection()
         }
     });
 
+    /* 所有回调注册完成后再发布 PeerConnection，避免其他路径取得未完成初始化的对象。 */
     {
         std::lock_guard<std::mutex> lock(mutex_);
         transport_.pc = pc;
@@ -820,13 +852,21 @@ void WebRtcSession::handleOffer(const std::string &message)
     uint8_t audioPayloadType;
     std::unique_ptr<rtc::Description> offer;
 
+    /*
+     * WebSocket 文本只是信令传输载体。先提取 JSON 中的 SDP，并在创建任何 WebRTC
+     * 资源前拒绝缺少 Offer 内容的消息，避免留下无法继续协商的半初始化会话。
+     */
     if (!signaling_parse_message(message, signaling) || signaling.sdp.empty()) {
         LOG_ERROR("[WEBRTC] session=%d offer missing sdp bytes=%zu", id_, message.size());
         return;
     }
 
-    /* 创建 PeerConnection */
+    /*
+     * 先创建 PeerConnection 并安装本地 SDP、ICE、DataChannel 和状态回调。
+     * 后续设置远端 Offer 时可能立即触发这些异步事件，因此回调必须提前就绪。
+     */
     createPeerConnection();
+    /* transport_ 受会话锁保护；这里只取得 shared_ptr 快照，锁外执行 libdatachannel。 */
     {
         std::lock_guard<std::mutex> lock(mutex_);
         pc = transport_.pc;
@@ -841,25 +881,34 @@ void WebRtcSession::handleOffer(const std::string &message)
      * 必须先 addTrack 再 setLocalDescription(answer)，Answer 里才会带 video sendonly。
      */
     if (signaling_offer_has_video(signaling.sdp)) {
+        /* Track 必须复用 Offer 中 video m-line 的 mid，保证 Answer 能正确绑定收发器。 */
         if (!signaling_get_video_mid(signaling.sdp, videoMid)) {
             LOG_ERROR("[WEBRTC] session=%d offer rejected: video mid missing", id_);
             close();
             return;
         }
+        /* RTP PT 由浏览器 Offer 决定，同时必须满足当前 H.264 打包模式要求。 */
         if (!signaling_select_h264_payload_type(signaling.sdp, payloadType)) {
             LOG_ERROR("[WEBRTC] session=%d offer rejected: no usable H264 payload type", id_);
             close();
             return;
         }
+        /* 在生成 Answer 前建立本地 H.264 Track，并配置发送端 RTP/RTCP 处理链。 */
         addH264VideoTrack(videoMid, payloadType);
     }
 
+    /*
+     * 只有网关启用了音频编码且 Offer 提供 audio m-line 时才协商音频；否则保持
+     * 无音频 Track，不能擅自向浏览器 Offer 中添加不存在的媒体段。
+     */
     if (config_.audioCodec != WEBRTC_AUDIO_CODEC_NONE && signaling_offer_has_audio(signaling.sdp)) {
+        /* audio Track 与 video Track 一样，必须使用对应 m-line 声明的 mid。 */
         if (!signaling_get_audio_mid(signaling.sdp, audioMid)) {
             LOG_ERROR("[WEBRTC] session=%d offer rejected: audio mid missing", id_);
             close();
             return;
         }
+        /* 按网关实际编码格式匹配浏览器声明的 PT，不使用本地固定 PT 代替协商结果。 */
         if (!signaling_select_audio_payload_type(signaling.sdp,
                                                  config_.audioCodec,
                                                  audioPayloadType)) {
@@ -869,12 +918,21 @@ void WebRtcSession::handleOffer(const std::string &message)
             close();
             return;
         }
+        /*
+         * Offer 允许浏览器发送音频时创建 sendrecv Track，并安装入站 RTP 回调；
+         * recvonly/inactive 时维持原有 sendonly Track，仅向浏览器发送设备音频。
+         */
         addAudioTrack(audioMid,
                       audioPayloadType,
                       config_.audioCodec,
                       signaling_audio_offer_can_send(signaling.sdp));
     }
 
+    /*
+     * 所有本地 Track 准备完成后再提交远端 Offer，并显式生成 Answer。
+     * setLocalDescription() 会触发已注册的 onLocalDescription 回调，由该回调通过
+     * WebSocket 返回 Answer；随后 ICE gathering 回调继续发送本地 candidate。
+     */
     offer.reset(new rtc::Description(signaling.sdp, "offer"));
     try {
         pc->setRemoteDescription(*offer);
@@ -1033,9 +1091,10 @@ void WebRtcSession::bindDataChannel(const std::shared_ptr<rtc::DataChannel> &dc)
 /* 处理 DataChannel IPC 消息。 */
 void WebRtcSession::handleIpcMessage(const std::string &message)
 {
-    SignalingMessage signaling;
     std::shared_ptr<rtc::DataChannel> dc;
+    std::string command;
     std::string response;
+    bool parsed = false;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1044,10 +1103,13 @@ void WebRtcSession::handleIpcMessage(const std::string &message)
         counters_.dataChannelRxBytes += message.size();
     }
 
-    signaling_parse_message(message, signaling);
-    if (signaling.cmd == "ping") {
+    /* IPC 消息不属于 WebSocket 信令，使用独立入口解析并检查返回值。 */
+    parsed = signaling_parse_ipc_command(message, command);
+    if (!parsed) {
+        response = "{\"cmd\":\"invalid\",\"code\":400,\"message\":\"invalid command message\"}";
+    } else if (command == "ping") {
         response = "{\"cmd\":\"pong\",\"code\":0}";
-    } else if (signaling.cmd == "get_status") {
+    } else if (command == "get_status") {
         response = "{\"cmd\":\"status\",\"code\":0,\"data\":{\"webrtc\":\"connected\"}}";
     } else {
         response = "{\"cmd\":\"unknown\",\"code\":400,\"message\":\"unsupported command\"}";
