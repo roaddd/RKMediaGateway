@@ -27,8 +27,8 @@ static int audio_capture_configure_mixer(const AudioCaptureMixerConfig *config) 
     snd_mixer_selem_id_t *element_id = NULL;
     const char *operation = "open";
     char item_name[128] = {0};
-    unsigned int item_count = 0;
-    unsigned int item_index = 0;
+    int item_count = 0;
+    int item_index = 0;
     unsigned int target_index = 0;
     unsigned int actual_index = 0;
     int target_found = 0;
@@ -84,25 +84,30 @@ static int audio_capture_configure_mixer(const AudioCaptureMixerConfig *config) 
     }
 
     /* 枚举控件的每个 item，按名称寻找配置要求的输入路径。 */
-    operation = "get enum item count";
-    ret = snd_mixer_selem_get_enum_items(element, &item_count);
-    if (ret < 0) goto alsa_failed;
+    item_count = snd_mixer_selem_get_enum_items(element);
+    if (item_count <= 0) {
+        LOG_ERROR("audio_capture_configure_mixer failed: control has no enum items card=%s control=%s items=%d",
+                  config->card_name,
+                  config->control_name,
+                  item_count);
+        goto cleanup;
+    }
     for (item_index = 0; item_index < item_count; ++item_index) {
         memset(item_name, 0, sizeof(item_name));
         operation = "get enum item name";
         ret = snd_mixer_selem_get_enum_item_name(element,
-                                                  item_index,
+                                                  (unsigned int)item_index,
                                                   sizeof(item_name),
                                                   item_name);
         if (ret < 0) goto alsa_failed;
         if (strcmp(item_name, config->value_name) == 0) {
-            target_index = item_index;
+            target_index = (unsigned int)item_index;
             target_found = 1;
             break;
         }
     }
     if (!target_found) {
-        LOG_ERROR("audio_capture_configure_mixer failed: value not found card=%s control=%s value=%s items=%u",
+        LOG_ERROR("audio_capture_configure_mixer failed: value not found card=%s control=%s value=%s items=%d",
                   config->card_name,
                   config->control_name,
                   config->value_name,

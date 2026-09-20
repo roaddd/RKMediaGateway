@@ -1180,6 +1180,12 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
     packetizer = std::make_shared<rtc::H264RtpPacketizer>(
         rtc::NalUnit::Separator::Length, rtpConfig);
     srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
+    /*
+     * 视频发送方向的 NACK responder：缓存该视频 Track 最近发送的 H.264 RTP 包。
+     * 浏览器通过 RTCP Generic NACK 指出缺失的 RTP 序列号后，它会查找并重传
+     * 对应视频 RTP 包。它只负责指定包重传；若丢包已无法通过缓存恢复，浏览器
+     * 可继续发送 PLI，由下面的 PliHandler 请求编码器产生新的 H.264 关键帧。
+     */
     nackResponder = std::make_shared<rtc::RtcpNackResponder>();
     /*
      * PliHandler 会解析浏览器发回的 RTCP PLI（PT=206/FMT=1）和 FIR。
@@ -1365,6 +1371,13 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
         packetizer = std::make_shared<rtc::OpusRtpPacketizer>(rtpConfig);
     }
     srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
+    /*
+     * 音频发送方向的 NACK responder：缓存该音频 Track 最近发送的 RTP 包，并在
+     * 浏览器对该音频 payload type 协商了 RTCP NACK 后响应指定包重传。它与
+     * Opus 带内 FEC、PLC 不同：NACK 依赖网络往返请求原包，FEC/PLC 则由接收端
+     * 使用后续包中的冗余数据或本地算法恢复；未协商音频 NACK 时该处理器不会
+     * 收到浏览器的音频重传请求。
+     */
     nackResponder = std::make_shared<rtc::RtcpNackResponder>();
     packetizer->addToChain(srReporter);
     packetizer->addToChain(nackResponder);
