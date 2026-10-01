@@ -455,6 +455,29 @@ retry_ms = 5
 # AUDIO_MAX_CONSECUTIVE_FAILURES: 音频连续失败阈值。
 max_consecutive_failures = 30
 
+# -----------------------------------------------------------------------------
+# 双向语音下行：浏览器 Opus RTP -> 抖动缓冲 -> FEC/PLC -> ALSA Playback
+# -----------------------------------------------------------------------------
+[audio.talkback]
+enabled = true
+playback_device = "hw:0,0"
+sample_rate = 48000
+decoder_channels = 1
+playback_channels = 2
+frame_samples_per_channel = 960
+playback_buffer_periods = 4
+playback_start_periods = 2
+jitter_prebuffer_packets = 3
+jitter_max_packets = 50
+talker_timeout_ms = 1000
+
+# 播放路由在模块启动时设置并回读，避免设备重启后 Playback Path 停留在 OFF。
+[audio.talkback.mixer]
+enabled = true
+card = "hw:0"
+control = "Playback Path"
+value = "HP"
+
 # =============================================================================
 # 音频编码组预设
 # codec: 2=AAC，4=G711A，5=G711U，6=Opus

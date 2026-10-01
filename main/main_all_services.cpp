@@ -50,6 +50,17 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->audio.source.capture.mixer.card_name ? config->audio.source.capture.mixer.card_name : "unknown",
              config->audio.source.capture.mixer.control_name ? config->audio.source.capture.mixer.control_name : "unknown",
              config->audio.source.capture.mixer.value_name ? config->audio.source.capture.mixer.value_name : "unknown");
+    LOG_INFO("[MAIN_CFG] parsed audio talkback enabled=%d device=%s rate=%d decoder_channels=%d playback_channels=%d frame_samples=%d prebuffer=%d max_packets=%d mixer=%d/%s",
+             config->audio.talkback.enabled,
+             config->audio.talkback.module.playback_device ? config->audio.talkback.module.playback_device : "unknown",
+             config->audio.talkback.module.sample_rate,
+             config->audio.talkback.module.decoder_channels,
+             config->audio.talkback.module.playback_channels,
+             config->audio.talkback.module.frame_samples_per_channel,
+             config->audio.talkback.module.jitter_prebuffer_packets,
+             config->audio.talkback.module.jitter_max_packets,
+             config->audio.talkback.module.mixer.enabled,
+             config->audio.talkback.module.mixer.value_name ? config->audio.talkback.module.mixer.value_name : "unknown");
     for (i = 0; i < config->audio.source.encoder_group_count; ++i)
     {
         audio_group = &config->audio.source.encoder_groups[i];

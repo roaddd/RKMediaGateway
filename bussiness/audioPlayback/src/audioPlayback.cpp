@@ -188,6 +188,204 @@ static MediaResult audio_playback_map_alsa_error(int alsa_error) {
     return result;
 }
 
+/** @brief ALSA 参数协商后供初始化流程使用的实际帧参数。 */
+struct AudioPlaybackNegotiatedParams {
+    unsigned int sample_rate;                 /* ALSA 实际采用的采样率。 */
+    snd_pcm_uframes_t period_frames;          /* ALSA 实际采用的单个 period 帧数。 */
+    snd_pcm_uframes_t buffer_frames;          /* ALSA 实际采用的环形缓冲区帧数。 */
+    snd_pcm_uframes_t start_threshold_frames; /* 启动 DMA 前需要积累的帧数。 */
+};
+
+/**
+ * @description: 配置并提交 ALSA Playback 硬件参数，返回驱动实际采用的帧参数。
+ */
+static MediaResult audio_playback_configure_hw_params(
+    snd_pcm_t *pcm,
+    const AudioPlaybackConfig *config,
+    snd_pcm_format_t alsa_format,
+    AudioPlaybackNegotiatedParams *negotiated) {
+    snd_pcm_hw_params_t *hw_params = NULL;
+    snd_pcm_uframes_t period_frames = 0;
+    snd_pcm_uframes_t buffer_frames = 0;
+    unsigned int sample_rate = 0;
+    int direction = 0;
+    int ret = 0;
+
+    if (pcm == NULL || config == NULL || negotiated == NULL) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: pcm=%p config=%p negotiated=%p",
+                  (void *)pcm,
+                  (const void *)config,
+                  (void *)negotiated);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    period_frames = (snd_pcm_uframes_t)config->period_frames;
+    buffer_frames = period_frames * (snd_pcm_uframes_t)config->buffer_periods;
+    sample_rate = (unsigned int)config->sample_rate;
+    snd_pcm_hw_params_alloca(&hw_params);
+
+    /* 固定交错布局、样本格式和声道数，保证 write() 可直接提交调用方的 PCM。 */
+    ret = snd_pcm_hw_params_any(pcm, hw_params);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: hw_params_any err=%s",
+                  snd_strerror(ret));
+        return audio_playback_map_alsa_error(ret);
+    }
+    ret = snd_pcm_hw_params_set_access(pcm, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set access=RW_INTERLEAVED err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    ret = snd_pcm_hw_params_set_format(pcm, hw_params, alsa_format);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set format=%d err=%s",
+                  (int)config->format,
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    ret = snd_pcm_hw_params_set_channels(pcm, hw_params, (unsigned int)config->channels);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set channels=%d err=%s",
+                  config->channels,
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+
+    /* _near 接口允许驱动调整请求值；采样率必须精确匹配，帧参数则在提交后回读。 */
+    ret = snd_pcm_hw_params_set_rate_near(pcm, hw_params, &sample_rate, &direction);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set sample_rate=%d err=%s",
+                  config->sample_rate,
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    if (sample_rate != (unsigned int)config->sample_rate) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: requested sample_rate=%d actual=%u",
+                  config->sample_rate,
+                  sample_rate);
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    ret = snd_pcm_hw_params_set_period_size_near(pcm, hw_params, &period_frames, &direction);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set period_frames=%d err=%s",
+                  config->period_frames,
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    ret = snd_pcm_hw_params_set_buffer_size_near(pcm, hw_params, &buffer_frames);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: set buffer_frames=%llu err=%s",
+                  (unsigned long long)((uint64_t)config->period_frames *
+                                      (uint64_t)config->buffer_periods),
+                  snd_strerror(ret));
+        return MEDIA_ERR_UNSUPPORTED;
+    }
+    ret = snd_pcm_hw_params(pcm, hw_params);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: commit hw_params err=%s",
+                  snd_strerror(ret));
+        return audio_playback_map_alsa_error(ret);
+    }
+
+    /* 提交后回读最终值，后续软件阈值和对外实际配置均以协商结果为准。 */
+    ret = snd_pcm_hw_params_get_rate(hw_params, &sample_rate, &direction);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: get actual sample_rate err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    ret = snd_pcm_hw_params_get_period_size(hw_params, &period_frames, &direction);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: get actual period_size err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    ret = snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_frames);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: get actual buffer_size err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    if (period_frames == 0 || buffer_frames / period_frames < 2) {
+        LOG_ERROR("audio_playback_configure_hw_params failed: invalid period=%llu buffer=%llu",
+                  (unsigned long long)period_frames,
+                  (unsigned long long)buffer_frames);
+        return MEDIA_ERR_INVALID_CONFIG;
+    }
+
+    negotiated->sample_rate = sample_rate;
+    negotiated->period_frames = period_frames;
+    negotiated->buffer_frames = buffer_frames;
+    negotiated->start_threshold_frames =
+        period_frames * (snd_pcm_uframes_t)config->start_threshold_periods;
+    if (negotiated->start_threshold_frames > buffer_frames) {
+        negotiated->start_threshold_frames = buffer_frames;
+    }
+    return MEDIA_OK;
+}
+
+/**
+ * @description: 根据硬件协商结果配置 ALSA Playback 唤醒、启动和停止阈值。
+ */
+static MediaResult audio_playback_configure_sw_params(
+    snd_pcm_t *pcm,
+    const AudioPlaybackNegotiatedParams *negotiated) {
+    snd_pcm_sw_params_t *sw_params = NULL;
+    int ret = 0;
+
+    if (pcm == NULL || negotiated == NULL) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: pcm=%p negotiated=%p",
+                  (void *)pcm,
+                  (const void *)negotiated);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    snd_pcm_sw_params_alloca(&sw_params);
+    ret = snd_pcm_sw_params_current(pcm, sw_params);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: sw_params_current err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+
+    /*
+     * avail_min 以一个 period 为应用层唤醒粒度；start_threshold 预填若干
+     * period 后再启动 DMA；数据耗尽达到 stop_threshold 时进入 XRUN 并显式恢复。
+     */
+    ret = snd_pcm_sw_params_set_avail_min(pcm, sw_params, negotiated->period_frames);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: set avail_min=%llu err=%s",
+                  (unsigned long long)negotiated->period_frames,
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    ret = snd_pcm_sw_params_set_start_threshold(
+        pcm,
+        sw_params,
+        negotiated->start_threshold_frames);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: set start_threshold=%llu err=%s",
+                  (unsigned long long)negotiated->start_threshold_frames,
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    ret = snd_pcm_sw_params_set_stop_threshold(pcm, sw_params, negotiated->buffer_frames);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: set stop_threshold=%llu err=%s",
+                  (unsigned long long)negotiated->buffer_frames,
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    ret = snd_pcm_sw_params(pcm, sw_params);
+    if (ret < 0) {
+        LOG_ERROR("audio_playback_configure_sw_params failed: commit sw_params err=%s",
+                  snd_strerror(ret));
+        return MEDIA_ERR;
+    }
+    return MEDIA_OK;
+}
+
 /**
  * @description: 释放初始化过程中已获取的 ALSA 资源。
  */
@@ -296,20 +494,15 @@ MediaResult AudioPlayback::recover(int error_code) {
 MediaResult AudioPlayback::init(const AudioPlaybackConfig *config) {
     Impl *ctx = impl_.get();
     AudioPlaybackConfig normalized = {};
+    AudioPlaybackNegotiatedParams negotiated = {};
     MediaResult result = MEDIA_OK;
     snd_pcm_t *pcm = NULL;
-    snd_pcm_hw_params_t *hw_params = NULL;
-    snd_pcm_sw_params_t *sw_params = NULL;
     snd_pcm_format_t alsa_format = SND_PCM_FORMAT_UNKNOWN;
-    snd_pcm_uframes_t period_frames = 0;
-    snd_pcm_uframes_t buffer_frames = 0;
-    snd_pcm_uframes_t start_threshold_frames = 0;
-    unsigned int sample_rate = 0;
     int bytes_per_sample = 0;
-    int direction = 0;
     int name_length = 0;
     int ret = 0;
 
+    /* 先校验对象生命周期，避免覆盖仍在使用的 PCM 和运行统计。 */
     if (ctx == NULL) {
         LOG_ERROR("AudioPlayback init failed: implementation is NULL");
         return MEDIA_ERR_NO_MEMORY;
@@ -320,6 +513,7 @@ MediaResult AudioPlayback::init(const AudioPlaybackConfig *config) {
     }
     ctx->reset();
 
+    /* 准备有效配置，并把设备名复制到对象自有存储中。 */
     result = audio_playback_normalize_config(&normalized, config);
     if (result != MEDIA_OK) {
         LOG_ERROR("audio_playback_init failed: normalize config result=%d", (int)result);
@@ -346,12 +540,8 @@ MediaResult AudioPlayback::init(const AudioPlaybackConfig *config) {
         return MEDIA_ERR_UNSUPPORTED;
     }
 
-    period_frames = (snd_pcm_uframes_t)normalized.period_frames;
-    buffer_frames = period_frames * (snd_pcm_uframes_t)normalized.buffer_periods;
-    sample_rate = (unsigned int)normalized.sample_rate;
-
     /*
-     * 1. 以阻塞模式打开 Playback PCM。当环形缓冲区暂无空间时，
+     * 以阻塞模式打开 Playback PCM。当环形缓冲区暂无空间时，
      * snd_pcm_writei() 会等待硬件消费数据，不需要上层轮询。
      */
     ret = snd_pcm_open(&pcm, normalized.device_name, SND_PCM_STREAM_PLAYBACK, 0);
@@ -365,161 +555,26 @@ MediaResult AudioPlayback::init(const AudioPlaybackConfig *config) {
     ctx->pcm_handle = pcm;
 
     /*
-     * 2. 配置 hw_params：确定数据布局、样本格式、声道、采样率、
-     * period 和内核环形缓冲区容量。_near 接口可能调整请求值，
-     * 因此提交后必须重新读取最终参数。
+     * 硬件参数辅助函数完成格式、采样率、period 和 buffer 协商；软件参数
+     * 辅助函数再以协商结果设置应用层唤醒粒度与 PCM 启停阈值。
      */
-    snd_pcm_hw_params_alloca(&hw_params);
-    ret = snd_pcm_hw_params_any(pcm, hw_params);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: hw_params_any err=%s", snd_strerror(ret));
-        result = audio_playback_map_alsa_error(ret);
+    result = audio_playback_configure_hw_params(pcm, &normalized, alsa_format, &negotiated);
+    if (result != MEDIA_OK) {
+        LOG_ERROR("audio_playback_init failed: configure hw_params result=%d", (int)result);
         goto init_failed;
     }
-    ret = snd_pcm_hw_params_set_access(pcm, hw_params, SND_PCM_ACCESS_RW_INTERLEAVED);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set access=RW_INTERLEAVED err=%s",
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_set_format(pcm, hw_params, alsa_format);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set format=%d err=%s",
-                  (int)normalized.format,
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_set_channels(pcm, hw_params, (unsigned int)normalized.channels);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set channels=%d err=%s",
-                  normalized.channels,
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_set_rate_near(pcm, hw_params, &sample_rate, &direction);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set sample_rate=%d err=%s",
-                  normalized.sample_rate,
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    if (sample_rate != (unsigned int)normalized.sample_rate) {
-        LOG_ERROR("audio_playback_init failed: requested sample_rate=%d actual=%u",
-                  normalized.sample_rate,
-                  sample_rate);
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_set_period_size_near(pcm, hw_params, &period_frames, &direction);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set period_frames=%d err=%s",
-                  normalized.period_frames,
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_set_buffer_size_near(pcm, hw_params, &buffer_frames);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set buffer_frames=%llu err=%s",
-                  (unsigned long long)((uint64_t)normalized.period_frames *
-                                      (uint64_t)normalized.buffer_periods),
-                  snd_strerror(ret));
-        result = MEDIA_ERR_UNSUPPORTED;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params(pcm, hw_params);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: commit hw_params err=%s", snd_strerror(ret));
-        result = audio_playback_map_alsa_error(ret);
+    normalized.sample_rate = (int)negotiated.sample_rate;
+    normalized.period_frames = (int)negotiated.period_frames;
+    normalized.buffer_periods =
+        (int)(negotiated.buffer_frames / negotiated.period_frames);
+
+    result = audio_playback_configure_sw_params(pcm, &negotiated);
+    if (result != MEDIA_OK) {
+        LOG_ERROR("audio_playback_init failed: configure sw_params result=%d", (int)result);
         goto init_failed;
     }
 
-    ret = snd_pcm_hw_params_get_rate(hw_params, &sample_rate, &direction);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: get actual sample_rate err=%s",
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_get_period_size(hw_params, &period_frames, &direction);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: get actual period_size err=%s",
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_hw_params_get_buffer_size(hw_params, &buffer_frames);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: get actual buffer_size err=%s",
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    if (period_frames == 0 || buffer_frames / period_frames < 2) {
-        LOG_ERROR("audio_playback_init failed: invalid negotiated period=%llu buffer=%llu",
-                  (unsigned long long)period_frames,
-                  (unsigned long long)buffer_frames);
-        result = MEDIA_ERR_INVALID_CONFIG;
-        goto init_failed;
-    }
-
-    normalized.sample_rate = (int)sample_rate;
-    normalized.period_frames = (int)period_frames;
-    normalized.buffer_periods = (int)(buffer_frames / period_frames);
-    start_threshold_frames = period_frames *
-                             (snd_pcm_uframes_t)normalized.start_threshold_periods;
-    if (start_threshold_frames > buffer_frames) {
-        start_threshold_frames = buffer_frames;
-    }
-
-    /*
-     * 3. 配置 sw_params：avail_min 使阻塞写入按一个 period 的粒度被唤醒；
-     * start_threshold 先预填若干 period 再启动 DMA，降低首帧后立即 underrun 的风险；
-     * stop_threshold 设为整个 buffer，当播放数据耗尽时进入 XRUN 以便显式恢复。
-     */
-    snd_pcm_sw_params_alloca(&sw_params);
-    ret = snd_pcm_sw_params_current(pcm, sw_params);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: sw_params_current err=%s", snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_sw_params_set_avail_min(pcm, sw_params, period_frames);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set avail_min=%llu err=%s",
-                  (unsigned long long)period_frames,
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_sw_params_set_start_threshold(pcm, sw_params, start_threshold_frames);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set start_threshold=%llu err=%s",
-                  (unsigned long long)start_threshold_frames,
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_sw_params_set_stop_threshold(pcm, sw_params, buffer_frames);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: set stop_threshold=%llu err=%s",
-                  (unsigned long long)buffer_frames,
-                  snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-    ret = snd_pcm_sw_params(pcm, sw_params);
-    if (ret < 0) {
-        LOG_ERROR("audio_playback_init failed: commit sw_params err=%s", snd_strerror(ret));
-        result = MEDIA_ERR;
-        goto init_failed;
-    }
-
-    /* 4. 显式 prepare，使 PCM 从 SETUP 进入 PREPARED，后续可直接写入。 */
+    /* 显式 prepare，使 PCM 从 SETUP 进入 PREPARED，后续可直接写入。 */
     ret = snd_pcm_prepare(pcm);
     if (ret < 0) {
         LOG_ERROR("audio_playback_init failed: prepare err=%s", snd_strerror(ret));
@@ -530,8 +585,8 @@ MediaResult AudioPlayback::init(const AudioPlaybackConfig *config) {
     ctx->config = normalized;
     ctx->config.device_name = ctx->device_name;
     ctx->frame_bytes = (size_t)bytes_per_sample * (size_t)normalized.channels;
-    ctx->buffer_frames = (uint64_t)buffer_frames;
-    ctx->start_threshold_frames = (uint64_t)start_threshold_frames;
+    ctx->buffer_frames = (uint64_t)negotiated.buffer_frames;
+    ctx->start_threshold_frames = (uint64_t)negotiated.start_threshold_frames;
     ctx->initialized = 1;
 
     LOG_INFO("audio playback init success: device=%s rate=%d channels=%d format=%d "

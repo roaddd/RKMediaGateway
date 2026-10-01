@@ -11,6 +11,7 @@
 #include "mediaControlMessage.h"
 #include "audioCapture.h"
 #include "audioEncoder.h"
+#include "audioTalkbackModule.h"
 #include "ispController.h"
 
 #ifdef __cplusplus
@@ -306,6 +307,10 @@ typedef struct {
 
 typedef struct {
     AudioSourceConfig source;        /* 音频采集与编码配置。 */
+    struct {
+        int enabled;                 /* 是否启用浏览器到设备的双向语音播放链路。 */
+        AudioTalkbackConfig module;  /* 抖动缓冲、Opus 解码和 ALSA Playback 配置。 */
+    } talkback;
 } MediaGatewayAudioConfig;
 
 typedef struct {

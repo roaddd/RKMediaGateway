@@ -18,6 +18,7 @@ include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioDecoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/inc)
+include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioTalkback/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/mppEncoder/inc)
@@ -89,6 +90,7 @@ file(GLOB V4L2_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/src/*.c)
 file(GLOB AUDIO_CAPTURE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioCapture/src/*.c)
 file(GLOB_RECURSE AUDIO_DECODER_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioDecoder/src/*.cpp)
 file(GLOB AUDIO_PLAYBACK_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/src/*.cpp)
+file(GLOB AUDIO_TALKBACK_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioTalkback/src/*.cpp)
 file(GLOB AUDIO_FRAME_SOURCE_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioFrameSource/src/*.c)
 file(GLOB_RECURSE AUDIO_ENCODER_C_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.c)
 file(GLOB_RECURSE AUDIO_ENCODER_CPP_SRC ${PROJECT_SOURCE_DIR}/bussiness/audioEncoder/src/*.cpp)
@@ -362,6 +364,9 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
+        ${AUDIO_DECODER_SRC}
+        ${AUDIO_PLAYBACK_SRC}
+        ${AUDIO_TALKBACK_SRC}
         ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
@@ -410,6 +415,9 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
+        ${AUDIO_DECODER_SRC}
+        ${AUDIO_PLAYBACK_SRC}
+        ${AUDIO_TALKBACK_SRC}
         ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}
@@ -451,6 +459,9 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${V4L2_CAPTURE_SRC}
         ${AUDIO_CAPTURE_SRC}
         ${AUDIO_FRAME_SOURCE_SRC}
+        ${AUDIO_DECODER_SRC}
+        ${AUDIO_PLAYBACK_SRC}
+        ${AUDIO_TALKBACK_SRC}
         ${AUDIO_ENCODER_SRC}
         ${MPP_ENCODER_SRC}
         ${MEDIA_CORE_SRC}

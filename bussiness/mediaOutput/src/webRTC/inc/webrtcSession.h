@@ -25,7 +25,7 @@ typedef std::function<void(const WebRtcIncomingAudioPacket &)>
 
 /* 单个浏览器会话持有的 WebRTC 信令和媒体传输对象。 */
 struct WebRtcSessionTransport {
-    std::shared_ptr<communication::WebSocketConnection> connection; /* WebSocket 信令连接。 */
+    std::shared_ptr<communication::WebSocketConnection> webSocketConnection; /* WebSocket 信令连接。 */
     std::shared_ptr<rtc::PeerConnection> pc; /* libdatachannel PeerConnection。 */
     std::shared_ptr<rtc::DataChannel> dc; /* 浏览器创建的 IPC DataChannel。 */
     std::shared_ptr<rtc::Track> videoTrack; /* H264 sendonly 视频 Track。 */
@@ -79,7 +79,7 @@ class WebRtcSession : public std::enable_shared_from_this<WebRtcSession> {
 public:
     WebRtcSession(int id,
                   const WebRtcServerConfig &config,
-                  const std::shared_ptr<communication::WebSocketConnection> &connection,
+                  const std::shared_ptr<communication::WebSocketConnection> &webSocketConnection,
                   const WebRtcSessionClosedCallback &closedCallback,
                   const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback,
                   const WebRtcSessionIncomingAudioCallback &incomingAudioCallback);

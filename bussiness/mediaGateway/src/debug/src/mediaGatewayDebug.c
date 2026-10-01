@@ -361,6 +361,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     MediaGatewayCtx *ctx = NULL;
     MediaGatewayStatsSnapshot stats_snapshot = {0};
     MediaGatewayAudioEncoderGroupStats audio_group_stats[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS] = {{0}};
+    AudioTalkbackStats talkback_stats = {0};
     MediaOutputStats output_stats = {0};
     char *reply = NULL;
     size_t offset = 0;
@@ -368,6 +369,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     size_t audio_group_count = 0;
     double average_encode_us = 0.0;
     int lock_ret = 0;
+    MediaResult talkback_result = MEDIA_ERR_NOT_READY;
     int i = 0;
 
     (void)input;
@@ -384,6 +386,13 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     reply[0] = '\0';
     media_gateway_get_stats_snapshot(ctx, &stats_snapshot);
     audio_xruns = audio_capture_get_xrun_count(&ctx->audio.capture);
+    if (ctx->config.audio.talkback.enabled)
+    {
+        talkback_result = audio_talkback_get_stats(&talkback_stats);
+        if (talkback_result != MEDIA_OK)
+            LOG_ERROR("gateway_shell_get_status failed: get talkback stats result=%d",
+                      talkback_result);
+    }
     if (ctx->metrics.lock_ready)
     {
         lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
@@ -425,6 +434,25 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                &offset,
                                "  audio_xruns=%" PRIu64 "\n",
                                audio_xruns);
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  talkback enabled=%-3s running=%-3s submitted=%" PRIu64 " decoded=%" PRIu64 " fec=%" PRIu64 " plc=%" PRIu64 "\n",
+                               gateway_debug_switch_name(ctx->config.audio.talkback.enabled),
+                               gateway_debug_switch_name(talkback_result == MEDIA_OK),
+                               talkback_stats.submitted_packets,
+                               talkback_stats.decoded_packets,
+                               talkback_stats.fec_recovered_frames,
+                               talkback_stats.plc_concealed_frames);
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  talkback drops duplicate=%" PRIu64 " late=%" PRIu64 " overflow=%" PRIu64 " foreign=%" PRIu64 " errors(decode=%" PRIu64 " playback=%" PRIu64 ") resets=%" PRIu64 "\n",
+                               talkback_stats.duplicate_packets,
+                               talkback_stats.late_packets,
+                               talkback_stats.overflow_drops,
+                               talkback_stats.foreign_talker_drops,
+                               talkback_stats.decode_errors,
+                               talkback_stats.playback_errors,
+                               talkback_stats.stream_resets);
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "CAPTURE");
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)

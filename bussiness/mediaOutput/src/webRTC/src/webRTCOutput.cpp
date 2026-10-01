@@ -4,6 +4,7 @@
 #include "../inc/webrtcServer.h"
 
 #include <future>
+#include <cstring>
 #include <inttypes.h>
 #include <mutex>
 #include <new>
@@ -29,6 +30,7 @@ using rkmedia::webrtc::web_rtc_debug_register_server;
 using rkmedia::webrtc::web_rtc_debug_unregister_server;
 using rkmedia::webrtc::WebRtcAudioCodec;
 using rkmedia::webrtc::WebRtcAudioFrame;
+using rkmedia::webrtc::WebRtcIncomingAudioPacket;
 using rkmedia::webrtc::WebRtcVideoFrame;
 using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_NONE;
 using rkmedia::webrtc::WEBRTC_AUDIO_CODEC_PCMA;
@@ -100,6 +102,8 @@ static void webrtc_output_normalize_config(MediaOutputWebRtcConfig *dst,
     dst->audio_codec = MEDIA_CODEC_NONE;
     dst->audio_sample_rate = DEFAULT_WEBRTC_AUDIO_SAMPLE_RATE;
     dst->audio_channels = DEFAULT_WEBRTC_AUDIO_CHANNELS;
+    dst->incoming_audio_callback = NULL;
+    dst->incoming_audio_user_data = NULL;
 
     if (!src) {
         return;
@@ -129,6 +133,8 @@ static void webrtc_output_normalize_config(MediaOutputWebRtcConfig *dst,
     if (src->audio_channels > 0) {
         dst->audio_channels = src->audio_channels;
     }
+    dst->incoming_audio_callback = src->incoming_audio_callback;
+    dst->incoming_audio_user_data = src->incoming_audio_user_data;
     if ((dst->audio_codec == MEDIA_CODEC_G711A || dst->audio_codec == MEDIA_CODEC_G711U) &&
         (dst->audio_sample_rate != 8000 || dst->audio_channels != 1)) {
         LOG_WARN("[WEBRTC] disable audio: codec=%d rate=%d channels=%d, only G711 8000Hz mono is supported",
@@ -194,6 +200,38 @@ static int webrtc_output_start(MediaOutput *output)
     config.audioCodec = webrtc_output_to_audio_codec(impl->config.audio_codec);
     config.audioSampleRate = static_cast<uint32_t>(impl->config.audio_sample_rate);
     config.audioChannels = static_cast<uint32_t>(impl->config.audio_channels);
+    /* 音频帧接收回调 */
+    config.incomingAudioCallback = [impl](const WebRtcIncomingAudioPacket &packet) {
+        MediaOutputIncomingAudioPacket callbackPacket = {};
+
+        if (impl->config.incoming_audio_callback == NULL) 
+        {
+            LOG_DEBUG("[WEBRTC] incoming audio packet ignored: no callback registered session_id=%d codec=%d",
+                      packet.sessionId,
+                      packet.codec);
+            return;
+        }
+        callbackPacket.session_id = packet.sessionId;
+        callbackPacket.payload_type = packet.payloadType;
+        callbackPacket.ssrc = packet.ssrc;
+        callbackPacket.sequence_number = packet.sequenceNumber;
+        callbackPacket.rtp_timestamp = packet.rtpTimestamp;
+        callbackPacket.arrival_time_us = packet.arrivalTimeUs;
+        callbackPacket.payload = packet.payload.data();
+        callbackPacket.payload_size = packet.payload.size();
+        if (packet.codec == WEBRTC_AUDIO_CODEC_OPUS) {
+            callbackPacket.codec = MEDIA_CODEC_OPUS;
+        } else if (packet.codec == WEBRTC_AUDIO_CODEC_PCMA) {
+            callbackPacket.codec = MEDIA_CODEC_G711A;
+        } else if (packet.codec == WEBRTC_AUDIO_CODEC_PCMU) {
+            callbackPacket.codec = MEDIA_CODEC_G711U;
+        } else {
+            callbackPacket.codec = MEDIA_CODEC_NONE;
+        }
+        /* payload 只在本回调期间有效，异步消费模块必须在 submit 内完成复制。 */
+        impl->config.incoming_audio_callback(&callbackPacket,
+                                             impl->config.incoming_audio_user_data);
+    };
 
     if (!impl->server->start(config)) {
         LOG_ERROR("[WEBRTC] output start failed: bind=%s port=%d",

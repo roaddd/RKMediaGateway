@@ -435,6 +435,7 @@ void WebRtcServer::handleClient(const std::shared_ptr<communication::WebSocketCo
 void WebRtcServer::handleIncomingAudioPacket(const WebRtcIncomingAudioPacket &packet)
 {
     uint64_t packetCount = 0;
+    std::function<void(const WebRtcIncomingAudioPacket &)> callback;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -446,6 +447,12 @@ void WebRtcServer::handleIncomingAudioPacket(const WebRtcIncomingAudioPacket &pa
         ++mediaCounters_.incomingAudioPackets;
         mediaCounters_.incomingAudioPayloadBytes += packet.payload.size();
         packetCount = mediaCounters_.incomingAudioPackets;
+        callback = config_.incomingAudioCallback;
+    }
+
+    /* 在 server 锁外调用业务消费者，避免队列背压阻塞会话管理和统计读取。 */
+    if (callback) {
+        callback(packet);
     }
 
     /* 每 250 包（20 ms Opus 时约 5 秒）打印一次采样日志，避免逐包日志干扰媒体线程。 */

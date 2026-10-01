@@ -82,22 +82,22 @@ static const std::chrono::seconds WEBRTC_PLI_TEST_TIMEOUT(15);
 
 WebRtcSession::WebRtcSession(int id,
                              const WebRtcServerConfig &config,
-                             const std::shared_ptr<communication::WebSocketConnection> &connection,
+                             const std::shared_ptr<communication::WebSocketConnection> &webSocketConnection,
                              const WebRtcSessionClosedCallback &closedCallback,
                              const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback,
                              const WebRtcSessionIncomingAudioCallback &incomingAudioCallback)
 {
     id_ = id;
     config_ = config;
-    transport_.connection = connection;
+    transport_.webSocketConnection = webSocketConnection;
     closedCallback_ = closedCallback;
     keyframeRequestCallback_ = keyframeRequestCallback;
     incomingAudioCallback_ = incomingAudioCallback;
     state_.closed = false;
     state_.waitingForVideoKeyframe = false;
     state_.pliTestSuppressingVideo = false;
-    state_.remoteAddress = connection ? connection->remoteAddress() : "";
-    state_.path = connection ? connection->path() : "";
+    state_.remoteAddress = webSocketConnection ? webSocketConnection->remoteAddress() : "";
+    state_.path = webSocketConnection ? webSocketConnection->path() : "";
     state_.peerState = "new";
     state_.iceState = "new";
     state_.gatheringState = "new";
@@ -182,13 +182,13 @@ void WebRtcSession::start()
 {
     std::weak_ptr<WebRtcSession> weakSession;
 
-    if (!transport_.connection) {
+    if (!transport_.webSocketConnection) {
         LOG_ERROR("[WEBRTC] session=%d start failed: websocket connection is NULL", id_);
         return;
     }
 
     weakSession = shared_from_this();
-    transport_.connection->registerOpenCallback([weakSession]() {
+    transport_.webSocketConnection->registerOpenCallback([weakSession]() {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -196,7 +196,7 @@ void WebRtcSession::start()
             LOG_INFO("[WEBRTC] session=%d websocket open", session->id_);
         }
     });
-    transport_.connection->registerCloseCallback([weakSession]() {
+    transport_.webSocketConnection->registerCloseCallback([weakSession]() {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -205,7 +205,7 @@ void WebRtcSession::start()
             session->close();
         }
     });
-    transport_.connection->registerErrorCallback([weakSession](const std::string &error) {
+    transport_.webSocketConnection->registerErrorCallback([weakSession](const std::string &error) {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -213,7 +213,7 @@ void WebRtcSession::start()
             LOG_ERROR("[WEBRTC] session=%d websocket error=%s", session->id_, error.c_str());
         }
     });
-    transport_.connection->registerTextMessageCallback([weakSession](const std::string &message) {
+    transport_.webSocketConnection->registerTextMessageCallback([weakSession](const std::string &message) {
         std::shared_ptr<WebRtcSession> session;
 
         session = weakSession.lock();
@@ -227,7 +227,7 @@ void WebRtcSession::start()
 void WebRtcSession::close()
 {
     std::shared_ptr<rtc::PeerConnection> pc;
-    std::shared_ptr<communication::WebSocketConnection> connection;
+    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     WebRtcSessionClosedCallback closedCallback;
 
     {
@@ -239,13 +239,13 @@ void WebRtcSession::close()
         state_.closed = true;
         closedCallback = closedCallback_;
         pc = transport_.pc;
-        connection = transport_.connection;
+        webSocketConnection = transport_.webSocketConnection;
         transport_.videoTrack.reset();
         transport_.audioTrack.reset();
         audioReceiver_.reset();
         transport_.dc.reset();
         transport_.pc.reset();
-        transport_.connection.reset();
+        transport_.webSocketConnection.reset();
         state_.peerState = "closed";
         state_.iceState = "closed";
     }
@@ -253,8 +253,8 @@ void WebRtcSession::close()
     if (pc) {
         pc->close();
     }
-    if (connection) {
-        connection->close();
+    if (webSocketConnection) {
+        webSocketConnection->close();
     }
     if (closedCallback) {
         closedCallback(id_);
@@ -331,7 +331,7 @@ bool WebRtcSession::isAudioReady() const
  */
 void WebRtcSession::getStats(WebRtcSessionStats &stats) const
 {
-    std::shared_ptr<communication::WebSocketConnection> connection;
+    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     std::shared_ptr<rtc::DataChannel> dc;
     std::shared_ptr<rtc::Track> videoTrack;
     std::shared_ptr<rtc::Track> audioTrack;
@@ -340,7 +340,7 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    connection = transport_.connection;
+    webSocketConnection = transport_.webSocketConnection;
     dc = transport_.dc;
     videoTrack = transport_.videoTrack;
     audioTrack = transport_.audioTrack;
@@ -352,7 +352,7 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.iceState = state_.iceState;
     stats.gatheringState = state_.gatheringState;
     stats.closed = state_.closed;
-    stats.websocketOpen = connection && connection->isOpen();
+    stats.websocketOpen = webSocketConnection && webSocketConnection->isOpen();
     stats.dataChannelOpen = dc && dc->isOpen();
     stats.videoTrackReady = videoTrack && videoTrack->isOpen();
     stats.waitingForVideoKeyframe = state_.waitingForVideoKeyframe;
@@ -1002,20 +1002,20 @@ void WebRtcSession::handleCandidate(const std::string &message)
 /* 把本地 SDP 描述通过 WebSocket 发回浏览器。 */
 void WebRtcSession::sendDescription(const rtc::Description &description)
 {
-    std::shared_ptr<communication::WebSocketConnection> connection;
+    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     std::string message;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        connection = transport_.connection;
+        webSocketConnection = transport_.webSocketConnection;
     }
-    if (!connection || !connection->isOpen()) {
+    if (!webSocketConnection || !webSocketConnection->isOpen()) {
         LOG_ERROR("[WEBRTC] session=%d send description failed: websocket not open", id_);
         return;
     }
 
     message = signaling_make_description(description.typeString(), description.generateSdp());
-    connection->sendText(message);
+    webSocketConnection->sendText(message);
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1026,20 +1026,20 @@ void WebRtcSession::sendDescription(const rtc::Description &description)
 /* 把本地 ICE candidate 通过 WebSocket 发给浏览器。 */
 void WebRtcSession::sendCandidate(const rtc::Candidate &candidate)
 {
-    std::shared_ptr<communication::WebSocketConnection> connection;
+    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     std::string message;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        connection = transport_.connection;
+        webSocketConnection = transport_.webSocketConnection;
     }
-    if (!connection || !connection->isOpen()) {
+    if (!webSocketConnection || !webSocketConnection->isOpen()) {
         LOG_WARN("[WEBRTC] session=%d send candidate failed: websocket not open", id_);
         return;
     }
 
     message = signaling_make_candidate(candidate);
-    connection->sendText(message);
+    webSocketConnection->sendText(message);
     {
         std::lock_guard<std::mutex> lock(mutex_);
 

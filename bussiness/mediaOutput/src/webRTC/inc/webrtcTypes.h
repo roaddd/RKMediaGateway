@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,8 @@ enum WebRtcKeyframeRequestReason {
     WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT = 2 /* PLI 测试超时后请求恢复用 IDR。 */
 };
 
+struct WebRtcIncomingAudioPacket;
+
 struct WebRtcServerConfig {
     std::string name;        /* 输出通道名称，用于日志。 */
     std::string bindAddress; /* WebSocket 信令监听地址。 */
@@ -36,6 +39,7 @@ struct WebRtcServerConfig {
     WebRtcAudioCodec audioCodec; /* 浏览器音频 Track 使用的 G711/Opus 编码类型。 */
     uint32_t audioSampleRate;     /* 输入编码采样率：G711=8000，Opus=48000。 */
     uint32_t audioChannels;       /* 输入编码声道数：G711=mono，Opus=mono/stereo。 */
+    std::function<void(const WebRtcIncomingAudioPacket &)> incomingAudioCallback; /* 入站音频消费者。 */
 };
 
 struct WebRtcVideoFrame {

@@ -63,6 +63,45 @@ typedef struct {
 } MediaGatewayRunResources;
 
 /**
+ * @description: 将 WebRTC 输出层的临时入站音频视图同步复制到 AudioTalkbackModule。
+ *
+ * 回调运行在 WebRTC 接收线程，禁止在这里解码或写 ALSA；submit 只完成参数校验、
+ * 负载复制和有序缓冲插入，真正的媒体处理由模块自己的 worker 串行完成。
+ */
+static void media_gateway_on_incoming_audio(
+    const MediaOutputIncomingAudioPacket *packet,
+    void *user_data)
+{
+    AudioTalkbackPacket talkback_packet = {0};
+    MediaResult result = MEDIA_OK;
+
+    (void)user_data;
+    if (!packet)
+    {
+        LOG_ERROR("incoming audio callback failed: packet is NULL");
+        return;
+    }
+    talkback_packet.session_id = packet->session_id;
+    talkback_packet.codec = packet->codec;
+    talkback_packet.payload_type = packet->payload_type;
+    talkback_packet.ssrc = packet->ssrc;
+    talkback_packet.sequence_number = packet->sequence_number;
+    talkback_packet.rtp_timestamp = packet->rtp_timestamp;
+    talkback_packet.arrival_time_us = packet->arrival_time_us;
+    talkback_packet.payload = packet->payload;
+    talkback_packet.payload_size = packet->payload_size;
+    result = audio_talkback_submit(&talkback_packet);
+    if (result != MEDIA_OK && result != MEDIA_ERR_BUSY && result != MEDIA_ERR_FULL)
+    {
+        LOG_ERROR("incoming audio submit failed: session=%d ssrc=%u seq=%u result=%d",
+                  packet->session_id,
+                  packet->ssrc,
+                  packet->sequence_number,
+                  result);
+    }
+}
+
+/**
  * @brief 比较两个编码运行参数是否完全一致。
  * 统一控制器在投递编码参数前用该函数去重，避免重复下发相同运行参数。
  */
@@ -1625,6 +1664,11 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         }
         output_config.type = MEDIA_OUTPUT_TYPE_WEBRTC;
         output_config.protocol.webrtc = s->webrtc;
+        if (ctx->config.audio.talkback.enabled && audio_group && audio_group->encoder.codec == MEDIA_CODEC_OPUS)
+        {
+            output_config.protocol.webrtc.incoming_audio_callback = media_gateway_on_incoming_audio;
+            output_config.protocol.webrtc.incoming_audio_user_data = NULL;
+        }
         if (audio_group)
         {
             output_config.protocol.webrtc.audio_codec = audio_group->encoder.codec;
@@ -2244,6 +2288,33 @@ static int init_gateway_audio(MediaGatewayCtx *ctx)
 }
 
 /**
+ * @description: 创建并启动浏览器到设备的双向语音模块。
+ */
+static int init_gateway_audio_talkback(MediaGatewayCtx *ctx)
+{
+    MediaResult result = MEDIA_OK;
+
+    if (!ctx->config.audio.talkback.enabled)
+    {
+        LOG_WARN("audio talkback disabled in config; gateway continues without talkback");
+        return 0;
+    }
+
+    result = audio_talkback_init(&ctx->config.audio.talkback.module);
+    if (result != MEDIA_OK)
+    {
+        LOG_ERROR("init gateway audio talkback failed: init result=%d", result);
+        return -1;
+    }
+    LOG_INFO("audio talkback configured: device=%s rate=%d decoder_channels=%d playback_channels=%d",
+             ctx->config.audio.talkback.module.playback_device,
+             ctx->config.audio.talkback.module.sample_rate,
+             ctx->config.audio.talkback.module.decoder_channels,
+             ctx->config.audio.talkback.module.playback_channels);
+    return 0;
+}
+
+/**
  * @description: 创建并启动全部输出通道。
  */
 static int init_gateway_outputs(MediaGatewayCtx *ctx)
@@ -2338,6 +2409,11 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
     if (init_gateway_audio(ctx) != 0)
     {
         LOG_ERROR("init gateway audio");
+        goto fail;
+    }
+    if (init_gateway_audio_talkback(ctx) != 0)
+    {
+        LOG_ERROR("init gateway audio talkback");
         goto fail;
     }
     if (init_gateway_outputs(ctx) != 0)
@@ -3293,12 +3369,20 @@ void media_gateway_stop(MediaGatewayCtx *ctx)
 void media_gateway_deinit(MediaGatewayCtx *ctx)
 {
     int i = 0;
+    MediaResult talkback_result = MEDIA_OK;
 
     if (!ctx)
         return;
 
     stop_outputs(ctx);
     deinit_outputs(ctx);
+
+    talkback_result = audio_talkback_deinit();
+    if (talkback_result != MEDIA_OK)
+    {
+        LOG_ERROR("media gateway deinit: audio talkback deinit failed result=%d",
+                  talkback_result);
+    }
 
     if (ctx->record_fp)
     {

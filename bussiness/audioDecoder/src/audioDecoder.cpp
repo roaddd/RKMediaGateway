@@ -98,8 +98,7 @@ static MediaResult audio_decoder_create_adapter(
 /**
  * @description: 严格校验配置，创建不透明句柄及其对应的 C++ 解码适配器。
  */
-extern "C" MediaResult audio_decoder_create(const AudioDecoderConfig *config,
-                                             AudioDecoderHandle **handle)
+extern "C" MediaResult audio_decoder_create(const AudioDecoderConfig *config, AudioDecoderHandle **handle)
 {
     AudioDecoderHandle *instance = NULL;
     MediaResult result = MEDIA_OK;
@@ -187,10 +186,7 @@ extern "C" MediaResult audio_decoder_decode(AudioDecoderHandle *handle,
 /**
  * @description: 将通用丢包恢复请求交给具体格式适配器，并统一记录实际恢复方式。
  */
-extern "C" MediaResult audio_decoder_recover_loss(
-    AudioDecoderHandle *handle,
-    const AudioDecoderLossInput *input,
-    AudioDecoderOutput *output)
+extern "C" MediaResult audio_decoder_recover_loss(AudioDecoderHandle *handle, const AudioDecoderLossInput *input, AudioDecoderOutput *output)
 {
     MediaResult result = MEDIA_OK;
     bool used_inband_redundancy = false;

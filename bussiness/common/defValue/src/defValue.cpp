@@ -495,6 +495,21 @@ static void set_audio_defaults(void) {
     set_value_int("AUDIO_SOURCE_SLOTS", 8);
     set_value_int("AUDIO_RETRY_MS", 5);
     set_value_int("AUDIO_MAX_CONSECUTIVE_FAILURES", 30);
+    set_value_int("AUDIO_TALKBACK_ENABLED", 0);
+    set_value("AUDIO_TALKBACK_PLAYBACK_DEVICE", "hw:0,0");
+    set_value_int("AUDIO_TALKBACK_SAMPLE_RATE", 48000);
+    set_value_int("AUDIO_TALKBACK_DECODER_CHANNELS", 1);
+    set_value_int("AUDIO_TALKBACK_PLAYBACK_CHANNELS", 2);
+    set_value_int("AUDIO_TALKBACK_FRAME_SAMPLES_PER_CHANNEL", 960);
+    set_value_int("AUDIO_TALKBACK_PLAYBACK_BUFFER_PERIODS", 4);
+    set_value_int("AUDIO_TALKBACK_PLAYBACK_START_PERIODS", 2);
+    set_value_int("AUDIO_TALKBACK_JITTER_PREBUFFER_PACKETS", 3);
+    set_value_int("AUDIO_TALKBACK_JITTER_MAX_PACKETS", 50);
+    set_value_int("AUDIO_TALKBACK_TALKER_TIMEOUT_MS", 1000);
+    set_value_int("AUDIO_TALKBACK_MIXER_ENABLED", 0);
+    set_value("AUDIO_TALKBACK_MIXER_CARD", "hw:0");
+    set_value("AUDIO_TALKBACK_MIXER_CONTROL", "Playback Path");
+    set_value("AUDIO_TALKBACK_MIXER_VALUE", "HP");
 }
 
 static void load_defaults(void) {
@@ -716,6 +731,28 @@ static void fill_audio_source(AudioSourceConfig *audio) {
         group->encoder.opus.application = static_cast<AudioEncoderOpusApplication>(
             value_int(audio_encoder_group_key(name, "opus_application").c_str()));
     }
+}
+
+/** @description: 从已解析键值表填充浏览器到设备的独立双向语音配置。 */
+static void fill_audio_talkback(MediaGatewayAudioConfig *audio) {
+    AudioTalkbackConfig *talkback = NULL;
+
+    talkback = &audio->talkback.module;
+    audio->talkback.enabled = value_int("AUDIO_TALKBACK_ENABLED");
+    talkback->playback_device = value_string("AUDIO_TALKBACK_PLAYBACK_DEVICE");
+    talkback->sample_rate = value_int("AUDIO_TALKBACK_SAMPLE_RATE");
+    talkback->decoder_channels = value_int("AUDIO_TALKBACK_DECODER_CHANNELS");
+    talkback->playback_channels = value_int("AUDIO_TALKBACK_PLAYBACK_CHANNELS");
+    talkback->frame_samples_per_channel = value_int("AUDIO_TALKBACK_FRAME_SAMPLES_PER_CHANNEL");
+    talkback->playback_buffer_periods = value_int("AUDIO_TALKBACK_PLAYBACK_BUFFER_PERIODS");
+    talkback->playback_start_periods = value_int("AUDIO_TALKBACK_PLAYBACK_START_PERIODS");
+    talkback->jitter_prebuffer_packets = value_int("AUDIO_TALKBACK_JITTER_PREBUFFER_PACKETS");
+    talkback->jitter_max_packets = value_int("AUDIO_TALKBACK_JITTER_MAX_PACKETS");
+    talkback->talker_timeout_ms = value_int("AUDIO_TALKBACK_TALKER_TIMEOUT_MS");
+    talkback->mixer.enabled = value_int("AUDIO_TALKBACK_MIXER_ENABLED");
+    talkback->mixer.card_name = value_string("AUDIO_TALKBACK_MIXER_CARD");
+    talkback->mixer.control_name = value_string("AUDIO_TALKBACK_MIXER_CONTROL");
+    talkback->mixer.value_name = value_string("AUDIO_TALKBACK_MIXER_VALUE");
 }
 
 static void fill_isp_source(IspSourceConfig *isp) {
@@ -963,6 +1000,7 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     fill_capture_source(&config->input.capture_sources[1], "CAPTURE_SUB_");
     fill_isp_source(&config->input.isp);
     fill_audio_source(&config->audio.source);
+    fill_audio_talkback(&config->audio);
     fill_stream(&config->video.streams[0], "STREAM_MAIN_");
     fill_stream(&config->video.streams[1], "STREAM_SUB_");
 

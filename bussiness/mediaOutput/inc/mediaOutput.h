@@ -2,6 +2,7 @@
 #define __MEDIA_OUTPUT_H__
 
 #include <pthread.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "mediaPacket.h"
@@ -125,6 +126,24 @@ typedef struct {
 /**
  * @description: WebRTC 输出配置。
  */
+/** @brief WebRTC 入站音频包的 C 侧只读视图。 */
+typedef struct {
+    int session_id;             /* WebRTC 服务端分配的会话 ID。 */
+    MediaCodecType codec;       /* SDP 已协商的音频编码格式。 */
+    uint8_t payload_type;       /* RTP Payload Type。 */
+    uint32_t ssrc;              /* 浏览器音频发送源 SSRC。 */
+    uint16_t sequence_number;   /* RTP 序号。 */
+    uint32_t rtp_timestamp;     /* RTP 媒体时间戳。 */
+    uint64_t arrival_time_us;   /* 到达设备的单调时钟时间，单位微秒。 */
+    const uint8_t *payload;     /* 编码负载，只在回调执行期间有效。 */
+    size_t payload_size;        /* 编码负载字节数。 */
+} MediaOutputIncomingAudioPacket;
+
+/** WebRTC 入站音频回调；异步消费者必须在回调内复制 payload。 */
+typedef void (*MediaOutputIncomingAudioCallback)(
+    const MediaOutputIncomingAudioPacket *packet,
+    void *user_data);
+
 typedef struct {
     char name[64];         /* 输出通道名称，用于日志和统计。 */
     char bind_address[64]; /* WebSocket 信令监听地址，例如 0.0.0.0。 */
@@ -134,6 +153,8 @@ typedef struct {
     MediaCodecType audio_codec; /* WebRTC 音频编码，支持 G711A/G711U/Opus。 */
     int audio_sample_rate;      /* WebRTC 音频采样率，G711 固定 8000Hz。 */
     int audio_channels;         /* WebRTC 音频声道数，G711 当前只支持单声道。 */
+    MediaOutputIncomingAudioCallback incoming_audio_callback; /* 浏览器上行音频消费者。 */
+    void *incoming_audio_user_data; /* 传回入站音频回调的业务上下文。 */
 } MediaOutputWebRtcConfig;
 
 /**
