@@ -47,7 +47,7 @@ body {
 }
 
 .actions {
-    grid-template-columns: minmax(120px, 160px) repeat(4, minmax(120px, 1fr));
+    grid-template-columns: repeat(3, minmax(130px, 180px)) repeat(4, minmax(110px, 1fr));
     align-items: center;
 }
 

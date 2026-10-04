@@ -8,6 +8,7 @@
         wsCloseBtn: document.getElementById("wsCloseBtn"),
         receiveVideo: document.getElementById("receiveVideo"),
         sendMicrophone: document.getElementById("sendMicrophone"),
+        browserAudio3A: document.getElementById("browserAudio3A"),
         startBtn: document.getElementById("startBtn"),
         pingBtn: document.getElementById("pingBtn"),
         statusBtn: document.getElementById("statusBtn"),
@@ -61,6 +62,34 @@
     function logIpc(direction, message) {
         els.ipcLog.textContent += `[${now()}] ${direction} ${message}\n`;
         els.ipcLog.scrollTop = els.ipcLog.scrollHeight;
+    }
+
+    /*
+     * 只向浏览器提交其声明支持的3A约束。开关关闭时同样显式传入false，
+     * 避免audio:true继续沿用浏览器默认处理策略。
+     */
+    function buildMicrophoneAudioConstraints(enableBrowserAudio3A) {
+        const supportedConstraints = navigator.mediaDevices.getSupportedConstraints();
+        const audioConstraints = {};
+        const processingConstraints = ["echoCancellation", "noiseSuppression", "autoGainControl"];
+
+        processingConstraints.forEach((constraintName) => {
+            if (supportedConstraints[constraintName]) {
+                audioConstraints[constraintName] = enableBrowserAudio3A;
+            }
+        });
+        return audioConstraints;
+    }
+
+    /* 打印浏览器最终采用的麦克风参数；未报告的字段不能视为已经启用。 */
+    function logMicrophoneSettings(track, requestedAudio3A) {
+        const settings = track.getSettings();
+        const readSetting = (name) => Object.prototype.hasOwnProperty.call(settings, name)
+            ? String(settings[name])
+            : "未报告";
+
+        log(`浏览器3A请求：${requestedAudio3A ? "开启" : "关闭"}`);
+        log(`麦克风实际设置：AEC=${readSetting("echoCancellation")} NS=${readSetting("noiseSuppression")} AGC=${readSetting("autoGainControl")} rate=${readSetting("sampleRate")}Hz channels=${readSetting("channelCount")}`);
     }
 
     function setText(el, text, stateClass) {
@@ -463,9 +492,11 @@
         const peer = createPeerConnection();
         const receiveVideo = els.receiveVideo.checked;
         const sendMicrophone = els.sendMicrophone.checked;
+        const enableBrowserAudio3A = els.browserAudio3A.checked;
         let offer;
         let videoTransceiver;
         let microphoneTrack;
+        let microphoneAudioConstraints;
 
         bindDataChannel(peer.createDataChannel("ipc"));
         log("创建本地 DataChannel：ipc");
@@ -485,16 +516,18 @@
         /*
          * 麦克风权限必须由用户点击“创建 Offer”后申请。启用时使用 sendrecv，既把浏览器
          * Opus RTP 发给设备，也继续接收设备音频；未启用时保留原来的 recvonly 行为。
-         */
+        */
         if (sendMicrophone) {
+            microphoneAudioConstraints = buildMicrophoneAudioConstraints(enableBrowserAudio3A);
             localAudioStream = await navigator.mediaDevices.getUserMedia({
-                audio: true,
+                audio: microphoneAudioConstraints,
                 video: false,
             });
             microphoneTrack = localAudioStream.getAudioTracks()[0];
             if (!microphoneTrack) {
                 throw new Error("浏览器未返回可用的麦克风轨道");
             }
+            logMicrophoneSettings(microphoneTrack, enableBrowserAudio3A);
             peer.addTransceiver(microphoneTrack, {
                 direction: "sendrecv",
                 streams: [localAudioStream],
