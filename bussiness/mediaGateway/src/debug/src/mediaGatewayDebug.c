@@ -129,13 +129,12 @@ static void gateway_debug_append_rtsp_config_compact(char *reply,
 
     debug_command_reply_append(reply,
                                offset,
-                               "  RTSP   name=%s session=%s listen=%s:%d queue=%d sps_pps=%s\\n",
+                               "  RTSP   name=%s session=%s listen=%s:%d queue=%d\\n",
                                gateway_debug_safe_str(rtsp->name),
                                gateway_debug_safe_str(rtsp->session_name),
                                gateway_debug_safe_str(rtsp->server_ip),
                                rtsp->server_port,
-                               rtsp->queue_capacity,
-                               gateway_debug_switch_name(rtsp->immediate_sps_pps_on_new_client));
+                               rtsp->queue_capacity);
     debug_command_reply_append(reply,
                                offset,
                                "         auth=%s user=%s password=%s audio(codec=%d, rate=%d, channels=%d, aac=%d)\\n",

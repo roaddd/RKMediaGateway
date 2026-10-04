@@ -688,7 +688,7 @@ static MediaAdaptNetworkDecision media_gateway_update_network_policy(MediaGatewa
 }
 
 /**
- * @brief 联合控制输出：合并场景约束和网络约束，生成最终 fps、码率、GOP 和 pacing 目标。
+ * @brief 联合控制输出：合并场景约束和网络约束，生成最终 fps、码率和 GOP 目标。
  * @return MEDIA_OK 表示融合成功，错误码表示融合过程发现非法参数。
  */
 static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
@@ -696,10 +696,12 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
 {
     MediaAdaptCtrlState *state = NULL;
     int old_target_fps = 0; /* 保存旧的帧率值 */
+#if 0
     int stream_idx = 0;
     int max_pacing_rate_bps = 0;
     int calculated_pacing_rate_bps = 0;
     const MediaGatewayNetworkLevelConfig *level = NULL;
+#endif
     int ret = MEDIA_OK;
 
     if (!ctx)
@@ -708,11 +710,17 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         return MEDIA_ERR_INVALID_PARAM;
     }
 
-    /* 如果场景、网络编码和 RTP pacing 都未启用，直接返回。 */
+    /* 场景与网络编码都未启用时直接返回。 */
+#if 0
     if (!ctx->config.policy.light_fps.enabled &&
         !ctx->config.policy.network_encode.enabled &&
         !ctx->config.policy.network_encode.pacing_enabled)
         return MEDIA_OK;
+#else
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled)
+        return MEDIA_OK;
+#endif
 
     state = &ctx->policy.adaptive;
     old_target_fps = state->output.target_fps;
@@ -740,6 +748,8 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         }
     }
 
+    /* 视频 RTP pacer 暂停使用；编码参数自适应仍按 RTCP 反馈执行。 */
+#if 0
     for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
         state->output.pacing_rate_bps[stream_idx] = 0;
 
@@ -772,6 +782,7 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
                 max_pacing_rate_bps = state->output.pacing_rate_bps[stream_idx];
         }
     }
+#endif
 
     snprintf(state->output.reason,
             sizeof(state->output.reason),
@@ -789,11 +800,10 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
     state->output.last_decision_ts_us = policy_now_us();
     if (old_target_fps != state->output.target_fps)
     {
-        LOG_WARN("[ADAPTIVE_CONTROL] target_fps %d->%d %s pacing=%d",
+        LOG_WARN("[ADAPTIVE_CONTROL] target_fps %d->%d %s",
                  old_target_fps,
                  state->output.target_fps,
-                 state->output.reason,
-                 max_pacing_rate_bps);
+                 state->output.reason);
     }
     return MEDIA_OK;
 }
@@ -1086,10 +1096,16 @@ void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
         LOG_ERROR("[ADAPTIVE_CONTROL] ctx is null, skipping runtime policy update");
         return;
     }
+#if 0
     if (!ctx->config.policy.light_fps.enabled &&
         !ctx->config.policy.network_encode.enabled &&
         !ctx->config.policy.network_encode.pacing_enabled)
         return;
+#else
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled)
+        return;
+#endif
 
     /* 第一步：亮度感知过程，只更新场景侧约束。场景侧无效时停止本轮融合。 */
     if (media_gateway_update_light_fps_policy(ctx) != MEDIA_OK)

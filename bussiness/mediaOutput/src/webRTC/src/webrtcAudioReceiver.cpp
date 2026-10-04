@@ -351,7 +351,7 @@ MediaResult WebRtcAudioReceiver::handlePacket(const uint8_t *data,
         return MEDIA_ERR_INVALID_PARAM;
     }
 
-    /* rtcp包 */
+    /* 判断是rtp包还是rtcp包 */
     if (is_rtcp_packet(data, size)) {
         recordRtcpPacket();
         return MEDIA_OK;

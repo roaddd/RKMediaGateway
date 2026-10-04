@@ -273,6 +273,13 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
     network = &ctx->policy.adaptive.stream_network[stream_idx];
     if (ctx->metrics.lock_ready)
         pthread_mutex_lock(&ctx->metrics.lock);
+    /*
+     * TODO: 同一码流的多个 RTSP 客户端目前共用这一份网络状态。
+     * 每次 RR 都直接覆盖上次指标，因此后到的健康客户端反馈可能掩盖
+     * 先到的差网络客户端反馈，反过来也可能让单个差客户端拉低整路码流。
+     * 后续可先按客户端分别保存反馈和接收时间、淘汰过期项，再根据共享
+     * 编码器的控制目标选择最差值或其他聚合策略；不能仅用“最后一份”决策。
+     */
     network->rtcp_fraction_lost = feedback->fraction_lost;
     network->rtcp_jitter = feedback->jitter;
     network->rtcp_rtt_ms = feedback->rtt_ms;
@@ -281,6 +288,8 @@ static void media_gateway_handle_output_network_feedback(const MediaOutputNetFee
         pthread_mutex_unlock(&ctx->metrics.lock);
 }
 
+/* 视频 RTP pacer 暂停使用；恢复时同步去掉策略计算和 RTSP 发送点的 #if 0。 */
+#if 0
 /**
  * @brief 判断本轮是否需要向指定输出通道下发 RTP pacer 配置。
  *
@@ -415,6 +424,7 @@ static void media_gateway_apply_adaptive_video_pacer_to_outputs(MediaGatewayCtx 
         ctx->policy.adaptive.output.output_pacing[output_idx].apply_ts_us = now_us;
     }
 }
+#endif
 
 /**
  * @description: 返回非空字符串；输入为空时返回 fallback。
@@ -596,8 +606,11 @@ static void fill_default_network_encode_policy_config(MediaGatewayNetworkEncodeP
 
     /* TODO:下面的这些值都是怎么确定的呢？ */
     cfg->enabled = cfg->enabled ? 1 : 0;
+#if 0
     if (cfg->pacing_enabled <= 0)
         cfg->pacing_enabled = 1;
+#endif
+    cfg->pacing_enabled = 0;
     if (cfg->pacing_update_interval_ms <= 0)
         cfg->pacing_update_interval_ms = 1000;
     if (cfg->pacing_update_change_percent <= 0)
@@ -785,9 +798,6 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
     dst->rtsp.password = safe_str(dst->rtsp.password, "123456");
     if (dst->rtsp.queue_capacity <= 0)
         dst->rtsp.queue_capacity = 32;
-    if (dst->rtsp.immediate_sps_pps_on_new_client != 0)
-        dst->rtsp.immediate_sps_pps_on_new_client = 1;
-
     dst->rtmp.name = safe_str(dst->rtmp.name, (stream_idx == 0) ? "rtmp-main" : "rtmp-sub");
     dst->rtmp.video_codec_name = safe_str(dst->rtmp.video_codec_name, "H264");
     dst->rtmp.encoder_name = safe_str(dst->rtmp.encoder_name, "RKMediaGateway");
@@ -3187,9 +3197,8 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
  * @brief 执行一轮运行期自适应控制调度。
  *
  * 本函数把自适应控制拆成三个清晰阶段：
- * 1. 刷新策略目标：根据亮度、RTCP 和输出队列刷新目标帧率、编码参数、pacing rate；
- * 2. 下发输出控制：把最终 pacing 开关和码率应用到对应输出通道；
- * 3. 下发视频控制：通过命令队列异步切换 Sensor 帧率和编码器运行参数。
+ * 1. 刷新策略目标：根据亮度、RTCP 和输出队列刷新目标帧率与编码参数；
+ * 2. 下发视频控制：通过命令队列异步切换 Sensor 帧率和编码器运行参数。
  *
  * 策略阶段只计算目标值；涉及硬件或协议发送点的变更，都交给各自组件接口执行。
  */
@@ -3204,7 +3213,9 @@ static void media_gateway_run_adaptive_control_once(MediaGatewayCtx *ctx, MediaG
     }
 
     media_gateway_refresh_adaptive_policy_targets_if_due(ctx);
+#if 0
     media_gateway_apply_adaptive_video_pacer_to_outputs(ctx);
+#endif
     media_gateway_apply_adaptive_video_source_and_encoder_controls(ctx, res);
 }
 

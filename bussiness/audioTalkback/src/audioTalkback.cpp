@@ -466,7 +466,7 @@ void AudioTalkback::resetStreamLocked(int sessionId, uint32_t ssrc, const char *
         activeSessionId_ = sessionId;
         activeSsrc_ = ssrc;
         hasActiveTalker_ = true;
-        resetPending_ = true;
+        resetPending_ = true; /* 重置Opus解码器状态 */
         if (wasActive) ++stats_.stream_resets;
         LOG_INFO("audio talkback stream selected: session=%d ssrc=%u reason=%s",
                  sessionId,

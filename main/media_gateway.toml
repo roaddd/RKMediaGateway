@@ -728,9 +728,6 @@ password = 123456
 # STREAM_MAIN_RTSP_QUEUE_CAPACITY: 输出队列容量。
 queue_capacity = 32
 
-# STREAM_MAIN_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT: 新 RTSP 客户端连接后是否立即发送 SPS/PPS。
-immediate_sps_pps_on_new_client = 0
-
 # -----------------------------------------------------------------------------
 # 主码流输出：RTMP
 # -----------------------------------------------------------------------------
@@ -1063,9 +1060,6 @@ password = 123456
 
 # STREAM_SUB_RTSP_QUEUE_CAPACITY: 输出队列容量。
 queue_capacity = 32
-
-# STREAM_SUB_RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT: 新 RTSP 客户端连接后是否立即发送 SPS/PPS。
-immediate_sps_pps_on_new_client = 0
 
 # -----------------------------------------------------------------------------
 # 子码流输出：RTMP

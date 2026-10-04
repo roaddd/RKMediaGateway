@@ -766,14 +766,6 @@ int media_output_setup_rtsp(MediaOutput *output, const MediaOutputRtspConfig *co
     if (!impl->config.password) {
         impl->config.password = DEFAULT_RTSP_PASSWORD;
     }
-    if (impl->config.immediate_sps_pps_on_new_client) {
-        /*
-         * 旧模式会把缓存的 SPS/PPS 当作独立 NALU 发送。
-         * 切到整帧 RTP 输入后，解码初始化应通过新客户端触发的 IDR 完成。
-         */
-        LOG_WARN("RTSP immediate SPS/PPS is ignored after switching to frame-based RTSP input; request IDR on new client instead");
-        impl->config.immediate_sps_pps_on_new_client = 0;
-    }
     memset(&output_config, 0, sizeof(output_config));
     output_config.name = impl->config.name;
     output_config.queue_capacity = (impl->config.queue_capacity > 0) ? impl->config.queue_capacity : 32;

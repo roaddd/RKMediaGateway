@@ -430,7 +430,6 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "RTSP_USER").c_str(), "admin");
     set_value((p + "RTSP_PASSWORD").c_str(), "123456");
     set_value_int((p + "RTSP_QUEUE_CAPACITY").c_str(), 32);
-    set_value_int((p + "RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT").c_str(), 0);
     set_value((p + "RTSP_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "RTMP_NAME").c_str(), is_main ? "rtmp-main" : "rtmp-sub");
@@ -877,7 +876,6 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->rtsp.user = value_string((p + "RTSP_USER").c_str());
     stream->rtsp.password = value_string((p + "RTSP_PASSWORD").c_str());
     stream->rtsp.queue_capacity = value_int((p + "RTSP_QUEUE_CAPACITY").c_str());
-    stream->rtsp.immediate_sps_pps_on_new_client = value_int((p + "RTSP_IMMEDIATE_SPS_PPS_ON_NEW_CLIENT").c_str());
     stream->rtsp_audio.encoder_group = value_string((p + "RTSP_AUDIO_ENCODER_GROUP").c_str());
 
     stream->rtmp.name = value_string((p + "RTMP_NAME").c_str());
