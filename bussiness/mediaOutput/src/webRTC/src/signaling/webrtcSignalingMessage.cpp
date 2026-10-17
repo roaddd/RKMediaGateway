@@ -1,4 +1,9 @@
-#include "../inc/webrtcSignaling.h"
+/**
+ * @file webrtcSignalingMessage.cpp
+ * @brief 实现 WebRTC SDP、ICE Candidate 信令消息的解析和构造。
+ */
+#include "webrtcSignalingMessage.h"
+#include "webrtcJson.h"
 
 #include <cctype>
 #include <map>
@@ -9,54 +14,6 @@
 
 namespace rkmedia {
 namespace webrtc {
-
-/* 将字符串安全放进 JSON 字符串字段，避免 SDP 中的换行和反斜杠破坏 JSON。 */
-std::string signaling_json_escape(const std::string &value)
-{
-    std::ostringstream out;
-    unsigned char uch;
-    char ch;
-    size_t i;
-
-    for (i = 0; i < value.size(); ++i) {
-        ch = value[i];
-        uch = static_cast<unsigned char>(ch);
-        switch (ch) {
-        case '"':
-            out << "\\\"";
-            break;
-        case '\\':
-            out << "\\\\";
-            break;
-        case '\b':
-            out << "\\b";
-            break;
-        case '\f':
-            out << "\\f";
-            break;
-        case '\n':
-            out << "\\n";
-            break;
-        case '\r':
-            out << "\\r";
-            break;
-        case '\t':
-            out << "\\t";
-            break;
-        default:
-            if (uch < 0x20) {
-                out << "\\u00";
-                out << "0123456789abcdef"[(uch >> 4) & 0x0f];
-                out << "0123456789abcdef"[uch & 0x0f];
-            } else {
-                out << ch;
-            }
-            break;
-        }
-    }
-
-    return out.str();
-}
 
 /* 从简单 JSON 文本中读取字符串字段，当前只用于浏览器信令测试消息。 */
 static bool json_get_string(const std::string &json, const std::string &key, std::string &value)
@@ -196,31 +153,18 @@ bool signaling_parse_message(const std::string &json, SignalingMessage &message)
 }
 
 /* 解析 DataChannel IPC 命令，不套用 WebSocket 信令的 type 字段约束。 */
-bool signaling_parse_ipc_command(const std::string &json, std::string &command)
-{
-    bool parsed = false;
-
-    command.clear();
-    parsed = json_get_string(json, "cmd", command);
-    if (!parsed || command.empty()) {
-        LOG_ERROR("[WEBRTC][IPC] parse command failed: cmd missing bytes=%zu", json.size());
-        return false;
-    }
-    return true;
-}
-
 /* 生成 offer/answer JSON。当前设备端主要发送 answer。 */
 std::string signaling_make_description(const std::string &type, const std::string &sdp)
 {
-    return "{\"type\":\"" + signaling_json_escape(type) +
-           "\",\"sdp\":\"" + signaling_json_escape(sdp) + "\"}";
+    return "{\"type\":\"" + webrtc_json_escape(type) +
+           "\",\"sdp\":\"" + webrtc_json_escape(sdp) + "\"}";
 }
 
 /* 生成 ICE candidate JSON，浏览器收到后调用 addIceCandidate。 */
 std::string signaling_make_candidate(const rtc::Candidate &candidate)
 {
-    return "{\"type\":\"candidate\",\"candidate\":\"" + signaling_json_escape(candidate.candidate()) +
-           "\",\"mid\":\"" + signaling_json_escape(candidate.mid()) + "\"}";
+    return "{\"type\":\"candidate\",\"candidate\":\"" + webrtc_json_escape(candidate.candidate()) +
+           "\",\"mid\":\"" + webrtc_json_escape(candidate.mid()) + "\"}";
 }
 
 /* 判断浏览器 Offer 是否包含 video m-line。 */

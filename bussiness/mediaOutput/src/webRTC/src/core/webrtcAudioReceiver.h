@@ -1,18 +1,23 @@
+/**
+ * @file webrtcAudioReceiver.h
+ * @brief 定义单会话入站音频 RTP/RTCP 校验、统计与负载交付接口。
+ */
 #ifndef __WEBRTC_AUDIO_RECEIVER_H__
 #define __WEBRTC_AUDIO_RECEIVER_H__
 
 #include "commonDef.h"
-#include "webrtcTypes.h"
+#include "webrtcMediaTypes.h"
 
 #include <functional>
 #include <mutex>
+#include <string>
 
 namespace rkmedia {
 namespace webrtc {
 
 /** 入站音频 RTP 接收器的固定协商参数。 */
 struct WebRtcAudioReceiverConfig {
-    int sessionId = 0;                       /* WebRtcServer 分配的会话 ID。 */
+    std::string sessionId;                   /* 云端分配的唯一会话 ID。 */
     WebRtcAudioCodec codec = WEBRTC_AUDIO_CODEC_NONE; /* SDP 协商出的编码格式。 */
     uint8_t payloadType = 0;                 /* SDP 协商出的 RTP PT。 */
 };

@@ -1,10 +1,17 @@
-#ifndef __WEBRTC_SIGNALING_H__
-#define __WEBRTC_SIGNALING_H__
+/**
+ * @file webrtcSignalingMessage.h
+ * @brief 定义 WebRTC SDP、ICE Candidate 信令消息的解析和构造接口。
+ *
+ * 本文件只描述 PeerConnection 建链所需的信令内容，不负责 WebSocket 连接、
+ * 云端会话路由，也不解析 DataChannel 上承载的设备控制命令。
+ */
+#ifndef __WEBRTC_SIGNALING_MESSAGE_H__
+#define __WEBRTC_SIGNALING_MESSAGE_H__
 
 #include <rtc/candidate.hpp>
 #include <string>
 
-#include "webrtcTypes.h"
+#include "webrtcMediaTypes.h"
 
 namespace rkmedia {
 namespace webrtc {
@@ -21,17 +28,6 @@ struct SignalingMessage {
 };
 
 /**
- * @brief 转义需要写入 JSON 字符串字段的内容。
- *
- * 函数处理双引号、反斜杠、常用控制字符以及小于 0x20 的字符，但不负责添加
- * JSON 字段外围的双引号。
- *
- * @param[in] value 原始字符串。
- * @return 可安全放入 JSON 字符串字段的转义结果。
- */
-std::string signaling_json_escape(const std::string &value);
-
-/**
  * @brief 解析浏览器发送的 WebRTC 信令 JSON。
  *
  * 仅提取当前信令协议使用的字符串字段；调用时会先清空 @p message。
@@ -43,19 +39,6 @@ std::string signaling_json_escape(const std::string &value);
  * @retval false 缺少有效的 `type` 字段。
  */
 bool signaling_parse_message(const std::string &json, SignalingMessage &message);
-
-/**
- * @brief 解析 DataChannel IPC 消息中的命令字段。
- *
- * 该入口与 WebSocket 信令解析相互独立，不要求 IPC 消息携带信令专用的 `type`
- * 字段。调用时会先清空 @p command。
- *
- * @param[in] json 待解析的 DataChannel JSON 文本。
- * @param[out] command 解析得到的非空 `cmd` 字段。
- * @retval true 成功取得非空的 `cmd` 字段。
- * @retval false 缺少有效的 `cmd` 字段。
- */
-bool signaling_parse_ipc_command(const std::string &json, std::string &command);
 
 /**
  * @brief 生成携带 SDP 的 offer 或 answer 信令 JSON。

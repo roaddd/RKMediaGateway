@@ -1,4 +1,8 @@
-#include "../inc/webrtcAudioReceiver.h"
+/**
+ * @file webrtcAudioReceiver.cpp
+ * @brief 实现入站音频 RTP/RTCP 识别、校验、统计和负载交付。
+ */
+#include "webrtcAudioReceiver.h"
 
 #include "logger.h"
 
@@ -237,10 +241,10 @@ MediaResult WebRtcAudioReceiver::reset(
     const WebRtcAudioReceiverConfig &config,
     const WebRtcIncomingAudioPacketCallback &callback)
 {
-    if (config.sessionId <= 0 || config.codec == WEBRTC_AUDIO_CODEC_NONE ||
+    if (config.sessionId.empty() || config.codec == WEBRTC_AUDIO_CODEC_NONE ||
         config.payloadType > 127) {
-        LOG_ERROR("[WEBRTC][AUDIO_RX] reset failed: session=%d codec=%d pt=%u",
-                  config.sessionId,
+        LOG_ERROR("[WEBRTC][AUDIO_RX] reset failed: session=%s codec=%d pt=%u",
+                  config.sessionId.c_str(),
                   static_cast<int>(config.codec),
                   static_cast<unsigned int>(config.payloadType));
         return MEDIA_ERR_INVALID_CONFIG;
@@ -290,14 +294,14 @@ MediaResult WebRtcAudioReceiver::acceptRtpPacket(
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (config_.sessionId <= 0 || config_.codec == WEBRTC_AUDIO_CODEC_NONE) {
+    if (config_.sessionId.empty() || config_.codec == WEBRTC_AUDIO_CODEC_NONE) {
         LOG_ERROR("[WEBRTC][AUDIO_RX] packet rejected: receiver not configured");
         return MEDIA_ERR_NOT_READY;
     }
     if (view.payloadType != config_.payloadType) {
         ++stats_.unexpectedPayloadTypePackets;
-        LOG_ERROR("[WEBRTC][AUDIO_RX] unexpected RTP PT: session=%d expected=%u actual=%u",
-                  config_.sessionId,
+        LOG_ERROR("[WEBRTC][AUDIO_RX] unexpected RTP PT: session=%s expected=%u actual=%u",
+                  config_.sessionId.c_str(),
                   static_cast<unsigned int>(config_.payloadType),
                   static_cast<unsigned int>(view.payloadType));
         return MEDIA_ERR_UNSUPPORTED;

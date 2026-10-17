@@ -1,6 +1,11 @@
-#include "../inc/webrtcSession.h"
+/**
+ * @file webrtcSession.cpp
+ * @brief 实现单个远端观看者的 PeerConnection、Track 和 DataChannel 会话。
+ */
+#include "webrtcSession.h"
 
-#include "../inc/webrtcSignaling.h"
+#include "webrtcDataChannelMessage.h"
+#include "webrtcSignalingMessage.h"
 
 #include <chrono>
 #include <cstring>
@@ -80,24 +85,26 @@ static const char *gathering_state_name(rtc::PeerConnection::GatheringState stat
 /* PLI 测试最多抑制视频 15 秒，超时后自动恢复该浏览器的视频。 */
 static const std::chrono::seconds WEBRTC_PLI_TEST_TIMEOUT(15);
 
-WebRtcSession::WebRtcSession(int id,
-                             const WebRtcServerConfig &config,
-                             const std::shared_ptr<communication::WebSocketConnection> &webSocketConnection,
+WebRtcSession::WebRtcSession(const std::string &sessionId,
+                             const WebRtcStreamEndpointConfig &config,
+                             const WebRtcSessionSignalingSendCallback &signalingSendCallback,
+                             const WebRtcSessionSignalingCloseCallback &signalingCloseCallback,
                              const WebRtcSessionClosedCallback &closedCallback,
                              const WebRtcSessionKeyframeRequestCallback &keyframeRequestCallback,
                              const WebRtcSessionIncomingAudioCallback &incomingAudioCallback)
 {
-    id_ = id;
+    sessionId_ = sessionId;
     config_ = config;
-    transport_.webSocketConnection = webSocketConnection;
+    signalingSendCallback_ = signalingSendCallback;
+    signalingCloseCallback_ = signalingCloseCallback;
     closedCallback_ = closedCallback;
     keyframeRequestCallback_ = keyframeRequestCallback;
     incomingAudioCallback_ = incomingAudioCallback;
     state_.closed = false;
     state_.waitingForVideoKeyframe = false;
     state_.pliTestSuppressingVideo = false;
-    state_.remoteAddress = webSocketConnection ? webSocketConnection->remoteAddress() : "";
-    state_.path = webSocketConnection ? webSocketConnection->path() : "";
+    state_.remoteAddress = "cloud:" + sessionId;
+    state_.path = "/device";
     state_.peerState = "new";
     state_.iceState = "new";
     state_.gatheringState = "new";
@@ -131,15 +138,15 @@ WebRtcSession::~WebRtcSession()
 }
 
 /* 返回当前会话 ID，仅用于服务端会话表管理和日志。 */
-int WebRtcSession::id() const
+const std::string &WebRtcSession::sessionId() const
 {
-    return id_;
+    return sessionId_;
 }
 
 /*
- * 将本会话的关键帧需求上报给 WebRtcServer。
+ * 将本会话的关键帧需求上报给 WebRtcStreamEndpoint。
  * 调用时机：video Track 打开后请求首个 IDR，或浏览器通过 RTCP PLI/FIR
- * 表示解码参考链已丢失时请求恢复帧。限频和多会话合并由 WebRtcServer 统一处理。
+ * 表示解码参考链已丢失时请求恢复帧。限频和多会话合并由 WebRtcStreamEndpoint 统一处理。
  */
 void WebRtcSession::requestVideoKeyframe(WebRtcKeyframeRequestReason reason)
 {
@@ -149,7 +156,7 @@ void WebRtcSession::requestVideoKeyframe(WebRtcKeyframeRequestReason reason)
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
-        /* 已关闭 session 不再向 server 上报，避免关闭后的异步 PLI 触发无效 IDR。 */
+        /* 已关闭 session 不再向媒体端点上报，避免关闭后的异步 PLI 触发无效 IDR。 */
         if (state_.closed) {
             return;
         }
@@ -163,89 +170,41 @@ void WebRtcSession::requestVideoKeyframe(WebRtcKeyframeRequestReason reason)
                 pliTestRecovered = true;
             }
         }
-        /* 只在锁内复制回调，避免执行 server 逻辑时长时间占用 session 锁。 */
+        /* 只在锁内复制回调，避免执行媒体端点逻辑时长时间占用 session 锁。 */
         callback = keyframeRequestCallback_;
     }
     if (callback) {
-        callback(id_, reason);
+        callback(sessionId_, reason);
     }
     if (pliTestRecovered) {
-        LOG_WARN("[WEBRTC] session=%d PLI test received PLI, resume video delivery", id_);
+        LOG_WARN("[WEBRTC] session=%s PLI test received PLI, resume video delivery", sessionId_.c_str());
     }
 }
 
-/*
- * 绑定 WebSocket 回调。
- * 调用时机：WebRtcServer 接收到新的浏览器 WebSocket 连接后立即调用。
- */
-void WebRtcSession::start()
-{
-    std::weak_ptr<WebRtcSession> weakSession;
-
-    if (!transport_.webSocketConnection) {
-        LOG_ERROR("[WEBRTC] session=%d start failed: websocket connection is NULL", id_);
-        return;
-    }
-
-    weakSession = shared_from_this();
-    transport_.webSocketConnection->registerOpenCallback([weakSession]() {
-        std::shared_ptr<WebRtcSession> session;
-
-        session = weakSession.lock();
-        if (session) {
-            LOG_INFO("[WEBRTC] session=%d websocket open", session->id_);
-        }
-    });
-    transport_.webSocketConnection->registerCloseCallback([weakSession]() {
-        std::shared_ptr<WebRtcSession> session;
-
-        session = weakSession.lock();
-        if (session) {
-            LOG_INFO("[WEBRTC] session=%d websocket closed", session->id_);
-            session->close();
-        }
-    });
-    transport_.webSocketConnection->registerErrorCallback([weakSession](const std::string &error) {
-        std::shared_ptr<WebRtcSession> session;
-
-        session = weakSession.lock();
-        if (session) {
-            LOG_ERROR("[WEBRTC] session=%d websocket error=%s", session->id_, error.c_str());
-        }
-    });
-    transport_.webSocketConnection->registerTextMessageCallback([weakSession](const std::string &message) {
-        std::shared_ptr<WebRtcSession> session;
-
-        session = weakSession.lock();
-        if (session) {
-            session->handleWsText(message);
-        }
-    });
-}
-
-/* 关闭当前会话持有的 WebSocket、PeerConnection、DataChannel 和 Track。 */
+/* 关闭本会话的统一信令通道和全部媒体对象。 */
 void WebRtcSession::close()
 {
     std::shared_ptr<rtc::PeerConnection> pc;
-    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
+    WebRtcSessionSignalingCloseCallback signalingCloseCallback;
     WebRtcSessionClosedCallback closedCallback;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (state_.closed) {
-            LOG_DEBUG("[WEBRTC] session=%d close ignored: already closed", id_);
+            LOG_DEBUG("[WEBRTC] session=%s close ignored: already closed", sessionId_.c_str());
             return;
         }
         state_.closed = true;
+        pendingRemoteCandidates_.clear();
         closedCallback = closedCallback_;
         pc = transport_.pc;
-        webSocketConnection = transport_.webSocketConnection;
+        signalingCloseCallback.swap(signalingCloseCallback_);
+        signalingSendCallback_ = WebRtcSessionSignalingSendCallback();
         transport_.videoTrack.reset();
         transport_.audioTrack.reset();
         audioReceiver_.reset();
         transport_.dc.reset();
         transport_.pc.reset();
-        transport_.webSocketConnection.reset();
         state_.peerState = "closed";
         state_.iceState = "closed";
     }
@@ -253,12 +212,21 @@ void WebRtcSession::close()
     if (pc) {
         pc->close();
     }
-    if (webSocketConnection) {
-        webSocketConnection->close();
+    if (signalingCloseCallback) {
+        signalingCloseCallback("device_session_closed");
     }
     if (closedCallback) {
-        closedCallback(id_);
+        closedCallback(sessionId_);
     }
+}
+
+void WebRtcSession::handleSignalingClosed()
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        signalingCloseCallback_ = WebRtcSessionSignalingCloseCallback();
+    }
+    close();
 }
 
 /* 当前视频 Track 是否已经进入可发送状态。 */
@@ -301,11 +269,11 @@ bool WebRtcSession::setPliTestVideoSuppression(bool enabled)
     }
 
     if (enabled) {
-        LOG_WARN("[WEBRTC] session=%d PLI test started: suppress video until PLI or timeout=%llds",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s PLI test started: suppress video until PLI or timeout=%llds",
+                 sessionId_.c_str(),
                  static_cast<long long>(WEBRTC_PLI_TEST_TIMEOUT.count()));
     } else if (changed) {
-        LOG_WARN("[WEBRTC] session=%d PLI test cancelled: resume video delivery", id_);
+        LOG_WARN("[WEBRTC] session=%s PLI test cancelled: resume video delivery", sessionId_.c_str());
         /* 手工取消时立即走统一 IDR 请求路径，避免浏览器继续等待下一个周期性 GOP。 */
         requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT);
     }
@@ -331,7 +299,6 @@ bool WebRtcSession::isAudioReady() const
  */
 void WebRtcSession::getStats(WebRtcSessionStats &stats) const
 {
-    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     std::shared_ptr<rtc::DataChannel> dc;
     std::shared_ptr<rtc::Track> videoTrack;
     std::shared_ptr<rtc::Track> audioTrack;
@@ -340,19 +307,18 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    webSocketConnection = transport_.webSocketConnection;
     dc = transport_.dc;
     videoTrack = transport_.videoTrack;
     audioTrack = transport_.audioTrack;
     audioReceiver = audioReceiver_;
-    stats.id = id_;
+    stats.sessionId = sessionId_;
     stats.remoteAddress = state_.remoteAddress;
     stats.path = state_.path;
     stats.peerState = state_.peerState;
     stats.iceState = state_.iceState;
     stats.gatheringState = state_.gatheringState;
     stats.closed = state_.closed;
-    stats.websocketOpen = webSocketConnection && webSocketConnection->isOpen();
+    stats.signalingReady = static_cast<bool>(signalingSendCallback_);
     stats.dataChannelOpen = dc && dc->isOpen();
     stats.videoTrackReady = videoTrack && videoTrack->isOpen();
     stats.waitingForVideoKeyframe = state_.waitingForVideoKeyframe;
@@ -455,8 +421,8 @@ bool WebRtcSession::convertAnnexBToLengthPrefixed(const uint8_t *data, size_t si
 
     frame.clear();
     if (!data || size == 0) {
-        LOG_WARN("[WEBRTC] session=%d Annex-B convert failed: data=%p size=%zu",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s Annex-B convert failed: data=%p size=%zu",
+                 sessionId_.c_str(),
                  (const void *)data,
                  size);
         return false;
@@ -478,8 +444,8 @@ bool WebRtcSession::convertAnnexBToLengthPrefixed(const uint8_t *data, size_t si
     }
 
     if (frame.empty()) {
-        LOG_WARN("[WEBRTC] session=%d Annex-B convert failed: no start code found size=%zu",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s Annex-B convert failed: no start code found size=%zu",
+                 sessionId_.c_str(),
                  size);
         return false;
     }
@@ -492,8 +458,8 @@ bool WebRtcSession::copyLengthPrefixedFrame(const uint8_t *data, size_t size, rt
 {
     frame.clear();
     if (!data || size == 0) {
-        LOG_WARN("[WEBRTC] session=%d length-prefixed copy failed: data=%p size=%zu",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s length-prefixed copy failed: data=%p size=%zu",
+                 sessionId_.c_str(),
                  (const void *)data,
                  size);
         return false;
@@ -541,16 +507,16 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.videoNotReady;
-        LOG_DEBUG("[WEBRTC] session=%d video frame ignored: track not ready", id_);
+        LOG_DEBUG("[WEBRTC] session=%s video frame ignored: track not ready", sessionId_.c_str());
         return false;
     }
 
     if (suppressTestVideo) {
-        LOG_DEBUG("[WEBRTC] session=%d PLI test suppress video frame", id_);
+        LOG_DEBUG("[WEBRTC] session=%s PLI test suppress video frame", sessionId_.c_str());
         return false;
     }
     if (requestTimeoutRecovery) {
-        LOG_WARN("[WEBRTC] session=%d PLI test timeout, request recovery IDR", id_);
+        LOG_WARN("[WEBRTC] session=%s PLI test timeout, request recovery IDR", sessionId_.c_str());
         requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_TEST_TIMEOUT);
     }
 
@@ -575,7 +541,7 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.videoSendFail;
-        LOG_WARN("[WEBRTC] session=%d invalid H264 frame size=%zu", id_, frame.size);
+        LOG_WARN("[WEBRTC] session=%s invalid H264 frame size=%zu", sessionId_.c_str(), frame.size);
         return false;
     }
 
@@ -585,7 +551,7 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.videoSendFail;
-        LOG_ERROR("[WEBRTC] session=%d send video failed: %s", id_, e.what());
+        LOG_ERROR("[WEBRTC] session=%s send video failed: %s", sessionId_.c_str(), e.what());
         return false;
     }
 
@@ -594,7 +560,7 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
 
         if (state_.waitingForVideoKeyframe && frame.keyFrame) {
             state_.waitingForVideoKeyframe = false;
-            LOG_INFO("[WEBRTC] session=%d first video keyframe sent", id_);
+            LOG_INFO("[WEBRTC] session=%s first video keyframe sent", sessionId_.c_str());
         }
         ++counters_.videoFrames;
         counters_.videoBytes += frame.size;
@@ -624,15 +590,15 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.audioNotReady;
-        LOG_DEBUG("[WEBRTC] session=%d audio frame ignored: track not ready", id_);
+        LOG_DEBUG("[WEBRTC] session=%s audio frame ignored: track not ready", sessionId_.c_str());
         return false;
     }
     if (!frame.data || frame.size == 0) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.audioSendFail;
-        LOG_WARN("[WEBRTC] session=%d audio frame ignored: data=%p size=%zu",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s audio frame ignored: data=%p size=%zu",
+                 sessionId_.c_str(),
                  (const void *)frame.data,
                  frame.size);
         return false;
@@ -641,8 +607,8 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.audioSendFail;
-        LOG_WARN("[WEBRTC] session=%d audio frame ignored: codec=%d expected=%d",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s audio frame ignored: codec=%d expected=%d",
+                 sessionId_.c_str(),
                  static_cast<int>(frame.codec),
                  static_cast<int>(config_.audioCodec));
         return false;
@@ -658,15 +624,15 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.audioSendFail;
-        LOG_ERROR("[WEBRTC] session=%d send audio failed: %s", id_, e.what());
+        LOG_ERROR("[WEBRTC] session=%s send audio failed: %s", sessionId_.c_str(), e.what());
         return false;
     }
 
     if (frame.traceSample) {
         const uint64_t sendFrameUs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count());
-        LOG_INFO("[WEBRTC_AUDIO_SEND] session=%d frame_id=%llu send_frame_us=%llu",
-                 id_,
+        LOG_INFO("[WEBRTC_AUDIO_SEND] session=%s frame_id=%llu send_frame_us=%llu",
+                 sessionId_.c_str(),
                  static_cast<unsigned long long>(frame.frameId),
                  static_cast<unsigned long long>(sendFrameUs));
     }
@@ -681,7 +647,7 @@ bool WebRtcSession::sendAudioFrame(const WebRtcAudioFrame &frame)
     return true;
 }
 
-void WebRtcSession::handleWsText(const std::string &message)
+void WebRtcSession::handleSignalingMessage(const std::string &message)
 {
     SignalingMessage signaling;
 
@@ -692,7 +658,7 @@ void WebRtcSession::handleWsText(const std::string &message)
     }
 
     if (!signaling_parse_message(message, signaling)) {
-        LOG_ERROR("[WEBRTC] session=%d invalid signaling message bytes=%zu", id_, message.size());
+        LOG_ERROR("[WEBRTC] session=%s invalid signaling message bytes=%zu", sessionId_.c_str(), message.size());
         return;
     }
 
@@ -703,7 +669,7 @@ void WebRtcSession::handleWsText(const std::string &message)
     } else if (signaling.type == "close") {
         close();
     } else {
-        LOG_WARN("[WEBRTC] session=%d unsupported signaling type=%s", id_, signaling.type.c_str());
+        LOG_WARN("[WEBRTC] session=%s unsupported signaling type=%s", sessionId_.c_str(), signaling.type.c_str());
     }
 }
 
@@ -714,10 +680,27 @@ void WebRtcSession::createPeerConnection()
     std::shared_ptr<rtc::PeerConnection> pc;
     std::weak_ptr<WebRtcSession> weakSession;
 
-    rtcConfig.disableAutoNegotiation = true;
-    pc = std::make_shared<rtc::PeerConnection>(rtcConfig);
+    try {
+        rtcConfig.disableAutoNegotiation = true;
+        /* ICE 服务器只决定候选收集和连通性检查，不改变 Offer/Answer 信令路由。 */
+        if (!config_.ice.stunHost.empty()) {
+            rtcConfig.iceServers.emplace_back(config_.ice.stunHost, config_.ice.stunPort);
+        }
+        if (!config_.ice.turnHost.empty()) {
+            rtcConfig.iceServers.emplace_back(config_.ice.turnHost, config_.ice.turnPort,
+                                              config_.ice.turnUsername, config_.ice.turnPassword,
+                                              rtc::IceServer::RelayType::TurnUdp);
+        }
+        if (config_.ice.relayOnly) {
+            rtcConfig.iceTransportPolicy = rtc::TransportPolicy::Relay;
+        }
+        pc = std::make_shared<rtc::PeerConnection>(rtcConfig);
+    } catch (const std::exception &e) {
+        LOG_ERROR("[WEBRTC] session=%s create PeerConnection failed: %s", sessionId_.c_str(), e.what());
+        return;
+    }
     if (!pc) {
-        LOG_ERROR("[WEBRTC] session=%d create PeerConnection failed", id_);
+        LOG_ERROR("[WEBRTC] session=%s create PeerConnection failed", sessionId_.c_str());
         return;
     }
     /*
@@ -789,7 +772,7 @@ void WebRtcSession::createPeerConnection()
 
                 session->state_.peerState = peer_connection_state_name(state);
             }
-            LOG_INFO("[WEBRTC] session=%d pc state=%d", session->id_, static_cast<int>(state));
+            LOG_INFO("[WEBRTC] session=%s pc state=%d", session->sessionId_.c_str(), static_cast<int>(state));
         }
     });
 
@@ -810,7 +793,7 @@ void WebRtcSession::createPeerConnection()
 
                 session->state_.iceState = ice_state_name(state);
             }
-            LOG_INFO("[WEBRTC] session=%d ice state=%s", session->id_, ice_state_name(state));
+            LOG_INFO("[WEBRTC] session=%s ice state=%s", session->sessionId_.c_str(), ice_state_name(state));
         }
     });
 
@@ -830,7 +813,7 @@ void WebRtcSession::createPeerConnection()
 
                 session->state_.gatheringState = gathering_state_name(state);
             }
-            LOG_INFO("[WEBRTC] session=%d gathering state=%s", session->id_, gathering_state_name(state));
+            LOG_INFO("[WEBRTC] session=%s gathering state=%s", session->sessionId_.c_str(), gathering_state_name(state));
         }
     });
 
@@ -851,13 +834,15 @@ void WebRtcSession::handleOffer(const std::string &message)
     uint8_t payloadType;
     uint8_t audioPayloadType;
     std::unique_ptr<rtc::Description> offer;
+    std::vector<std::string> pendingCandidates;
+    size_t pendingIndex = 0;
 
     /*
      * WebSocket 文本只是信令传输载体。先提取 JSON 中的 SDP，并在创建任何 WebRTC
      * 资源前拒绝缺少 Offer 内容的消息，避免留下无法继续协商的半初始化会话。
      */
     if (!signaling_parse_message(message, signaling) || signaling.sdp.empty()) {
-        LOG_ERROR("[WEBRTC] session=%d offer missing sdp bytes=%zu", id_, message.size());
+        LOG_ERROR("[WEBRTC] session=%s offer missing sdp bytes=%zu", sessionId_.c_str(), message.size());
         return;
     }
 
@@ -872,7 +857,7 @@ void WebRtcSession::handleOffer(const std::string &message)
         pc = transport_.pc;
     }
     if (!pc) {
-        LOG_ERROR("[WEBRTC] session=%d offer handling failed: PeerConnection is NULL", id_);
+        LOG_ERROR("[WEBRTC] session=%s offer handling failed: PeerConnection is NULL", sessionId_.c_str());
         return;
     }
 
@@ -883,13 +868,13 @@ void WebRtcSession::handleOffer(const std::string &message)
     if (signaling_offer_has_video(signaling.sdp)) {
         /* Track 必须复用 Offer 中 video m-line 的 mid，保证 Answer 能正确绑定收发器。 */
         if (!signaling_get_video_mid(signaling.sdp, videoMid)) {
-            LOG_ERROR("[WEBRTC] session=%d offer rejected: video mid missing", id_);
+            LOG_ERROR("[WEBRTC] session=%s offer rejected: video mid missing", sessionId_.c_str());
             close();
             return;
         }
         /* RTP PT 由浏览器 Offer 决定，同时必须满足当前 H.264 打包模式要求。 */
         if (!signaling_select_h264_payload_type(signaling.sdp, payloadType)) {
-            LOG_ERROR("[WEBRTC] session=%d offer rejected: no usable H264 payload type", id_);
+            LOG_ERROR("[WEBRTC] session=%s offer rejected: no usable H264 payload type", sessionId_.c_str());
             close();
             return;
         }
@@ -904,7 +889,7 @@ void WebRtcSession::handleOffer(const std::string &message)
     if (config_.audioCodec != WEBRTC_AUDIO_CODEC_NONE && signaling_offer_has_audio(signaling.sdp)) {
         /* audio Track 与 video Track 一样，必须使用对应 m-line 声明的 mid。 */
         if (!signaling_get_audio_mid(signaling.sdp, audioMid)) {
-            LOG_ERROR("[WEBRTC] session=%d offer rejected: audio mid missing", id_);
+            LOG_ERROR("[WEBRTC] session=%s offer rejected: audio mid missing", sessionId_.c_str());
             close();
             return;
         }
@@ -912,8 +897,8 @@ void WebRtcSession::handleOffer(const std::string &message)
         if (!signaling_select_audio_payload_type(signaling.sdp,
                                                  config_.audioCodec,
                                                  audioPayloadType)) {
-            LOG_ERROR("[WEBRTC] session=%d offer rejected: no usable audio payload type codec=%d",
-                      id_,
+            LOG_ERROR("[WEBRTC] session=%s offer rejected: no usable audio payload type codec=%d",
+                      sessionId_.c_str(),
                       static_cast<int>(config_.audioCodec));
             close();
             return;
@@ -936,9 +921,18 @@ void WebRtcSession::handleOffer(const std::string &message)
     offer.reset(new rtc::Description(signaling.sdp, "offer"));
     try {
         pc->setRemoteDescription(*offer);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            state_.remoteDescriptionSet = true;
+            pendingCandidates.swap(pendingRemoteCandidates_);
+        }
+        /* 云端可先转发 candidate 再转发 Offer；SDP 设置完成后按原顺序补交。 */
+        for (pendingIndex = 0; pendingIndex < pendingCandidates.size(); ++pendingIndex) {
+            handleCandidate(pendingCandidates[pendingIndex]);
+        }
         pc->setLocalDescription(rtc::Description::Type::Answer);
     } catch (const std::exception &e) {
-        LOG_ERROR("[WEBRTC] session=%d set description failed: %s", id_, e.what());
+        LOG_ERROR("[WEBRTC] session=%s set description failed: %s", sessionId_.c_str(), e.what());
     }
 }
 
@@ -967,23 +961,31 @@ void WebRtcSession::handleCandidate(const std::string &message)
     std::unique_ptr<rtc::Candidate> candidate;
 
     if (!signaling_parse_message(message, signaling) || signaling.candidate.empty()) {
-        LOG_WARN("[WEBRTC] session=%d candidate ignored: missing candidate bytes=%zu",
-                 id_,
+        LOG_WARN("[WEBRTC] session=%s candidate ignored: missing candidate bytes=%zu",
+                 sessionId_.c_str(),
                  message.size());
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!state_.remoteDescriptionSet) {
+            if (pendingRemoteCandidates_.size() >= 128) {
+                LOG_ERROR("[WEBRTC] session=%s candidate queue full before offer", sessionId_.c_str());
+                return;
+            }
+            pendingRemoteCandidates_.push_back(message);
+            return;
+        }
         pc = transport_.pc;
     }
     if (!pc) {
-        LOG_WARN("[WEBRTC] session=%d candidate ignored before offer", id_);
+        LOG_WARN("[WEBRTC] session=%s candidate ignored before offer", sessionId_.c_str());
         return;
     }
 
     if (signaling.mid.empty()) {
-        LOG_ERROR("[WEBRTC] session=%d candidate ignored: mid missing", id_);
+        LOG_ERROR("[WEBRTC] session=%s candidate ignored: mid missing", sessionId_.c_str());
         return;
     }
     candidate.reset(new rtc::Candidate(signaling.candidate, signaling.mid));
@@ -995,27 +997,39 @@ void WebRtcSession::handleCandidate(const std::string &message)
             ++counters_.remoteCandidates;
         }
     } catch (const std::exception &e) {
-        LOG_ERROR("[WEBRTC] session=%d add remote candidate failed: %s", id_, e.what());
+        LOG_ERROR("[WEBRTC] session=%s add remote candidate failed: %s", sessionId_.c_str(), e.what());
     }
 }
 
-/* 把本地 SDP 描述通过 WebSocket 发回浏览器。 */
-void WebRtcSession::sendDescription(const rtc::Description &description)
+/**
+ * @brief 通过统一的会话信令通道发送本会话消息。
+ * @return 成功提交给打开的连接时为 true，否则为 false。
+ */
+bool WebRtcSession::sendSignalingMessage(const std::string &message)
 {
-    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
-    std::string message;
+    WebRtcSessionSignalingSendCallback signalingSendCallback;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        webSocketConnection = transport_.webSocketConnection;
+        signalingSendCallback = signalingSendCallback_;
     }
-    if (!webSocketConnection || !webSocketConnection->isOpen()) {
-        LOG_ERROR("[WEBRTC] session=%d send description failed: websocket not open", id_);
-        return;
+    if (!signalingSendCallback) {
+        LOG_ERROR("[WEBRTC] session=%s signaling callback not ready", sessionId_.c_str());
+        return false;
     }
+    return signalingSendCallback(message);
+}
+
+/* 把本地 SDP 描述通过当前信令适配器发回浏览器。 */
+void WebRtcSession::sendDescription(const rtc::Description &description)
+{
+    std::string message;
 
     message = signaling_make_description(description.typeString(), description.generateSdp());
-    webSocketConnection->sendText(message);
+    if (!sendSignalingMessage(message)) {
+        LOG_ERROR("[WEBRTC] session=%s send description failed", sessionId_.c_str());
+        return;
+    }
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1026,20 +1040,13 @@ void WebRtcSession::sendDescription(const rtc::Description &description)
 /* 把本地 ICE candidate 通过 WebSocket 发给浏览器。 */
 void WebRtcSession::sendCandidate(const rtc::Candidate &candidate)
 {
-    std::shared_ptr<communication::WebSocketConnection> webSocketConnection;
     std::string message;
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        webSocketConnection = transport_.webSocketConnection;
-    }
-    if (!webSocketConnection || !webSocketConnection->isOpen()) {
-        LOG_WARN("[WEBRTC] session=%d send candidate failed: websocket not open", id_);
+    message = signaling_make_candidate(candidate);
+    if (!sendSignalingMessage(message)) {
+        LOG_WARN("[WEBRTC] session=%s send candidate failed", sessionId_.c_str());
         return;
     }
-
-    message = signaling_make_candidate(candidate);
-    webSocketConnection->sendText(message);
     {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1067,7 +1074,7 @@ void WebRtcSession::bindDataChannel(const std::shared_ptr<rtc::DataChannel> &dc)
 
         session = weakSession.lock();
         if (session) {
-            LOG_INFO("[WEBRTC] session=%d datachannel open", session->id_);
+            LOG_INFO("[WEBRTC] session=%s datachannel open", session->sessionId_.c_str());
         }
     });
     dc->onClosed([weakSession]() {
@@ -1075,7 +1082,7 @@ void WebRtcSession::bindDataChannel(const std::shared_ptr<rtc::DataChannel> &dc)
 
         session = weakSession.lock();
         if (session) {
-            LOG_INFO("[WEBRTC] session=%d datachannel closed", session->id_);
+            LOG_INFO("[WEBRTC] session=%s datachannel closed", session->sessionId_.c_str());
         }
     });
     dc->onMessage(nullptr, [weakSession](std::string message) {
@@ -1104,7 +1111,7 @@ void WebRtcSession::handleIpcMessage(const std::string &message)
     }
 
     /* IPC 消息不属于 WebSocket 信令，使用独立入口解析并检查返回值。 */
-    parsed = signaling_parse_ipc_command(message, command);
+    parsed = data_channel_parse_command(message, command);
     if (!parsed) {
         response = "{\"cmd\":\"invalid\",\"code\":400,\"message\":\"invalid command message\"}";
     } else if (command == "ping") {
@@ -1128,7 +1135,7 @@ void WebRtcSession::handleIpcMessage(const std::string &message)
             counters_.dataChannelTxBytes += response.size();
         }
     } else {
-        LOG_WARN("[WEBRTC] session=%d IPC response dropped: datachannel not open", id_);
+        LOG_WARN("[WEBRTC] session=%s IPC response dropped: datachannel not open", sessionId_.c_str());
     }
 }
 
@@ -1153,12 +1160,15 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
         pc = transport_.pc;
     }
     if (!pc) {
-        LOG_ERROR("[WEBRTC] session=%d add H264 track failed: PeerConnection is NULL", id_);
+        LOG_ERROR("[WEBRTC] session=%s add H264 track failed: PeerConnection is NULL", sessionId_.c_str());
         return;
     }
 
-    ssrc = static_cast<uint32_t>(1000 + id_);
-    cname = "rkmedia-webrtc-" + std::to_string(id_);
+    ssrc = static_cast<uint32_t>(std::hash<std::string>()(sessionId_) & 0x7fffffffu);
+    if (ssrc == 0) {
+        ssrc = 1;
+    }
+    cname = "rkmedia-webrtc-" + std::to_string(ssrc);
     msid = "rkmedia-stream";
 
     /*
@@ -1190,7 +1200,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
     /*
      * PliHandler 会解析浏览器发回的 RTCP PLI（PT=206/FMT=1）和 FIR。
      * 浏览器解码器丢失关键帧或参考帧时会发送这些反馈；回调不直接操作 MPP，
-     * 而是交给 WebRtcServer 与新客户端请求共用同一套 IDR 合并和限频策略。
+     * 而是交给 WebRtcStreamEndpoint 与新客户端请求共用同一套 IDR 合并和限频策略。
      */
     pliHandler = std::make_shared<rtc::PliHandler>([weakSession]() {
         std::shared_ptr<WebRtcSession> session;
@@ -1231,7 +1241,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
 
                 session->state_.waitingForVideoKeyframe = true;
             }
-            LOG_INFO("[WEBRTC] session=%d video track open", session->id_);
+            LOG_INFO("[WEBRTC] session=%s video track open", session->sessionId_.c_str());
             /* 新会话不能从当前 GOP 中间的 P/B 帧开始，因此立即请求一帧 IDR。 */
             session->requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_NEW_SESSION);
         }
@@ -1251,7 +1261,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
 
         session = weakSession.lock();
         if (session) {
-            LOG_INFO("[WEBRTC] session=%d video track closed", session->id_);
+            LOG_INFO("[WEBRTC] session=%s video track closed", session->sessionId_.c_str());
         }
     });
 
@@ -1269,7 +1279,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
 
         session = weakSession.lock();
         if (session) {
-            LOG_ERROR("[WEBRTC] session=%d video track error=%s", session->id_, error.c_str());
+            LOG_ERROR("[WEBRTC] session=%s video track error=%s", session->sessionId_.c_str(), error.c_str());
         }
     });
 
@@ -1285,7 +1295,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
         transport_.videoTrack = track;
     }
 
-    LOG_INFO("[WEBRTC] session=%d add h264 track mid=%s pt=%u", id_, mid.c_str(), payloadType);
+    LOG_INFO("[WEBRTC] session=%s add h264 track mid=%s pt=%u", sessionId_.c_str(), mid.c_str(), payloadType);
 }
 
 /*
@@ -1318,19 +1328,23 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
         pc = transport_.pc;
     }
     if (!pc) {
-        LOG_ERROR("[WEBRTC] session=%d add audio track failed: PeerConnection is NULL", id_);
+        LOG_ERROR("[WEBRTC] session=%s add audio track failed: PeerConnection is NULL", sessionId_.c_str());
         return;
     }
     if (codec != WEBRTC_AUDIO_CODEC_PCMA && codec != WEBRTC_AUDIO_CODEC_PCMU &&
         codec != WEBRTC_AUDIO_CODEC_OPUS) {
-        LOG_ERROR("[WEBRTC] session=%d add audio track failed: unsupported codec=%d",
-                  id_,
+        LOG_ERROR("[WEBRTC] session=%s add audio track failed: unsupported codec=%d",
+                  sessionId_.c_str(),
                   static_cast<int>(codec));
         return;
     }
 
-    ssrc = static_cast<uint32_t>(2000 + id_);
-    cname = "rkmedia-webrtc-audio-" + std::to_string(id_);
+    ssrc = static_cast<uint32_t>((std::hash<std::string>()(sessionId_) ^ 0xa5a5a5a5u) &
+                                 0x7fffffffu);
+    if (ssrc == 0) {
+        ssrc = 2;
+    }
+    cname = "rkmedia-webrtc-audio-" + std::to_string(ssrc);
     msid = "rkmedia-stream";
 
     /*
@@ -1384,7 +1398,7 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
     track->setMediaHandler(packetizer);
 
     weakSession = shared_from_this();
-    receiverConfig.sessionId = id_;
+    receiverConfig.sessionId = sessionId_;
     receiverConfig.codec = codec;
     receiverConfig.payloadType = payloadType;
     audioReceiver = std::make_shared<WebRtcAudioReceiver>(
@@ -1395,7 +1409,8 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
             session = weakSession.lock();
             if (!session) {
-                LOG_ERROR("[WEBRTC] session=%d audio track callback failed: session not found", packet.sessionId);
+                LOG_ERROR("[WEBRTC] session=%s audio track callback failed: session not found",
+                          packet.sessionId.c_str());
                 return;
             }
             {
@@ -1424,8 +1439,8 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
             session = weakSession.lock();
             if (session) {
-                LOG_ERROR("[WEBRTC] session=%d audio track rejected text message bytes=%zu",
-                          session->id_,
+                LOG_ERROR("[WEBRTC] session=%s audio track rejected text message bytes=%zu",
+                          session->sessionId_.c_str(),
                           message.size());
             }
         });
@@ -1444,7 +1459,7 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
         session = weakSession.lock();
         if (session) {
-            LOG_INFO("[WEBRTC] session=%d audio track open", session->id_);
+            LOG_INFO("[WEBRTC] session=%s audio track open", session->sessionId_.c_str());
         }
     });
     /*
@@ -1460,7 +1475,7 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
         session = weakSession.lock();
         if (session) {
-            LOG_INFO("[WEBRTC] session=%d audio track closed", session->id_);
+            LOG_INFO("[WEBRTC] session=%s audio track closed", session->sessionId_.c_str());
         }
     });
     /*
@@ -1475,7 +1490,7 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
 
         session = weakSession.lock();
         if (session) {
-            LOG_ERROR("[WEBRTC] session=%d audio track error=%s", session->id_, error.c_str());
+            LOG_ERROR("[WEBRTC] session=%s audio track error=%s", session->sessionId_.c_str(), error.c_str());
         }
     });
 
@@ -1485,8 +1500,8 @@ void WebRtcSession::addAudioTrack(const std::string &mid,
         audioReceiver_ = audioReceiver;
     }
 
-    LOG_INFO("[WEBRTC] session=%d add audio track mid=%s pt=%u codec=%d direction=%s",
-             id_,
+    LOG_INFO("[WEBRTC] session=%s add audio track mid=%s pt=%u codec=%d direction=%s",
+             sessionId_.c_str(),
              mid.c_str(),
              static_cast<unsigned int>(payloadType),
              static_cast<int>(codec),
@@ -1508,11 +1523,11 @@ void WebRtcSession::handleIncomingAudioMessage(rtc::binary message)
         receiver = audioReceiver_;
     }
     if (!receiver) {
-        LOG_ERROR("[WEBRTC] session=%d incoming audio rejected: receiver is NULL", id_);
+        LOG_ERROR("[WEBRTC] session=%s incoming audio rejected: receiver is NULL", sessionId_.c_str());
         return;
     }
     if (message.empty()) {
-        LOG_ERROR("[WEBRTC] session=%d incoming audio rejected: empty Track message", id_);
+        LOG_ERROR("[WEBRTC] session=%s incoming audio rejected: empty Track message", sessionId_.c_str());
         return;
     }
 
@@ -1523,8 +1538,8 @@ void WebRtcSession::handleIncomingAudioMessage(rtc::binary message)
                                     message.size(),
                                     arrivalTimeUs);
     if (result != MEDIA_OK) {
-        LOG_ERROR("[WEBRTC] session=%d incoming audio handling failed: result=%d bytes=%zu",
-                  id_,
+        LOG_ERROR("[WEBRTC] session=%s incoming audio handling failed: result=%d bytes=%zu",
+                  sessionId_.c_str(),
                   static_cast<int>(result),
                   message.size());
     }

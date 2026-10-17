@@ -1,4 +1,8 @@
-#include "../inc/webRTCDebug.h"
+/**
+ * @file webRTCDebug.cpp
+ * @brief 实现 WebRTC 输出、会话和入站音频的调试统计命令。
+ */
+#include "webRTCDebug.h"
 
 #include <algorithm>
 #include <mutex>
@@ -13,8 +17,12 @@
 namespace rkmedia {
 namespace webrtc {
 
-static std::mutex g_web_rtc_debug_mutex; /* 保护调试命令注册状态和 server 列表。 */
-static std::vector<WebRtcServer *> g_web_rtc_debug_servers; /* 已注册到 getWebRTC 的运行中 server。 */
+struct WebRtcDebugOutput {
+    WebRtcStreamEndpoint *endpoint; /* 不拥有；注销前一直有效。 */
+};
+
+static std::mutex g_web_rtc_debug_mutex; /* 保护调试命令注册状态和输出列表。 */
+static std::vector<WebRtcDebugOutput> g_web_rtc_debug_outputs; /* getWebRTC 查询的运行中输出。 */
 static bool g_web_rtc_status_command_registered = false; /* getWebRTC shell 命令是否已注册。 */
 static bool g_web_rtc_pli_test_command_registered = false; /* testWebRTCPLI shell 命令是否已注册。 */
 
@@ -68,27 +76,34 @@ static const char *debug_audio_codec_text(WebRtcAudioCodec codec)
 }
 
 /*
- * 打印 WebRTC server 总览。
+ * 打印单路 WebRTC 输出总览。
 
  */
-static void debug_print_server_overview(char *reply,
+static void debug_print_output_overview(char *reply,
                                         size_t *offset,
                                         size_t index,
-                                        const WebRtcServerStats &stats)
+                                        const WebRtcStreamEndpointStats &stats)
 {
+    std::string listenText;
+
+    listenText = "disabled";
     debug_command_reply_append(reply,
                                offset,
-                               "server[%zu]\n"
+                               "output[%zu]\n"
                                "  name        : %s\n"
-                               "  listen      : %s:%u\n"
+                               "  listen      : %s\n"
+                               "  signaling   : mode=%s connected=%s stream=%s endpoint=%s\n"
                                "  running     : %s\n"
                                "  sessions    : %zu\n"
                                "  video_fps   : %u\n"
                                "  audio       : codec=%s rate=%u channels=%u\n",
                                index,
                                stats.name.c_str(),
-                               stats.bindAddress.c_str(),
-                               stats.port,
+                               listenText.c_str(),
+                               "cloud",
+                               debug_bool_text(stats.signalingConnected),
+                               stats.streamId.c_str(),
+                               stats.signalingEndpoint.c_str(),
                                debug_bool_text(stats.running),
                                stats.sessions.size(),
                                stats.videoFps,
@@ -97,10 +112,10 @@ static void debug_print_server_overview(char *reply,
                                stats.audioChannels);
 }
 
-/* 打印 WebRTC server 收到媒体帧和广播到 session 的统计。 */
+/* 打印媒体端点收到媒体帧和广播到 session 的统计。 */
 static void debug_print_media_summary(char *reply,
                                       size_t *offset,
-                                      const WebRtcServerStats &stats)
+                                      const WebRtcStreamEndpointStats &stats)
 {
     char pliAge[32] = {0};
     char idrRequestAge[32] = {0};
@@ -179,20 +194,20 @@ static void debug_print_session_state_table(char *reply,
     debug_command_reply_append(reply,
                                offset,
                                "\n  session states\n"
-                               "    %-4s %-22s %-12s %-12s %-12s %-3s %-3s %-3s %-3s %-4s %-20s\n"
-                               "    %-4s %-22s %-12s %-12s %-12s %-3s %-3s %-3s %-3s %-4s %-20s\n",
-                               "id",
+                               "    %-24s %-22s %-12s %-12s %-12s %-3s %-3s %-3s %-3s %-4s %-20s\n"
+                               "    %-24s %-22s %-12s %-12s %-12s %-3s %-3s %-3s %-3s %-4s %-20s\n",
+                               "session_id",
                                "remote",
                                "pc",
                                "ice",
                                "gathering",
-                               "ws",
+                               "sig",
                                "dc",
                                "vid",
                                "aud",
                                "vkey",
                                "path",
-                               "----",
+                               "------------------------",
                                "----------------------",
                                "------------",
                                "------------",
@@ -207,13 +222,13 @@ static void debug_print_session_state_table(char *reply,
     for (i = 0; i < sessions.size(); ++i) {
         debug_command_reply_append(reply,
                                    offset,
-                                   "    %-4d %-22.22s %-12.12s %-12.12s %-12.12s %-3s %-3s %-3s %-3s %-4s %-20.20s\n",
-                                   sessions[i].id,
+                                   "    %-24.24s %-22.22s %-12.12s %-12.12s %-12.12s %-3s %-3s %-3s %-3s %-4s %-20.20s\n",
+                                   sessions[i].sessionId.c_str(),
                                    sessions[i].remoteAddress.c_str(),
                                    sessions[i].peerState.c_str(),
                                    sessions[i].iceState.c_str(),
                                    sessions[i].gatheringState.c_str(),
-                                   debug_bool_text(sessions[i].websocketOpen),
+                                   debug_bool_text(sessions[i].signalingReady),
                                    debug_bool_text(sessions[i].dataChannelOpen),
                                    debug_bool_text(sessions[i].videoTrackReady),
                                    debug_bool_text(sessions[i].audioTrackReady),
@@ -236,9 +251,9 @@ static void debug_print_session_counter_table(char *reply,
     debug_command_reply_append(reply,
                                offset,
                                "\n  session counters\n"
-                               "    %-4s %12s %12s %10s %10s %10s %8s %12s %12s %10s %10s %8s %8s %8s %8s %8s %8s\n"
-                               "    %-4s %12s %12s %10s %10s %10s %8s %12s %12s %10s %10s %8s %8s %8s %8s %8s %8s\n",
-                               "id",
+                                "    %-24s %12s %12s %10s %10s %10s %8s %12s %12s %10s %10s %8s %8s %8s %8s %8s %8s\n"
+                                "    %-24s %12s %12s %10s %10s %10s %8s %12s %12s %10s %10s %8s %8s %8s %8s %8s %8s\n",
+                                "session_id",
                                "v_frames",
                                "v_bytes",
                                "v_drop",
@@ -255,7 +270,7 @@ static void debug_print_session_counter_table(char *reply,
                                "cand_r",
                                "dc_rx",
                                "dc_tx",
-                               "----",
+                                "------------------------",
                                "------------",
                                "------------",
                                "----------",
@@ -276,10 +291,10 @@ static void debug_print_session_counter_table(char *reply,
     for (i = 0; i < sessions.size(); ++i) {
         debug_command_reply_append(reply,
                                    offset,
-                                   "    %-4d %12llu %12llu %10llu %10llu %10llu %8llu"
+                                   "    %-24.24s %12llu %12llu %10llu %10llu %10llu %8llu"
                                    " %12llu %12llu %10llu %10llu"
                                    " %8llu %8llu %8llu %8llu %8llu %8llu\n",
-                                   sessions[i].id,
+                                   sessions[i].sessionId.c_str(),
                                    static_cast<unsigned long long>(sessions[i].videoFrames),
                                    static_cast<unsigned long long>(sessions[i].videoBytes),
                                    static_cast<unsigned long long>(sessions[i].videoNotReady),
@@ -314,12 +329,12 @@ static void debug_print_incoming_audio_table(
     debug_command_reply_append(reply,
                                offset,
                                "\n  incoming audio RTP\n"
-                               "    %-4s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n"
-                               "    %-4s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n",
-                               "id", "packets", "payload", "bad", "bad_pt", "rtcp",
+                               "    %-24s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n"
+                               "    %-24s %10s %10s %8s %8s %8s %8s %8s %8s %8s %10s %8s %10s\n",
+                               "session_id", "packets", "payload", "bad", "bad_pt", "rtcp",
                                "gaps", "dup", "reorder", "ssrc_chg", "last_ssrc",
                                "last_seq", "last_ts",
-                               "----", "----------", "----------", "--------", "--------",
+                               "------------------------", "----------", "----------", "--------", "--------",
                                "--------", "--------", "--------", "--------", "--------",
                                "----------", "--------", "----------");
 
@@ -327,8 +342,8 @@ static void debug_print_incoming_audio_table(
         debug_command_reply_append(
             reply,
             offset,
-            "    %-4d %10llu %10llu %8llu %8llu %8llu %8llu %8llu %8llu %8llu %10u %8u %10u\n",
-            sessions[i].id,
+            "    %-24.24s %10llu %10llu %8llu %8llu %8llu %8llu %8llu %8llu %8llu %10u %8u %10u\n",
+            sessions[i].sessionId.c_str(),
             static_cast<unsigned long long>(sessions[i].incomingAudioPackets),
             static_cast<unsigned long long>(sessions[i].incomingAudioPayloadBytes),
             static_cast<unsigned long long>(sessions[i].incomingAudioMalformed),
@@ -366,15 +381,15 @@ static void debug_print_pli_test_table(char *reply,
     debug_command_reply_append(reply,
                                offset,
                                "\n  PLI test\n"
-                               "    %-4s %-12s %12s %16s %14s %12s\n"
-                               "    %-4s %-12s %12s %16s %14s %12s\n",
-                               "id",
+                                "    %-24s %-12s %12s %16s %14s %12s\n"
+                                "    %-24s %-12s %12s %16s %14s %12s\n",
+                                "session_id",
                                "state",
                                "starts",
                                "video_suppressed",
                                "pli_recovered",
                                "timeouts",
-                               "----",
+                                "------------------------",
                                "------------",
                                "------------",
                                "----------------",
@@ -386,8 +401,8 @@ static void debug_print_pli_test_table(char *reply,
         }
         debug_command_reply_append(reply,
                                    offset,
-                                   "    %-4d %-12s %12llu %16llu %14llu %12llu\n",
-                                   sessions[i].id,
+                                    "    %-24.24s %-12s %12llu %16llu %14llu %12llu\n",
+                                    sessions[i].sessionId.c_str(),
                                    sessions[i].pliTestSuppressingVideo ? "WAIT_PLI" : "IDLE",
                                    static_cast<unsigned long long>(sessions[i].pliTestStarts),
                                    static_cast<unsigned long long>(sessions[i].pliTestSuppressedVideoFrames),
@@ -402,7 +417,7 @@ static void debug_print_pli_test_table(char *reply,
  */
 static int debug_handle_get_webrtc(void *user_data, const char *input, char *output)
 {
-    WebRtcServerStats stats;
+    WebRtcStreamEndpointStats stats;
     std::unique_lock<std::mutex> lock(g_web_rtc_debug_mutex, std::defer_lock);
     size_t offset;
     size_t i;
@@ -417,27 +432,27 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
                                &offset,
                                "WebRTC Debug\n"
                                "============\n"
-                               "server_count : %zu\n",
-                               g_web_rtc_debug_servers.size());
+                               "output_count : %zu\n",
+                               g_web_rtc_debug_outputs.size());
 
-    if (g_web_rtc_debug_servers.empty()) {
-        debug_command_reply_append(output, &offset, "\nno WebRTC server registered\n");
+    if (g_web_rtc_debug_outputs.empty()) {
+        debug_command_reply_append(output, &offset, "\nno WebRTC output registered\n");
         return MEDIA_OK;
     }
 
     /*
-     * 查询期间持有调试模块全局锁，保证 stop/unregister 不会在命令输出过程中释放 server 对象。
+     * 查询期间持有调试模块全局锁，保证 stop/unregister 不会释放端点或信令适配器。
      * getStats() 只读取快照，不回调 webRTCDebug，因此不会形成反向锁依赖。
      */
-    for (i = 0; i < g_web_rtc_debug_servers.size(); ++i) {
-        if (!g_web_rtc_debug_servers[i]) {
+    for (i = 0; i < g_web_rtc_debug_outputs.size(); ++i) {
+        if (!g_web_rtc_debug_outputs[i].endpoint) {
             continue;
         }
 
-        stats = WebRtcServerStats();
-        g_web_rtc_debug_servers[i]->getStats(stats);
+        stats = WebRtcStreamEndpointStats();
+        g_web_rtc_debug_outputs[i].endpoint->getStats(stats);
         debug_command_reply_append(output, &offset, "\n");
-        debug_print_server_overview(output, &offset, i, stats);
+        debug_print_output_overview(output, &offset, i, stats);
         debug_print_media_summary(output, &offset, stats);
         debug_print_session_state_table(output, &offset, stats.sessions);
         debug_print_session_counter_table(output, &offset, stats.sessions);
@@ -449,25 +464,24 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
 }
 
 /*
- * testWebRTCPLI <server_id> <session_id> <on|off>
+ * testWebRTCPLI <output_id> <session_id> <on|off>
  * on 会持续抑制指定 session 的全部视频帧，直到收到该 session 的 PLI/FIR 或 15 秒超时。
  */
 static int debug_handle_test_webrtc_pli(void *user_data, const char *input, char *output)
 {
-    WebRtcServer *server;
+    WebRtcStreamEndpoint *endpoint;
     std::unique_lock<std::mutex> lock(g_web_rtc_debug_mutex, std::defer_lock);
     char action[8] = {0};
+    char sessionId[129] = {0};
     size_t offset;
-    long serverIndex;
-    long sessionId;
+    long outputIndex;
     int enabled;
     int parseCount;
 
     (void)user_data;
     offset = 0;
-    server = NULL;
-    serverIndex = -1;
-    sessionId = -1;
+    endpoint = NULL;
+    outputIndex = -1;
     enabled = 0;
     parseCount = 0;
     output[0] = '\0';
@@ -476,41 +490,41 @@ static int debug_handle_test_webrtc_pli(void *user_data, const char *input, char
     if (!input) {
         debug_command_reply_append(output,
                                    &offset,
-                                   "ret=-1\nusage=testWebRTCPLI <server_id> <session_id> <on|off>\n");
+                                   "ret=-1\nusage=testWebRTCPLI <output_id> <session_id> <on|off>\n");
         return MEDIA_ERR_INVALID_PARAM;
     }
-    parseCount = sscanf(input, "%ld %ld %7s", &serverIndex, &sessionId, action);
-    if (parseCount != 3 || serverIndex < 0 || sessionId <= 0 ||
+    parseCount = sscanf(input, "%ld %128s %7s", &outputIndex, sessionId, action);
+    if (parseCount != 3 || outputIndex < 0 || sessionId[0] == '\0' ||
         (strcmp(action, "on") != 0 && strcmp(action, "off") != 0)) {
         debug_command_reply_append(output,
                                    &offset,
-                                   "ret=-1\nusage=testWebRTCPLI <server_id> <session_id> <on|off>\n");
+                                   "ret=-1\nusage=testWebRTCPLI <output_id> <session_id> <on|off>\n");
         return MEDIA_ERR_INVALID_PARAM;
     }
     enabled = strcmp(action, "on") == 0;
 
     lock.lock();
-    if (static_cast<size_t>(serverIndex) >= g_web_rtc_debug_servers.size() ||
-        !g_web_rtc_debug_servers[serverIndex]) {
+    if (static_cast<size_t>(outputIndex) >= g_web_rtc_debug_outputs.size() ||
+        !g_web_rtc_debug_outputs[outputIndex].endpoint) {
         debug_command_reply_append(output,
                                    &offset,
-                                   "ret=-1\nerror=server_id %ld not found\n",
-                                   serverIndex);
+                                   "ret=-1\nerror=output_id %ld not found\n",
+                                   outputIndex);
         return MEDIA_ERR_INVALID_PARAM;
     }
-    server = g_web_rtc_debug_servers[serverIndex];
-    if (!server->setSessionPliTestVideoSuppression(static_cast<int>(sessionId), enabled)) {
+    endpoint = g_web_rtc_debug_outputs[outputIndex].endpoint;
+    if (!endpoint->setSessionPliTestVideoSuppression(sessionId, enabled)) {
         debug_command_reply_append(output,
                                    &offset,
-                                   "ret=-1\nerror=session %ld is unavailable or video track is not ready\n",
+                                   "ret=-1\nerror=session %s is unavailable or video track is not ready\n",
                                    sessionId);
         return MEDIA_ERR_NOT_READY;
     }
 
     debug_command_reply_append(output,
                                &offset,
-                               "ret=0\nserver_id=%ld\nsession_id=%ld\nstate=%s\n",
-                               serverIndex,
+                               "ret=0\noutput_id=%ld\nsession_id=%s\nstate=%s\n",
+                               outputIndex,
                                sessionId,
                                enabled ? "WAIT_PLI" : "IDLE");
     return MEDIA_OK;
@@ -542,25 +556,31 @@ static int debug_ensure_command_registered()
 }
 
 /*
- * 注册 WebRtcServer 到调试命令模块。
- * 调用时机：WebRTC 输出通道 start 成功后调用；同一个 server 重复注册会被忽略。
+ * 注册 WebRTC 输出的媒体端点。
+ * 同一个端点重复注册会被忽略；端点快照已经包含共享信令连接状态。
  */
-int web_rtc_debug_register_server(WebRtcServer *server)
+int web_rtc_debug_register_output(WebRtcStreamEndpoint *endpoint)
 {
-    std::vector<WebRtcServer *>::iterator iter;
+    std::vector<WebRtcDebugOutput>::iterator iter;
     std::unique_lock<std::mutex> lock(g_web_rtc_debug_mutex, std::defer_lock);
+    WebRtcDebugOutput output = {};
     int ret;
 
-    if (!server) {
-        LOG_ERROR("[WEBRTC] debug register failed: server is NULL");
+    if (!endpoint) {
+        LOG_ERROR("[WEBRTC] debug register failed: endpoint is null");
         return MEDIA_ERR_INVALID_PARAM;
     }
 
     lock.lock();
 
-    iter = std::find(g_web_rtc_debug_servers.begin(), g_web_rtc_debug_servers.end(), server);
-    if (iter == g_web_rtc_debug_servers.end()) {
-        g_web_rtc_debug_servers.push_back(server);
+    iter = std::find_if(g_web_rtc_debug_outputs.begin(),
+                        g_web_rtc_debug_outputs.end(),
+                        [endpoint](const WebRtcDebugOutput &output) {
+                            return output.endpoint == endpoint;
+                        });
+    if (iter == g_web_rtc_debug_outputs.end()) {
+        output.endpoint = endpoint;
+        g_web_rtc_debug_outputs.push_back(output);
     }
 
     ret = debug_ensure_command_registered();
@@ -572,22 +592,26 @@ int web_rtc_debug_register_server(WebRtcServer *server)
 }
 
 /*
- * 从调试命令模块注销 WebRtcServer。
- * 调用时机：WebRTC 输出通道 stop 释放 server 前调用，保证 shell 查询不会访问悬空指针。
+ * 从调试命令模块注销 WebRTC 输出。
+ * 调用时机：释放信令适配器或媒体端点前，保证 shell 查询不会访问悬空指针。
  */
-void web_rtc_debug_unregister_server(WebRtcServer *server)
+void web_rtc_debug_unregister_output(WebRtcStreamEndpoint *endpoint)
 {
-    std::vector<WebRtcServer *>::iterator iter;
+    std::vector<WebRtcDebugOutput>::iterator iter;
     std::unique_lock<std::mutex> lock(g_web_rtc_debug_mutex, std::defer_lock);
 
-    if (!server) {
+    if (!endpoint) {
         return;
     }
 
     lock.lock();
 
-    iter = std::remove(g_web_rtc_debug_servers.begin(), g_web_rtc_debug_servers.end(), server);
-    g_web_rtc_debug_servers.erase(iter, g_web_rtc_debug_servers.end());
+    iter = std::remove_if(g_web_rtc_debug_outputs.begin(),
+                          g_web_rtc_debug_outputs.end(),
+                          [endpoint](const WebRtcDebugOutput &output) {
+                              return output.endpoint == endpoint;
+                          });
+    g_web_rtc_debug_outputs.erase(iter, g_web_rtc_debug_outputs.end());
 }
 
 } // namespace webrtc

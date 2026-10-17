@@ -41,7 +41,7 @@ typedef struct {
 
 /** @brief WebRTC 层提交给双向语音模块的一包 Opus RTP 负载。 */
 typedef struct {
-    int session_id;             /* WebRTC 服务端分配的会话 ID。 */
+    const char *session_id;     /* 云端分配的 WebRTC 会话 ID；仅在 submit 调用期间有效。 */
     MediaCodecType codec;       /* RTP 负载编码，当前只接受 MEDIA_CODEC_OPUS。 */
     uint8_t payload_type;       /* SDP 协商得到的 RTP Payload Type。 */
     uint32_t ssrc;              /* 浏览器音频发送源 SSRC。 */

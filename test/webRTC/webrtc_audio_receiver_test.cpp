@@ -56,7 +56,7 @@ static void test_parse_standard_packet()
     int callback_count = 0;
     MediaResult result = MEDIA_ERR;
 
-    config.sessionId = 7;
+    config.sessionId = "session-7";
     config.codec = WEBRTC_AUDIO_CODEC_OPUS;
     config.payloadType = 111;
     WebRtcAudioReceiver receiver(config, [&](const WebRtcIncomingAudioPacket &input) {
@@ -69,7 +69,7 @@ static void test_parse_standard_packet()
 
     CHECK_TRUE(result == MEDIA_OK);
     CHECK_TRUE(callback_count == 1);
-    CHECK_TRUE(received.sessionId == 7);
+    CHECK_TRUE(received.sessionId == "session-7");
     CHECK_TRUE(received.codec == WEBRTC_AUDIO_CODEC_OPUS);
     CHECK_TRUE(received.payloadType == 111);
     CHECK_TRUE(received.sequenceNumber == 321);
@@ -92,7 +92,7 @@ static void test_extension_and_padding()
     };
     MediaResult result = MEDIA_ERR;
 
-    config.sessionId = 1;
+    config.sessionId = "session-1";
     config.codec = WEBRTC_AUDIO_CODEC_OPUS;
     config.payloadType = 111;
     WebRtcAudioReceiver receiver(config, [&](const WebRtcIncomingAudioPacket &input) {
@@ -114,7 +114,7 @@ static void test_rejects_invalid_packets()
     int callback_count = 0;
     WebRtcAudioReceiverStats stats;
 
-    config.sessionId = 2;
+    config.sessionId = "session-2";
     config.codec = WEBRTC_AUDIO_CODEC_OPUS;
     config.payloadType = 111;
     WebRtcAudioReceiver receiver(config, [&](const WebRtcIncomingAudioPacket &) {
@@ -142,7 +142,7 @@ static void test_sequence_statistics()
     std::vector<uint8_t> packet;
     WebRtcAudioReceiver receiver(config, nullptr);
 
-    config.sessionId = 3;
+    config.sessionId = "session-3";
     config.codec = WEBRTC_AUDIO_CODEC_OPUS;
     config.payloadType = 111;
     CHECK_TRUE(receiver.reset(config, nullptr) == MEDIA_OK);

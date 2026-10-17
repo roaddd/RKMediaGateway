@@ -518,7 +518,11 @@ static int rtsp_output_start(MediaOutput *output) {
     return MEDIA_OK;
 }
 
-/* output 连接检查：session 已就绪即可视为可用；返回 MEDIA_OK 或统一错误码。 */
+/*
+ * RTSP 的 protocol_ready 状态：RTSP Server 中的媒体 Session 已创建，
+ * send_packet 可以把媒体交给服务器分发。该状态不表示已有 RTSP 客户端连接，
+ * 实际客户端数量和播放状态由 RTSP Server 内部维护。
+ */
 static int rtsp_output_connect(MediaOutput *output) {
     RtspOutputImpl *impl = (RtspOutputImpl *)output->impl;
     if (!impl || !impl->session) {

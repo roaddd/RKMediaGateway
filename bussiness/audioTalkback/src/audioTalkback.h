@@ -81,7 +81,7 @@ private:
      * @param reason 切换原因，可为 NULL；仅用于日志记录。
      * @note 调用方必须已经持有 mutex_。
      */
-    void resetStreamLocked(int session_id, uint32_t ssrc, const char *reason);
+    void resetStreamLocked(const std::string &session_id, uint32_t ssrc, const char *reason);
 
     /**
      * @description: 清理当前说话人、RTP 时序和播放时钟状态。
@@ -160,7 +160,7 @@ private:
 
     /* ---------- 活动说话人选择及超时状态（受 mutex_ 保护） ---------- */
     bool hasActiveTalker_ = false;   /* 当前是否已经选定允许播放的说话人。 */
-    int activeSessionId_ = 0;        /* 当前活动说话人所属 WebRTC 会话 ID。 */
+    std::string activeSessionId_;    /* 当前活动说话人所属的云端 WebRTC session_id。 */
     uint32_t activeSsrc_ = 0;        /* 当前活动说话人的音频 RTP SSRC。 */
     uint64_t lastArrivalTimeUs_ = 0; /* 当前流最近一包到达时间，用于超时切换。 */
 

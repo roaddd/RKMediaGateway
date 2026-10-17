@@ -202,7 +202,12 @@ static int output_pop_next_locked(MediaOutput *output, MediaPacket *packet)
     MediaPacket *audio = output_queue_peek(&output->audio_queue);
 
     if (!video && !audio)
+    {
+        LOG_ERROR("output_pop_next_locked failed: no packet available video=%p audio=%p",
+                  (const void *)video,
+                  (const void *)audio);
         return MEDIA_ERR_NOT_FOUND;
+    }
 
     if (output->waiting_for_keyframe && video)
         return output_queue_pop_locked(output, &output->video_queue, packet);
@@ -238,10 +243,12 @@ static void *media_output_thread(void *arg)
     while (1)
     {
         pthread_mutex_lock(&output->lock);
-        /* 等待队列中有数据 */
+        /* 等待接收到线程退出请求或者队列中有数据 */
         while (!output->stop_requested && output_queue_total_depth(output) == 0)
+        {
             pthread_cond_wait(&output->cond, &output->lock);
-        
+        }
+        /* 接收到线程退出并且发送队列已清空，则可以退出循环 */
         if (output->stop_requested && output_queue_total_depth(output) == 0)
         {
             pthread_mutex_unlock(&output->lock);
@@ -255,27 +262,32 @@ static void *media_output_thread(void *arg)
         }
         pthread_mutex_unlock(&output->lock);
 
-        if (!output->connected)
+        /*
+         * protocol_ready 只表示具体协议后端已具备接收媒体包的条件。
+         * 对推流型协议可能代表网络连接已建立，对服务端型协议只代表
+         * 本地会话或媒体端点已经准备完成，不代表当前一定存在客户端。
+         */
+        if (!output->protocol_ready)
         {
             if (output->vtable->connect(output) == MEDIA_OK)
             {
                 pthread_mutex_lock(&output->lock);
-                output->connected = 1;
-                output->stats.connected = 1;
+                output->protocol_ready = 1;
+                output->stats.protocol_ready = 1;
                 output->waiting_for_keyframe = output->config.drop_until_keyframe_after_reconnect ? 1 : 0;
                 output->stats.waiting_for_keyframe = output->waiting_for_keyframe;
-                output->stats.reconnect_count++;
+                output->stats.protocol_ready_count++;
                 pthread_mutex_unlock(&output->lock);
-                printf("[OUTPUT] name=%s event=connected reconnects=%" PRIu64 "\n",
-                       output->config.name ? output->config.name : "unknown",
-                       output->stats.reconnect_count);
+                LOG_INFO("[OUTPUT] name=%s event=protocol_ready ready_count=%" PRIu64,
+                         output->config.name ? output->config.name : "unknown",
+                         output->stats.protocol_ready_count);
             }
             else
             {
                 pthread_mutex_lock(&output->lock);
-                output->stats.connected = 0;
+                output->stats.protocol_ready = 0;
                 pthread_mutex_unlock(&output->lock);
-                LOG_WARN("[OUTPUT] name=%s event=connect_failed retry_ms=%d",
+                LOG_WARN("[OUTPUT] name=%s event=protocol_not_ready retry_ms=%d",
                          output->config.name ? output->config.name : "unknown",
                          output->config.reconnect_interval_ms);
                 media_packet_reset(&packet);
@@ -328,8 +340,8 @@ static void *media_output_thread(void *arg)
         if (send_ret != MEDIA_OK)
         {
             pthread_mutex_lock(&output->lock);
-            output->connected = 0;
-            output->stats.connected = 0;
+            output->protocol_ready = 0;
+            output->stats.protocol_ready = 0;
             output->waiting_for_keyframe = output->config.drop_until_keyframe_after_reconnect ? 1 : 0;
             output->stats.waiting_for_keyframe = output->waiting_for_keyframe;
             output->stats.send_failures++;
@@ -422,7 +434,7 @@ int media_output_init(MediaOutput *output,
     output->config.reconnect_interval_ms = (config->reconnect_interval_ms > 0)
                                                ? config->reconnect_interval_ms
                                                : DEFAULT_RECONNECT_INTERVAL_MS;
-
+    /* 初始化视频队列和音频队列 */
     queue_capacity = (config->queue_capacity > 0) ? config->queue_capacity : DEFAULT_OUTPUT_QUEUE_CAPACITY;
     if (output_queue_init(&output->video_queue, queue_capacity) != MEDIA_OK ||
         output_queue_init(&output->audio_queue, queue_capacity) != MEDIA_OK)
@@ -463,6 +475,7 @@ int media_output_start(MediaOutput *output)
     }
 
     output->running = 1;
+    /* 创建输出通道后台发送线程 */
     if (pthread_create(&output->thread, NULL, media_output_thread, output) != 0)
     {
         output->running = 0;

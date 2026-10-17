@@ -93,8 +93,8 @@ static void media_gateway_on_incoming_audio(
     result = audio_talkback_submit(&talkback_packet);
     if (result != MEDIA_OK && result != MEDIA_ERR_BUSY && result != MEDIA_ERR_FULL)
     {
-        LOG_ERROR("incoming audio submit failed: session=%d ssrc=%u seq=%u result=%d",
-                  packet->session_id,
+        LOG_ERROR("incoming audio submit failed: session_id=%s ssrc=%u seq=%u result=%d",
+                  packet->session_id ? packet->session_id : "(null)",
                   packet->ssrc,
                   packet->sequence_number,
                   result);
@@ -850,15 +850,12 @@ static void fill_default_stream(MediaGatewayStreamConfig *dst,
     snprintf(dst->webrtc.name, sizeof(dst->webrtc.name), "%s", (stream_idx == 0) ? "webrtc-main" : "webrtc-sub");
     if (src && src->webrtc.name[0] != '\0')
         snprintf(dst->webrtc.name, sizeof(dst->webrtc.name), "%s", src->webrtc.name);
-    snprintf(dst->webrtc.bind_address, sizeof(dst->webrtc.bind_address), "%s", "0.0.0.0");
-    if (src && src->webrtc.bind_address[0] != '\0')
-        snprintf(dst->webrtc.bind_address, sizeof(dst->webrtc.bind_address), "%s", src->webrtc.bind_address);
-    if (dst->webrtc.port <= 0)
-        dst->webrtc.port = (stream_idx == 0) ? 8000 : 8001;
     if (dst->webrtc.queue_capacity <= 0)
         dst->webrtc.queue_capacity = 32;
-    if (dst->webrtc.video_fps <= 0)
-        dst->webrtc.video_fps = dst->fps;
+    if (dst->webrtc.media.video_fps <= 0)
+        dst->webrtc.media.video_fps = dst->fps;
+    /* 运行时句柄由网关创建，不能沿用外部传入的非拥有指针。 */
+    dst->webrtc.runtime = NULL;
     dst->rtsp_audio.encoder_group = safe_str(dst->rtsp_audio.encoder_group, "");
     dst->rtmp_audio.encoder_group = safe_str(dst->rtmp_audio.encoder_group, "");
     dst->gb28181_audio.encoder_group = safe_str(dst->gb28181_audio.encoder_group, "");
@@ -974,18 +971,53 @@ static int validate_raw_gb28181_config(const MediaOutputGb28181Config *cfg, int 
 static int validate_raw_webrtc_config(const MediaOutputWebRtcConfig *cfg, int stream_idx)
 {
     if (cfg->name[0] == '\0' ||
-        cfg->bind_address[0] == '\0' ||
-        require_positive_int("streams[].webrtc.port", cfg->port) != 0 ||
         require_positive_int("streams[].webrtc.queue_capacity", cfg->queue_capacity) != 0 ||
-        require_positive_int("streams[].webrtc.video_fps", cfg->video_fps) != 0)
+        require_positive_int("streams[].webrtc.video_fps", cfg->media.video_fps) != 0)
     {
-        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d name=%s bind=%s port=%d queue=%d fps=%d",
-                  stream_idx,
-                  cfg->name,
-                  cfg->bind_address,
-                  cfg->port,
-                  cfg->queue_capacity,
-                  cfg->video_fps);
+        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d name=%s queue=%d fps=%d",
+                  stream_idx, cfg->name, cfg->queue_capacity, cfg->media.video_fps);
+        return -1;
+    }
+    if (cfg->signaling.stream_id[0] == '\0')
+    {
+        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d cloud stream_id is empty", stream_idx);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 校验网关级 WebRTC 参数；云端凭据只在启用云端输出时要求。
+ */
+static int validate_webrtc_shared_config(const MediaOutputWebRtcSharedConfig *cfg)
+{
+    size_t url_length = 0;
+
+    if (!cfg)
+    {
+        LOG_ERROR("media_gateway config invalid: WebRTC shared config is NULL");
+        return -1;
+    }
+    url_length = strlen(cfg->cloud.url);
+    if (cfg->cloud.device_id[0] == '\0' || cfg->cloud.token_file[0] == '\0' ||
+        url_length < 7 ||
+        (strncmp(cfg->cloud.url, "ws://", 5) != 0 &&
+         strncmp(cfg->cloud.url, "wss://", 6) != 0) ||
+        strcmp(cfg->cloud.url + url_length - 7, "/device") != 0)
+    {
+        LOG_ERROR("media_gateway config invalid: cloud URL must end with /device and device ID/token file must be set");
+        return -1;
+    }
+    if ((cfg->ice.stun.host[0] &&
+         (cfg->ice.stun.port <= 0 || cfg->ice.stun.port > 65535)) ||
+        (cfg->ice.turn.host[0] &&
+         (cfg->ice.turn.port <= 0 || cfg->ice.turn.port > 65535 ||
+          cfg->ice.turn.username[0] == '\0' ||
+          cfg->ice.turn.password_file[0] == '\0')) ||
+        (cfg->ice.relay_only && cfg->ice.turn.host[0] == '\0') ||
+        (cfg->ice.relay_only != 0 && cfg->ice.relay_only != 1))
+    {
+        LOG_ERROR("media_gateway config invalid: WebRTC shared ICE server settings");
         return -1;
     }
     return 0;
@@ -1099,6 +1131,7 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
     int source_idx = 0;
     int encoder_period_frames = 0;
     int rate_ratio = 0;
+    int webrtc_enabled = 0;
     int source_stream_owner[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {0};
     const MediaGatewayAudioEncoderConfig *audio_encoder = NULL;
     MediaGatewayConfig src_copy = {0};
@@ -1149,6 +1182,23 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             return -1;
         if (dst->video.streams[i].enabled)
         {
+            if (dst->video.streams[i].enable_webrtc)
+            {
+                webrtc_enabled = 1;
+                /* 云端以 stream_id 路由会话，同一设备内不能出现重复登记。 */
+                for (j = 0; j < i; ++j)
+                {
+                    if (dst->video.streams[j].enabled &&
+                        dst->video.streams[j].enable_webrtc &&
+                        strcmp(dst->video.streams[i].webrtc.signaling.stream_id,
+                               dst->video.streams[j].webrtc.signaling.stream_id) == 0)
+                    {
+                        LOG_ERROR("media_gateway config invalid: cloud stream_id=%s duplicated by streams %d and %d",
+                                  dst->video.streams[i].webrtc.signaling.stream_id, j, i);
+                        return -1;
+                    }
+                }
+            }
             source_idx = dst->video.streams[i].source_index;
             /* 直接消费模式要求一个帧源只有一个消费者，避免多个编码线程竞争 latest-frame。 */
             if (source_stream_owner[source_idx] >= 0)
@@ -1162,6 +1212,11 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
             source_stream_owner[source_idx] = i;
             dst->input.capture_sources[source_idx].enabled = 1;
         }
+    }
+    if (webrtc_enabled && validate_webrtc_shared_config(&dst->output.webrtc_shared) != 0)
+    {
+        LOG_ERROR("media_gateway config invalid: shared WebRTC settings");
+        return -1;
     }
     for (i = 0; i < dst->input.capture_source_count; ++i)
     {
@@ -1674,20 +1729,21 @@ static int setup_outputs_for_stream(MediaGatewayCtx *ctx, int stream_idx)
         }
         output_config.type = MEDIA_OUTPUT_TYPE_WEBRTC;
         output_config.protocol.webrtc = s->webrtc;
+        output_config.protocol.webrtc.runtime = ctx->output.webrtc_runtime;
         if (ctx->config.audio.talkback.enabled && audio_group && audio_group->encoder.codec == MEDIA_CODEC_OPUS)
         {
-            output_config.protocol.webrtc.incoming_audio_callback = media_gateway_on_incoming_audio;
-            output_config.protocol.webrtc.incoming_audio_user_data = NULL;
+            output_config.protocol.webrtc.media.audio.incoming_audio_callback = media_gateway_on_incoming_audio;
+            output_config.protocol.webrtc.media.audio.incoming_audio_user_data = NULL;
         }
         if (audio_group)
         {
-            output_config.protocol.webrtc.audio_codec = audio_group->encoder.codec;
-            output_config.protocol.webrtc.audio_sample_rate = audio_group->encoder.sample_rate;
-            output_config.protocol.webrtc.audio_channels = audio_group->encoder.channels;
+            output_config.protocol.webrtc.media.audio.codec = audio_group->encoder.codec;
+            output_config.protocol.webrtc.media.audio.sample_rate = audio_group->encoder.sample_rate;
+            output_config.protocol.webrtc.media.audio.channels = audio_group->encoder.channels;
         }
         else
         {
-            output_config.protocol.webrtc.audio_codec = MEDIA_CODEC_NONE;
+            output_config.protocol.webrtc.media.audio.codec = MEDIA_CODEC_NONE;
         }
         if (media_output_setup(&ctx->output.channels[ctx->output.count].output, &output_config) != 0)
         {
@@ -2325,10 +2381,86 @@ static int init_gateway_audio_talkback(MediaGatewayCtx *ctx)
 }
 
 /**
+ * @description: 按已启用的 WebRTC 输出创建网关共享运行时。
+ *
+ * 本函数只负责运行时准备，不启动云端连接。每路云端输出需要在
+ * start_outputs 阶段先登记 stream_id，之后才能建立共享设备连接。
+ */
+static int init_gateway_webrtc_runtime(MediaGatewayCtx *ctx)
+{
+    int i = 0;
+    int has_webrtc = 0;
+    MediaResult result = MEDIA_OK;
+
+    if (!ctx)
+    {
+        LOG_ERROR("init_gateway_webrtc_runtime failed: ctx is NULL");
+        return -1;
+    }
+
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
+    {
+        if (!ctx->config.video.streams[i].enabled || !ctx->config.video.streams[i].enable_webrtc)
+            continue;
+
+        has_webrtc = 1;
+    }
+    if (!has_webrtc)
+        return 0;
+
+    /*
+     * 所有 WebRTC 输出共用一份 ICE 配置和云端设备连接。
+     */
+    result = media_output_webrtc_runtime_create(&ctx->config.output.webrtc_shared,
+                                                &ctx->output.webrtc_runtime);
+    if (result != MEDIA_OK)
+    {
+        LOG_ERROR("init_gateway_webrtc_runtime failed: create runtime result=%d",
+                  result);
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @description: 所有云端码流登记完成后启动 WebRTC 共享运行时。
+ */
+static int start_gateway_webrtc_runtime(MediaGatewayCtx *ctx)
+{
+    MediaResult result = MEDIA_OK;
+
+    if (!ctx)
+    {
+        LOG_ERROR("start_gateway_webrtc_runtime failed: ctx is NULL");
+        return -1;
+    }
+    if (!ctx->output.webrtc_runtime)
+        return 0;
+
+    result = media_output_webrtc_runtime_start(ctx->output.webrtc_runtime);
+    if (result != MEDIA_OK)
+    {
+        LOG_ERROR("start_gateway_webrtc_runtime failed: start runtime result=%d",
+                  result);
+        return -1;
+    }
+    return 0;
+}
+
+/**
  * @description: 创建并启动全部输出通道。
  */
 static int init_gateway_outputs(MediaGatewayCtx *ctx)
 {
+    /*
+     * WebRTC 输出在 setup/start 阶段借用共享运行时并登记 stream_id，
+     * 因此共享运行时必须先创建、后连接。
+     */
+    if (init_gateway_webrtc_runtime(ctx) != 0)
+    {
+        LOG_ERROR("init_gateway_outputs failed: init WebRTC runtime");
+        return -1;
+    }
     if (setup_outputs(ctx) != 0)
     {
         LOG_ERROR("init_gateway_outputs failed: setup outputs");
@@ -2339,7 +2471,37 @@ static int init_gateway_outputs(MediaGatewayCtx *ctx)
         LOG_ERROR("init_gateway_outputs failed: start outputs");
         return -1;
     }
+    /* 启动webRTC信令客户端 */
+    if (start_gateway_webrtc_runtime(ctx) != 0)
+    {
+        LOG_ERROR("init_gateway_outputs failed: start WebRTC runtime");
+        return -1;
+    }
     return 0;
+}
+
+/**
+ * @description: 按依赖顺序停止并释放全部输出资源。
+ *
+ * 共享信令回调可能访问 WebRTC 输出，因此必须先停止共享连接，再释放
+ * 各输出通道；所有借用者销毁后，最后释放共享运行时。
+ */
+static void deinit_gateway_outputs(MediaGatewayCtx *ctx)
+{
+    if (!ctx)
+        return;
+
+    if (ctx->output.webrtc_runtime)
+        media_output_webrtc_runtime_stop(ctx->output.webrtc_runtime);
+
+    stop_outputs(ctx);
+    deinit_outputs(ctx);
+
+    if (ctx->output.webrtc_runtime)
+    {
+        media_output_webrtc_runtime_destroy(ctx->output.webrtc_runtime);
+        ctx->output.webrtc_runtime = NULL;
+    }
 }
 
 /**
@@ -3385,8 +3547,7 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
     if (!ctx)
         return;
 
-    stop_outputs(ctx);
-    deinit_outputs(ctx);
+    deinit_gateway_outputs(ctx);
 
     talkback_result = audio_talkback_deinit();
     if (talkback_result != MEDIA_OK)

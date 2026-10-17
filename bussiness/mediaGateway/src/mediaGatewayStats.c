@@ -29,11 +29,11 @@ static void reset_throughput_window(MediaGatewayCtx *ctx)
 }
 
 /**
- * @description: 打印所有输出通道的连接、队列和发送统计。
+ * @description: 打印所有输出通道的协议就绪、队列和发送统计。
  *
  * 输出通道包括 RTSP、RTMP、GB28181 等协议实现。
  * 该日志用于判断编码端是否正常产出、下游协议队列是否堆积、
- * 是否丢帧、是否等待关键帧或正在重连。
+ * 是否丢帧、是否等待关键帧或正在恢复协议发送条件。
  */
 static void log_output_stats(MediaGatewayCtx *ctx)
 {
@@ -44,14 +44,14 @@ static void log_output_stats(MediaGatewayCtx *ctx)
     {
         memset(&stats, 0, sizeof(stats));
         media_output_get_stats(&ctx->output.channels[i].output, &stats);
-        LOG_INFO("[OUTPUT] idx=%d stream=%d name=%s type=%d connected=%d queue=%d video_queue=%d audio_queue=%d sent=%" PRIu64
+        LOG_INFO("[OUTPUT] idx=%d stream=%d name=%s type=%d protocol_ready=%d queue=%d video_queue=%d audio_queue=%d sent=%" PRIu64
                  " bytes=%" PRIu64 " dropped=%" PRIu64 " send_failures=%" PRIu64
-                 " reconnects=%" PRIu64 " wait_key=%d",
+                 " ready_count=%" PRIu64 " wait_key=%d",
                  i,
                  ctx->output.channels[i].stream_index,
                  ctx->output.channels[i].output.config.name ? ctx->output.channels[i].output.config.name : "unknown",
                  ctx->output.channels[i].output.type,
-                 stats.connected,
+                 stats.protocol_ready,
                  stats.queue_depth,
                  stats.video_queue_depth,
                  stats.audio_queue_depth,
@@ -59,7 +59,7 @@ static void log_output_stats(MediaGatewayCtx *ctx)
                  stats.sent_bytes,
                  stats.dropped_frames,
                  stats.send_failures,
-                 stats.reconnect_count,
+                 stats.protocol_ready_count,
                  stats.waiting_for_keyframe);
     }
 }

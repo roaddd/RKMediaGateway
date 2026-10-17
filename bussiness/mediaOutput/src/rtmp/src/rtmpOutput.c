@@ -37,7 +37,7 @@ typedef struct {
 /* RTMP 输出私有状态，负责 librtmp 连接以及 H.264 参数集缓存。 */
 typedef struct {
     MediaOutputRtmpConfig config;
-    int connected;
+    int connected; /* librtmp 发布连接是否真实建立，与通用层 protocol_ready 的语义不同。 */
     int metadata_sent;
     int sequence_header_sent;
     uint32_t stream_id;
@@ -704,7 +704,11 @@ static int rtmp_output_start(MediaOutput *output) {
     return 0;
 }
 
-
+/*
+ * RTMP 的 protocol_ready 状态：已完成 TCP/RTMP 建链以及 ConnectStream，
+ * 当前发布连接能够接收音视频包。RTMP 是主动推流协议，因此这里的就绪状态
+ * 同时代表真实的远端网络连接已经建立。
+ */
 static int rtmp_output_connect(MediaOutput *output) {
     RtmpOutputImpl *impl = (RtmpOutputImpl *)output->impl;
 

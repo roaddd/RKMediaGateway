@@ -318,7 +318,7 @@ typedef struct {
     MediaOutputRtspConfig rtsp;      /* RTSP 协议专用配置块。 */
     MediaOutputRtmpConfig rtmp;      /* RTMP 协议专用配置块。 */
     MediaOutputGb28181Config gb28181;/* GB28181/SIP+RTP 协议专用配置块。 */
-    MediaOutputWebRtcConfig webrtc;  /* WebRTC 协议专用配置块。 */
+    MediaOutputWebRtcSharedConfig webrtc_shared; /* 网关级云端信令与 ICE 共享配置。 */
 } MediaGatewayOutputConfig;
 
 typedef struct {
@@ -516,6 +516,7 @@ typedef struct {
 typedef struct {
     MediaGatewayOutputChannelRuntime channels[MEDIA_GATEWAY_MAX_OUTPUTS];
     int count;                               /* 当前已启用的输出通道数量。 */
+    MediaOutputWebRtcRuntime *webrtc_runtime; /* 网关持有的共享 WebRTC 信令及 ICE 运行时。 */
     NetFeedbackCbInfo network_feedback_holder; /* 输出层网络反馈回调入口。 */
 } MediaGatewayOutputRuntime;
 

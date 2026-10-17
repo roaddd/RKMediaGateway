@@ -313,8 +313,10 @@ MediaResult AudioTalkback::submit(const AudioTalkbackPacket &packet)
         bool droppedSubmittedPacket = false;
         std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
 
-        if (packet.codec != MEDIA_CODEC_OPUS || packet.payload == NULL || packet.payload_size == 0) {
-            LOG_ERROR("audio talkback submit failed: codec=%d payload=%p size=%zu",
+        if (packet.session_id == NULL || packet.session_id[0] == '\0' ||
+            packet.codec != MEDIA_CODEC_OPUS || packet.payload == NULL || packet.payload_size == 0) {
+            LOG_ERROR("audio talkback submit failed: session_id=%s codec=%d payload=%p size=%zu",
+                      packet.session_id ? packet.session_id : "(null)",
                       packet.codec,
                       static_cast<const void *>(packet.payload),
                       packet.payload_size);
@@ -329,7 +331,7 @@ MediaResult AudioTalkback::submit(const AudioTalkbackPacket &packet)
         }
 
         /* 同一时刻只播放一个浏览器；活动方超时后，新会话才可取得解码器所有权。 */
-        if (hasActiveTalker_ && packet.session_id != activeSessionId_) {
+        if (hasActiveTalker_ && activeSessionId_ != packet.session_id) {
             if (nowUs - lastArrivalTimeUs_ < static_cast<uint64_t>(config_.talker_timeout_ms) * 1000ULL) {
                 ++stats_.foreign_talker_drops;
                 return MEDIA_ERR_BUSY;
@@ -453,7 +455,9 @@ MediaResult AudioTalkback::getStats(AudioTalkbackStats *stats) const
 }
 
     /** @description: 记录新的活动流，并通知 worker 在串行上下文中重置 Opus 状态。 */
-void AudioTalkback::resetStreamLocked(int sessionId, uint32_t ssrc, const char *reason)
+void AudioTalkback::resetStreamLocked(const std::string &sessionId,
+                                      uint32_t ssrc,
+                                      const char *reason)
 {
         bool wasActive = false;
 
@@ -468,8 +472,8 @@ void AudioTalkback::resetStreamLocked(int sessionId, uint32_t ssrc, const char *
         hasActiveTalker_ = true;
         resetPending_ = true; /* 重置Opus解码器状态 */
         if (wasActive) ++stats_.stream_resets;
-        LOG_INFO("audio talkback stream selected: session=%d ssrc=%u reason=%s",
-                 sessionId,
+        LOG_INFO("audio talkback stream selected: session_id=%s ssrc=%u reason=%s",
+                 sessionId.c_str(),
                  static_cast<unsigned int>(ssrc),
                  reason != NULL ? reason : "unknown");
 }
@@ -478,7 +482,7 @@ void AudioTalkback::resetStreamLocked(int sessionId, uint32_t ssrc, const char *
 void AudioTalkback::clearStreamStateLocked()
 {
         hasActiveTalker_ = false;
-        activeSessionId_ = 0;
+        activeSessionId_.clear();
         activeSsrc_ = 0;
         lastArrivalTimeUs_ = 0;
         hasHighestSequence_ = false;
@@ -684,8 +688,8 @@ void AudioTalkback::workerMain()
             nextPtsUs_ = jitterBuffer_.begin()->second.arrivalTimeUs;
             playoutStarted_ = true;
             deadline = std::chrono::steady_clock::now();
-            LOG_INFO("audio talkback playout started: session=%d ssrc=%u first_sequence=%u buffered=%zu",
-                     activeSessionId_,
+            LOG_INFO("audio talkback playout started: session_id=%s ssrc=%u first_sequence=%u buffered=%zu",
+                     activeSessionId_.c_str(),
                      static_cast<unsigned int>(activeSsrc_),
                      expectedExtendedSequence_,
                      jitterBuffer_.size());
@@ -708,8 +712,8 @@ void AudioTalkback::workerMain()
         nowUs = talkbackNowUs();
         if (jitterBuffer_.empty() && lastArrivalTimeUs_ != 0 &&
             nowUs - lastArrivalTimeUs_ >= static_cast<uint64_t>(config_.talker_timeout_ms) * 1000ULL) {
-            LOG_WARN("audio talkback stream timed out: session=%d ssrc=%u timeout_ms=%d",
-                     activeSessionId_,
+            LOG_WARN("audio talkback stream timed out: session_id=%s ssrc=%u timeout_ms=%d",
+                     activeSessionId_.c_str(),
                      static_cast<unsigned int>(activeSsrc_),
                      config_.talker_timeout_ms);
             clearStreamStateLocked();

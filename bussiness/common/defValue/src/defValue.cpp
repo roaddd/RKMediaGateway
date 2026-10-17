@@ -472,8 +472,7 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "GB28181_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "WEBRTC_NAME").c_str(), is_main ? "webrtc-main" : "webrtc-sub");
-    set_value((p + "WEBRTC_BIND_ADDRESS").c_str(), "0.0.0.0");
-    set_value_int((p + "WEBRTC_PORT").c_str(), is_main ? 8000 : 8001);
+    set_value((p + "WEBRTC_STREAM_ID").c_str(), is_main ? "main" : "sub");
     set_value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str(), 32);
     set_value_int((p + "WEBRTC_VIDEO_FPS").c_str(), fps);
     set_value((p + "WEBRTC_AUDIO_ENCODER_GROUP").c_str(), "");
@@ -519,6 +518,16 @@ static void load_defaults(void) {
     set_value_int("GATEWAY_ENABLE_RTMP", 0);
     set_value_int("GATEWAY_ENABLE_GB28181", 1);
     set_value_int("GATEWAY_ENABLE_WEBRTC", 0);
+    set_value("WEBRTC_CLOUD_URL", "");
+    set_value("WEBRTC_CLOUD_DEVICE_ID", "");
+    set_value("WEBRTC_CLOUD_TOKEN_FILE", "");
+    set_value("WEBRTC_ICE_STUN_HOST", "");
+    set_value_int("WEBRTC_ICE_STUN_PORT", 3478);
+    set_value("WEBRTC_ICE_TURN_HOST", "");
+    set_value_int("WEBRTC_ICE_TURN_PORT", 3478);
+    set_value("WEBRTC_ICE_TURN_USERNAME", "");
+    set_value("WEBRTC_ICE_TURN_PASSWORD_FILE", "");
+    set_value_int("WEBRTC_ICE_RELAY_ONLY", 0);
     set_value_int("GATEWAY_FPS", 30);
     set_value_int("GATEWAY_BITRATE", 2 * 1024 * 1024);
     set_value_int("GATEWAY_GOP", 30);
@@ -808,6 +817,7 @@ static void fill_isp_source(IspSourceConfig *isp) {
 
 static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     std::string p(prefix);
+    int stream_id_length = 0;
 
     stream->enabled = value_int((p + "ENABLE").c_str());
     stream->name = value_string((p + "NAME").c_str());
@@ -919,11 +929,18 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
 
     snprintf(stream->webrtc.name, sizeof(stream->webrtc.name), "%s",
              value_string((p + "WEBRTC_NAME").c_str()));
-    snprintf(stream->webrtc.bind_address, sizeof(stream->webrtc.bind_address), "%s",
-             value_string((p + "WEBRTC_BIND_ADDRESS").c_str()));
-    stream->webrtc.port = value_int((p + "WEBRTC_PORT").c_str());
     stream->webrtc.queue_capacity = value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str());
-    stream->webrtc.video_fps = value_int((p + "WEBRTC_VIDEO_FPS").c_str());
+    stream->webrtc.media.video_fps = value_int((p + "WEBRTC_VIDEO_FPS").c_str());
+    stream_id_length = snprintf(stream->webrtc.signaling.stream_id,
+                                sizeof(stream->webrtc.signaling.stream_id), "%s",
+                                value_string((p + "WEBRTC_STREAM_ID").c_str()));
+    if (stream_id_length < 0 ||
+        static_cast<size_t>(stream_id_length) >= sizeof(stream->webrtc.signaling.stream_id)) {
+        std::fprintf(stderr, "invalid %sWEBRTC_STREAM_ID: exceeds %zu bytes\n",
+                     prefix, sizeof(stream->webrtc.signaling.stream_id) - 1);
+        /* 不能使用截断后的云端码流身份；交给网关启动校验统一拒绝。 */
+        stream->webrtc.signaling.stream_id[0] = '\0';
+    }
     stream->webrtc_audio.encoder_group = value_string((p + "WEBRTC_AUDIO_ENCODER_GROUP").c_str());
 }
 
@@ -1001,6 +1018,25 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     fill_audio_talkback(&config->audio);
     fill_stream(&config->video.streams[0], "STREAM_MAIN_");
     fill_stream(&config->video.streams[1], "STREAM_SUB_");
+
+    /* 云端设备连接和 ICE 策略属于网关，只解析一次，不复制到各路输出。 */
+    snprintf(config->output.webrtc_shared.cloud.url,
+             sizeof(config->output.webrtc_shared.cloud.url), "%s", value_string("WEBRTC_CLOUD_URL"));
+    snprintf(config->output.webrtc_shared.cloud.device_id,
+             sizeof(config->output.webrtc_shared.cloud.device_id), "%s", value_string("WEBRTC_CLOUD_DEVICE_ID"));
+    snprintf(config->output.webrtc_shared.cloud.token_file,
+             sizeof(config->output.webrtc_shared.cloud.token_file), "%s", value_string("WEBRTC_CLOUD_TOKEN_FILE"));
+    snprintf(config->output.webrtc_shared.ice.stun.host,
+             sizeof(config->output.webrtc_shared.ice.stun.host), "%s", value_string("WEBRTC_ICE_STUN_HOST"));
+    config->output.webrtc_shared.ice.stun.port = value_int("WEBRTC_ICE_STUN_PORT");
+    snprintf(config->output.webrtc_shared.ice.turn.host,
+             sizeof(config->output.webrtc_shared.ice.turn.host), "%s", value_string("WEBRTC_ICE_TURN_HOST"));
+    config->output.webrtc_shared.ice.turn.port = value_int("WEBRTC_ICE_TURN_PORT");
+    snprintf(config->output.webrtc_shared.ice.turn.username,
+             sizeof(config->output.webrtc_shared.ice.turn.username), "%s", value_string("WEBRTC_ICE_TURN_USERNAME"));
+    snprintf(config->output.webrtc_shared.ice.turn.password_file,
+             sizeof(config->output.webrtc_shared.ice.turn.password_file), "%s", value_string("WEBRTC_ICE_TURN_PASSWORD_FILE"));
+    config->output.webrtc_shared.ice.relay_only = value_int("WEBRTC_ICE_RELAY_ONLY");
 
     config->output.rtsp.name = value_string("RTSP_NAME");
     config->output.rtsp.session_name = value_string("RTSP_SESSION_NAME");

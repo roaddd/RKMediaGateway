@@ -122,12 +122,9 @@ typedef struct {
     int queue_capacity;                /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
 } MediaOutputGb28181Config;
 
-/**
- * @description: WebRTC 输出配置。
- */
 /** @brief WebRTC 入站音频包的 C 侧只读视图。 */
 typedef struct {
-    int session_id;             /* WebRTC 服务端分配的会话 ID。 */
+    const char *session_id;     /* 云端分配的会话 ID；仅在回调执行期间有效。 */
     MediaCodecType codec;       /* SDP 已协商的音频编码格式。 */
     uint8_t payload_type;       /* RTP Payload Type。 */
     uint32_t ssrc;              /* 浏览器音频发送源 SSRC。 */
@@ -143,18 +140,99 @@ typedef void (*MediaOutputIncomingAudioCallback)(
     const MediaOutputIncomingAudioPacket *packet,
     void *user_data);
 
+/** 每路输出在共享云端信令连接中的身份。 */
 typedef struct {
-    char name[64];         /* 输出通道名称，用于日志和统计。 */
-    char bind_address[64]; /* WebSocket 信令监听地址，例如 0.0.0.0。 */
-    int port;              /* WebSocket 信令监听端口。 */
-    int queue_capacity;    /* 单类媒体队列容量；音频和视频各自拥有该容量。 */
-    int video_fps;         /* 视频帧率，用于缺省 RTP 媒体时间。 */
-    MediaCodecType audio_codec; /* WebRTC 音频编码，支持 G711A/G711U/Opus。 */
-    int audio_sample_rate;      /* WebRTC 音频采样率，G711 固定 8000Hz。 */
-    int audio_channels;         /* WebRTC 音频声道数，G711 当前只支持单声道。 */
-    MediaOutputIncomingAudioCallback incoming_audio_callback; /* 浏览器上行音频消费者。 */
-    void *incoming_audio_user_data; /* 传回入站音频回调的业务上下文。 */
+    char stream_id[64]; /* 本输出在云端注册的码流标识，同一设备内必须唯一。 */
+} MediaOutputWebRtcSignalingConfig;
+
+/** 网关共享的云端设备连接配置，不属于任何单路输出。 */
+typedef struct {
+    char url[256];        /* 云端 WebSocket 地址，路径为 /device。 */
+    char device_id[128];  /* 云端登记的设备 ID。 */
+    char token_file[256]; /* 设备凭据文件路径；凭据内容只在运行时加载。 */
+} MediaOutputWebRtcCloudConfig;
+
+/** 网关共享的 STUN 服务器配置。 */
+typedef struct {
+    char host[128]; /* 服务器主机；为空时不启用。 */
+    int port;       /* UDP 端口。 */
+} MediaOutputWebRtcStunConfig;
+
+/** 网关共享的 TURN 服务器配置。 */
+typedef struct {
+    char host[128];          /* 服务器主机；为空时不启用。 */
+    int port;                /* UDP 端口。 */
+    char username[128];      /* TURN 用户名。 */
+    char password_file[256]; /* TURN 密码文件路径。 */
+} MediaOutputWebRtcTurnConfig;
+
+/** 同一网关全部 WebRTC 会话共用的 ICE 策略。 */
+typedef struct {
+    MediaOutputWebRtcStunConfig stun; /* STUN 服务器。 */
+    MediaOutputWebRtcTurnConfig turn; /* TURN 服务器。 */
+    int relay_only;                   /* 是否只接受 TURN 中继候选。 */
+} MediaOutputWebRtcIceConfig;
+
+/** 网关级 WebRTC 参数，仅在共享运行时创建时传入一次。 */
+typedef struct {
+    MediaOutputWebRtcCloudConfig cloud; /* 共享设备信令连接参数。 */
+    MediaOutputWebRtcIceConfig ice;     /* 所有会话采用同一 ICE 策略。 */
+} MediaOutputWebRtcSharedConfig;
+
+/** WebRTC 音频媒体参数及浏览器上行音频接收回调。 */
+typedef struct {
+    MediaCodecType codec; /* 输出音频编码，支持 G711A/G711U/Opus。 */
+    int sample_rate;      /* 输出音频采样率。 */
+    int channels;         /* 输出音频声道数。 */
+    MediaOutputIncomingAudioCallback incoming_audio_callback; /* 上行音频消费者。 */
+    void *incoming_audio_user_data; /* 回调的业务上下文。 */
+} MediaOutputWebRtcAudioConfig;
+
+/** 每路 WebRTC 输出媒体参数。 */
+typedef struct {
+    int video_fps;                    /* 视频帧率，用于 RTP 媒体时间。 */
+    MediaOutputWebRtcAudioConfig audio; /* 音频参数与接收回调。 */
+} MediaOutputWebRtcMediaConfig;
+
+/** 共享信令及 ICE 运行时；具体实现仅在 WebRTC 模块内部可见。 */
+typedef struct MediaOutputWebRtcRuntime MediaOutputWebRtcRuntime;
+
+/** 每路 WebRTC 输出配置；runtime 由网关创建和销毁，本路不拥有。 */
+typedef struct {
+    char name[64];                       /* 输出通道名称，用于日志和统计。 */
+    int queue_capacity;                  /* 音频、视频队列各自的容量。 */
+    MediaOutputWebRtcMediaConfig media;   /* 本路音视频媒体参数。 */
+    MediaOutputWebRtcSignalingConfig signaling; /* 本路在云端登记的码流身份。 */
+    MediaOutputWebRtcRuntime *runtime;   /* 网关共享运行时，非拥有指针。 */
 } MediaOutputWebRtcConfig;
+
+/**
+ * @description: 创建网关共享 WebRTC 运行时，但暂不发起云端连接。
+ * @param config 网关级云端信令及 ICE 配置。
+ * @param runtime 返回创建的运行时，由调用方持有。
+ * @return MEDIA_OK 成功，其他 MediaResult 为失败。
+ */
+MediaResult media_output_webrtc_runtime_create(const MediaOutputWebRtcSharedConfig *config,
+                                               MediaOutputWebRtcRuntime **runtime);
+
+/**
+ * @description: 全部输出登记后启动共享信令连接。
+ * @param runtime 已创建的网关共享运行时。
+ * @return MEDIA_OK 成功，其他 MediaResult 为失败。
+ */
+MediaResult media_output_webrtc_runtime_start(MediaOutputWebRtcRuntime *runtime);
+
+/**
+ * @description: 先终止共享连接和回调，再停止各路输出。
+ * @param runtime 网关共享运行时；NULL 时不执行操作。
+ */
+void media_output_webrtc_runtime_stop(MediaOutputWebRtcRuntime *runtime);
+
+/**
+ * @description: 全部输出释放后销毁共享运行时。
+ * @param runtime 网关共享运行时；NULL 时不执行操作。
+ */
+void media_output_webrtc_runtime_destroy(MediaOutputWebRtcRuntime *runtime);
 
 /**
  * @description: 输出通道创建配置，按 type 选择对应协议配置块。
@@ -211,12 +289,12 @@ typedef struct {
     uint64_t sent_frames;       /* 成功发送的媒体包数量。 */
     uint64_t sent_bytes;        /* 成功发送的媒体负载字节数。 */
     uint64_t dropped_frames;    /* 因队列满、等待关键帧等原因丢弃的媒体包数量。 */
-    uint64_t reconnect_count;   /* 成功连接或重连次数。 */
+    uint64_t protocol_ready_count; /* 协议后端成功进入可发送状态的累计次数，包括首次就绪和失败恢复。 */
     uint64_t send_failures;     /* 协议发送失败次数。 */
     int queue_depth;            /* 当前音频队列和视频队列深度之和。 */
     int video_queue_depth;      /* 当前视频输出队列元素个数。 */
     int audio_queue_depth;      /* 当前音频输出队列元素个数。 */
-    int connected;              /* 当前输出通道是否已连接。 */
+    int protocol_ready;         /* 协议后端是否已具备接收媒体包的条件，不等同于远端客户端已连接。 */
     int waiting_for_keyframe;   /* 当前是否处于等待关键帧恢复发送的状态。 */
 } MediaOutputStats;
 
@@ -265,9 +343,9 @@ typedef struct {
  */
 typedef struct {
     int (*start)(MediaOutput *output);                            /* 启动协议私有资源。 */
-    int (*connect)(MediaOutput *output);                          /* 建立或恢复下游连接。 */
+    int (*connect)(MediaOutput *output);                          /* 检查或建立协议发送条件，使后端进入 protocol_ready 状态。 */
     int (*send_packet)(MediaOutput *output, const MediaPacket *packet); /* 发送一个媒体包。 */
-    void (*disconnect)(MediaOutput *output);                      /* 断开下游连接。 */
+    void (*disconnect)(MediaOutput *output);                      /* 发送失败后清理协议状态；服务端型协议不一定对应断开客户端。 */
     void (*stop)(MediaOutput *output);                            /* 停止协议私有资源。 */
     int (*set_video_pacer)(MediaOutput *output, MediaOutputPacerMode mode, int pacing_rate_bps); /* 设置视频 RTP 包级 pacer；不支持的协议可为空。 */
     int (*get_video_pacer_stats)(MediaOutput *output, MediaOutputPacerStats *stats); /* 获取视频 RTP pacer 调试统计；不支持的协议可为空。 */
@@ -300,7 +378,7 @@ struct MediaOutput {
     MediaOutputPacketQueue audio_queue;      /* 音频包队列。 */
     int running;                             /* 发送线程是否已经启动。 */
     int stop_requested;                      /* 是否已请求发送线程退出。 */
-    int connected;                           /* 当前输出通道是否已连接。 */
+    int protocol_ready;                      /* 协议后端是否可以接收 send_packet，不表示一定存在远端客户端。 */
     int waiting_for_keyframe;                /* 重连后是否仍在等待关键帧恢复发送。 */
     MediaOutputPacerMode video_pacer_mode;   /* 当前已下发到协议层的视频 RTP pacer 开关。 */
     int video_pacing_rate_bps;               /* 当前已下发到协议层的视频 RTP pacing 码率，单位 bit/s。 */

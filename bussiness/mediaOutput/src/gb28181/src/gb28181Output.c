@@ -145,7 +145,11 @@ static int gb28181_output_start(MediaOutput *output) {
     return 0;
 }
 
-/* MediaOutput connect 钩子：此处仅确认 output 已启动。 */
+/*
+ * GB28181 的 protocol_ready 状态：SIP/媒体输出模块已经启动，可以接收编码帧。
+ * 该状态不表示设备已经注册成功，也不表示平台已经发起 INVITE；具体注册、
+ * 会话和媒体发送状态由 gb28181Device 模块独立维护。
+ */
 static int gb28181_output_connect(MediaOutput *output) {
     Gb28181OutputImpl *impl = (Gb28181OutputImpl *)output->impl;
     if (!impl || !impl->started) {
