@@ -2,6 +2,28 @@
 # Values are grouped by subsystem; integers retain the existing enum meanings.
 
 # =============================================================================
+# WebRTC 云端信令与 ICE
+# =============================================================================
+[webrtc.cloud]
+# 启用任意 WebRTC 输出前必须填写以下三项。
+# 联调阶段可使用 ws://服务器:测试端口/device；正式部署必须改为可信 wss:// 地址。
+url = ""
+device_id = ""
+# 只填写设备凭据文件路径，真实 Token 不写入本文件或 Git。
+token_file = ""
+
+[webrtc.ice]
+# 云端模式按需填写；地址和端口不包含 stun:/turn: 前缀。
+stun_host = ""
+stun_port = 3478
+turn_host = ""
+turn_port = 3478
+turn_username = ""
+turn_password_file = ""
+# 仅用于验证 TURN 路径；开启时必须配置 TURN。
+relay_only = false
+
+# =============================================================================
 # 网关基础、输出开关与视频编码默认参数
 # =============================================================================
 [gateway]
@@ -773,16 +795,12 @@ encoder_name = "RKMediaGateway"
 # 主码流输出：WebRTC
 # -----------------------------------------------------------------------------
 [stream.main.webrtc]
+# 云端信令服务器使用该 ID 将浏览器会话路由到本路输出。
+stream_id = "main"
 # WebRTC 显式引用上面的 Opus 编码配置。
 audio_encoder_group = "opus_48k_mono"
 # STREAM_MAIN_WEBRTC_NAME: WebRTC 输出名称，用于日志和通道标识。
 name = "webrtc-main"
-
-# STREAM_MAIN_WEBRTC_BIND_ADDRESS: WebSocket 信令服务监听地址。
-bind_address = "0.0.0.0"
-
-# STREAM_MAIN_WEBRTC_PORT: WebSocket 信令服务端口，浏览器连接 ws://设备IP:端口/browser。
-port = 8000
 
 # STREAM_MAIN_WEBRTC_QUEUE_CAPACITY: WebRTC 输出队列容量。
 queue_capacity = 32
@@ -1106,15 +1124,11 @@ encoder_name = "RKMediaGateway"
 # 子码流输出：WebRTC
 # -----------------------------------------------------------------------------
 [stream.sub.webrtc]
+# 云端信令服务器使用该 ID 将浏览器会话路由到本路输出。
+stream_id = "sub"
 audio_encoder_group = "opus_48k_mono"
 # STREAM_SUB_WEBRTC_NAME: WebRTC 输出名称，用于日志和通道标识。
 name = "webrtc-sub"
-
-# STREAM_SUB_WEBRTC_BIND_ADDRESS: WebSocket 信令服务监听地址。
-bind_address = "0.0.0.0"
-
-# STREAM_SUB_WEBRTC_PORT: WebSocket 信令服务端口。
-port = 8001
 
 # STREAM_SUB_WEBRTC_QUEUE_CAPACITY: WebRTC 输出队列容量。
 queue_capacity = 32

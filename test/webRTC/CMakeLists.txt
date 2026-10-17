@@ -6,11 +6,26 @@ if(BUILD_TARGET STREQUAL "webrtc_audio_receiver_test" OR BUILD_TARGET STREQUAL "
     add_executable(webrtc_audio_receiver_test
         ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_audio_receiver_test.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_test_logger_stub.cpp
-        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/webrtcAudioReceiver.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/core/webrtcAudioReceiver.cpp
     )
     target_link_libraries(webrtc_audio_receiver_test PRIVATE pthread)
     target_compile_features(webrtc_audio_receiver_test PRIVATE cxx_std_17)
     set_target_properties(webrtc_audio_receiver_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
+if(BUILD_TARGET STREQUAL "webrtc_signaling_protocol_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(webrtc_signaling_protocol_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_signaling_protocol_test.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_test_logger_stub.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/dataChannel/webrtcDataChannelMessage.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/signaling/webrtcJson.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/signaling/cloudSignalingProtocol.cpp
+    )
+    target_link_libraries(webrtc_signaling_protocol_test PRIVATE pthread)
+    target_compile_features(webrtc_signaling_protocol_test PRIVATE cxx_std_17)
+    set_target_properties(webrtc_signaling_protocol_test PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 endif()

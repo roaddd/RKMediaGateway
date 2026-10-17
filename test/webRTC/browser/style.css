@@ -46,6 +46,10 @@ body {
     align-items: end;
 }
 
+.toolbar-options {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
 .actions {
     grid-template-columns: repeat(3, minmax(130px, 180px)) repeat(4, minmax(110px, 1fr));
     align-items: center;
@@ -76,6 +80,7 @@ label,
 }
 
 input,
+select,
 button {
     height: 36px;
     border-radius: 6px;
@@ -88,7 +93,8 @@ input[type="checkbox"] {
     margin: 0;
 }
 
-input {
+input,
+select {
     width: 100%;
     border: 1px solid var(--line);
     padding: 0 10px;

@@ -1,9 +1,20 @@
 (function () {
     "use strict";
 
+    const BROWSER_TEST_PAGE_VERSION = "2026-10-14-cloud-only-1";
+
     const els = {
         wsUrl: document.getElementById("wsUrl"),
-        remoteId: document.getElementById("remoteId"),
+        cloudDeviceId: document.getElementById("cloudDeviceId"),
+        cloudStreamId: document.getElementById("cloudStreamId"),
+        cloudToken: document.getElementById("cloudToken"),
+        stunHost: document.getElementById("stunHost"),
+        stunPort: document.getElementById("stunPort"),
+        turnHost: document.getElementById("turnHost"),
+        turnPort: document.getElementById("turnPort"),
+        turnUser: document.getElementById("turnUser"),
+        turnPassword: document.getElementById("turnPassword"),
+        relayOnly: document.getElementById("relayOnly"),
         wsConnectBtn: document.getElementById("wsConnectBtn"),
         wsCloseBtn: document.getElementById("wsCloseBtn"),
         receiveVideo: document.getElementById("receiveVideo"),
@@ -20,6 +31,7 @@
         wsState: document.getElementById("wsState"),
         pcState: document.getElementById("pcState"),
         iceState: document.getElementById("iceState"),
+        icePath: document.getElementById("icePath"),
         gatheringState: document.getElementById("gatheringState"),
         dcState: document.getElementById("dcState"),
         localSdpType: document.getElementById("localSdpType"),
@@ -40,6 +52,11 @@
     let pc = null;
     let dc = null;
     let pendingLocalCandidates = [];
+    let cloudOfferSent = false;
+    let pendingRemoteCandidates = [];
+    let cloudAuthenticated = false;
+    let cloudSessionId = "";
+    let cloudRequestId = "";
     let localAudioStream = null;
     let keyFrameWorker = null;
     let keyFramePort = null;
@@ -107,7 +124,9 @@
 
         els.wsConnectBtn.disabled = wsOpen;
         els.wsCloseBtn.disabled = !ws;
-        els.startBtn.disabled = !wsOpen;
+        els.startBtn.textContent = "打开云端会话";
+        els.startBtn.disabled = !wsOpen || !cloudAuthenticated ||
+            !!cloudRequestId || !!cloudSessionId;
         els.pingBtn.disabled = !dcOpen;
         els.statusBtn.disabled = !dcOpen;
         els.ipcInput.disabled = !dcOpen;
@@ -318,16 +337,53 @@
 
     function signalingMessage(type, payload) {
         const message = Object.assign({ type }, payload || {});
-        const remoteId = els.remoteId.value.trim();
-        if (remoteId) {
-            message.id = remoteId;
-        }
+        message.version = 1;
+        message.session_id = cloudSessionId;
         return message;
+    }
+
+    /** 根据页面输入创建 ICE 配置；TURN 密码只传给浏览器，不写入日志。 */
+    function buildIceConfiguration() {
+        const iceServers = [];
+        const stunHost = els.stunHost.value.trim();
+        const turnHost = els.turnHost.value.trim();
+        const stunPort = Number(els.stunPort.value);
+        const turnPort = Number(els.turnPort.value);
+
+        if (stunHost) {
+            if (!Number.isInteger(stunPort) || stunPort < 1 || stunPort > 65535) {
+                throw new Error("STUN 端口无效");
+            }
+            iceServers.push({ urls: `stun:${stunHost}:${stunPort}` });
+        }
+        if (turnHost) {
+            if (!Number.isInteger(turnPort) || turnPort < 1 || turnPort > 65535 ||
+                !els.turnUser.value.trim() || !els.turnPassword.value) {
+                throw new Error("TURN 地址、端口、用户名或密码不完整");
+            }
+            iceServers.push({
+                urls: `turn:${turnHost}:${turnPort}?transport=udp`,
+                username: els.turnUser.value.trim(),
+                credential: els.turnPassword.value,
+            });
+        }
+        if (els.relayOnly.checked && !turnHost) {
+            throw new Error("只用中继模式必须配置 TURN");
+        }
+        return {
+            bundlePolicy: "max-bundle",
+            iceServers,
+            iceTransportPolicy: els.relayOnly.checked ? "relay" : "all",
+        };
     }
 
     function sendSignaling(type, payload) {
         if (!ws || ws.readyState !== WebSocket.OPEN) {
             log(`信令发送失败：WebSocket 未连接，type=${type}`);
+            return;
+        }
+        if (!cloudSessionId) {
+            log(`信令发送失败：云端会话尚未打开，type=${type}`);
             return;
         }
 
@@ -346,19 +402,45 @@
     function normalizeCandidate(message) {
         return {
             candidate: message.candidate,
-            sdpMid: message.mid || message.sdpMid || "0",
+            sdpMid: message.mid || message.sdpMid,
             sdpMLineIndex: message.sdpMLineIndex,
         };
+    }
+
+    /** 从浏览器 WebRTC 统计中读取最终选中的候选对，而非只看收集到的候选。 */
+    async function updateSelectedIcePath(peer) {
+        let reports;
+        let transport;
+        let pair;
+        let local;
+        let remote;
+
+        try {
+            reports = await peer.getStats();
+            transport = [...reports.values()].find((item) => item.type === "transport" &&
+                item.selectedCandidatePairId);
+            pair = transport ? reports.get(transport.selectedCandidatePairId) :
+                [...reports.values()].find((item) => item.type === "candidate-pair" &&
+                    item.nominated && item.state === "succeeded");
+            if (!pair) return;
+            local = reports.get(pair.localCandidateId);
+            remote = reports.get(pair.remoteCandidateId);
+            if (pc !== peer || !local || !remote) return;
+            setText(els.icePath, `${local.candidateType} → ${remote.candidateType}`, "state-ok");
+            log(`实际 ICE 候选对：${local.candidateType} → ${remote.candidateType}`);
+        } catch (error) {
+            log(`读取 ICE 统计失败：${error.message}`);
+        }
     }
 
     function createPeerConnection() {
         closePeerConnection();
 
-        pc = new RTCPeerConnection({
-            bundlePolicy: "max-bundle",
-        });
+        pc = new RTCPeerConnection(buildIceConfiguration());
 
         pendingLocalCandidates = [];
+        cloudOfferSent = false;
+        pendingRemoteCandidates = [];
         setText(els.pcState, pc.connectionState || "new");
         setText(els.iceState, pc.iceConnectionState || "new");
         setText(els.gatheringState, pc.iceGatheringState || "new");
@@ -375,6 +457,9 @@
                 state === "failed" || state === "disconnected" ? "state-bad" : "";
             setText(els.iceState, state, stateClass);
             log(`ICE 状态：${state}`);
+            if (state === "connected" || state === "completed") {
+                updateSelectedIcePath(pc);
+            }
         };
 
         pc.onicegatheringstatechange = () => {
@@ -395,8 +480,12 @@
                 sdpMLineIndex: event.candidate.sdpMLineIndex,
             };
 
-            pendingLocalCandidates.push(payload);
-            sendSignaling("candidate", payload);
+            if (!cloudOfferSent) {
+                /* 云端协议要求 Offer 先于 candidate；本地收集可以先发生。 */
+                pendingLocalCandidates.push(payload);
+            } else {
+                sendSignaling("candidate", payload);
+            }
         };
 
         pc.ontrack = (event) => {
@@ -475,6 +564,8 @@
         }
 
         pendingLocalCandidates = [];
+        cloudOfferSent = false;
+        pendingRemoteCandidates = [];
         els.remoteVideo.srcObject = null;
         els.videoHint.textContent = "等待远端 Track";
         els.localSdp.textContent = "";
@@ -483,6 +574,7 @@
         els.remoteSdpType.textContent = "-";
         setText(els.pcState, "closed");
         setText(els.iceState, "closed");
+        setText(els.icePath, "-");
         setText(els.gatheringState, "new");
         setText(els.dcState, "closed");
         updateButtons();
@@ -544,6 +636,10 @@
         els.localSdpType.textContent = "offer";
         els.localSdp.textContent = peer.localDescription.sdp;
         sendSignaling("offer", { sdp: peer.localDescription.sdp });
+        cloudOfferSent = true;
+        /* 先投递 Offer，再按收集顺序释放此前暂存的候选。 */
+        pendingLocalCandidates.forEach((candidate) => sendSignaling("candidate", candidate));
+        pendingLocalCandidates = [];
     }
 
     async function handleOffer(message) {
@@ -551,6 +647,9 @@
         const offer = normalizeDescription(message);
 
         await peer.setRemoteDescription(offer);
+        while (pendingRemoteCandidates.length > 0) {
+            await peer.addIceCandidate(pendingRemoteCandidates.shift());
+        }
         els.remoteSdpType.textContent = "offer";
         els.remoteSdp.textContent = offer.sdp;
 
@@ -570,16 +669,29 @@
 
         const answer = normalizeDescription(message);
         await pc.setRemoteDescription(answer);
+        /* candidate 可能先于 Answer 到达；设置远端 SDP 后才提交给 ICE。 */
+        while (pendingRemoteCandidates.length > 0) {
+            await pc.addIceCandidate(pendingRemoteCandidates.shift());
+        }
         els.remoteSdpType.textContent = "answer";
         els.remoteSdp.textContent = answer.sdp;
         log("已设置远端 Answer");
     }
 
     async function handleCandidate(message) {
-        if (!pc || !message.candidate) {
+        if (!pc || !message.candidate || !(message.mid || message.sdpMid)) {
+            log("忽略缺少 PeerConnection、candidate 或 mid 的 ICE 消息");
             return;
         }
 
+        if (!pc.remoteDescription) {
+            if (pendingRemoteCandidates.length >= 128) {
+                log("远端 ICE 暂存队列已满，丢弃 candidate");
+                return;
+            }
+            pendingRemoteCandidates.push(normalizeCandidate(message));
+            return;
+        }
         await pc.addIceCandidate(normalizeCandidate(message));
         log(`已添加远端 ICE candidate：${message.candidate}`);
     }
@@ -597,10 +709,108 @@
         logIpc(">", text);
     }
 
+    /** 云端认证通过后由用户点击发起 open；opened 返回之前不创建 Offer。 */
+    function openCloudSession() {
+        const deviceId = els.cloudDeviceId.value.trim();
+        const streamId = els.cloudStreamId.value.trim();
+
+        if (!cloudAuthenticated || !deviceId || !streamId || cloudRequestId || cloudSessionId) {
+            log("云端会话未认证、标识缺失或已有会话");
+            return;
+        }
+        cloudRequestId = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        ws.send(JSON.stringify({
+            version: 1,
+            type: "open",
+            request_id: cloudRequestId,
+            device_id: deviceId,
+            stream_id: streamId,
+        }));
+        log(`云端打开会话：device_id=${deviceId} stream_id=${streamId}`);
+        updateButtons();
+    }
+
+    /** 只关闭当前云端会话，不断开浏览器的信令 WebSocket。 */
+    function closeCloudSession() {
+        if (cloudSessionId && ws &&
+            ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                version: 1, type: "close", session_id: cloudSessionId,
+                reason: "client_closed",
+            }));
+        }
+        cloudSessionId = "";
+        cloudRequestId = "";
+        closePeerConnection();
+        updateButtons();
+    }
+
+    /** 按 request_id 和 session_id 校验云端事件，防止迟到消息串入新会话。 */
+    async function handleCloudMessage(message) {
+        if (message.version !== 1 || typeof message.type !== "string") {
+            log("忽略无效的云端信令版本或类型");
+            return;
+        }
+        if (message.type === "authenticated") {
+            cloudAuthenticated = true;
+            log("云端浏览器认证成功");
+            updateButtons();
+            return;
+        }
+        if (message.type === "error") {
+            log(`云端错误：${message.code || "unknown"} ${message.message || ""}`);
+            if (message.request_id && message.request_id === cloudRequestId) {
+                cloudRequestId = "";
+                updateButtons();
+            }
+            return;
+        }
+        if (message.type === "opened") {
+            if (!cloudRequestId || message.request_id !== cloudRequestId ||
+                !message.session_id || message.device_id !== els.cloudDeviceId.value.trim() ||
+                message.stream_id !== els.cloudStreamId.value.trim()) {
+                log("忽略不匹配的 opened 消息");
+                return;
+            }
+            cloudSessionId = message.session_id;
+            cloudRequestId = "";
+            log(`云端会话已打开：session_id=${cloudSessionId}`);
+            updateButtons();
+            try {
+                await startOffer();
+            } catch (error) {
+                log(`创建 Offer 失败：${error.message}`);
+                closeCloudSession();
+            }
+            return;
+        }
+        if (!cloudSessionId || message.session_id !== cloudSessionId) {
+            log(`忽略非当前会话消息：type=${message.type}`);
+            return;
+        }
+        if (message.type === "answer") {
+            await handleAnswer(message);
+        } else if (message.type === "candidate") {
+            await handleCandidate(message);
+        } else if (message.type === "close") {
+            log(`云端会话关闭：${message.reason || "unknown"}`);
+            cloudSessionId = "";
+            closePeerConnection();
+            updateButtons();
+        } else {
+            log(`忽略不支持的云端信令：${message.type}`);
+        }
+    }
+
     function connectWebSocket() {
         const url = els.wsUrl.value.trim();
+        let socket;
         if (!url) {
             log("WebSocket 地址为空");
+            return;
+        }
+        if (!url.endsWith("/browser") || !els.cloudToken.value) {
+            log("云端信令需要 /browser 地址及浏览器测试 Token");
             return;
         }
 
@@ -608,53 +818,64 @@
             ws.close();
         }
 
-        ws = new WebSocket(url);
+        closeCloudSession();
+        cloudAuthenticated = false;
+        socket = new WebSocket(url);
+        ws = socket;
         setText(els.wsState, "connecting");
         log(`连接 WebSocket：${url}`);
         updateButtons();
 
-        ws.onopen = () => {
+        socket.onopen = () => {
+            if (ws !== socket) return;
             setText(els.wsState, "open", "state-ok");
             log("WebSocket 已连接");
             updateButtons();
+            /* 凭据只在认证消息中发送，不把完整报文打印到页面日志。 */
+            socket.send(JSON.stringify({
+                version: 1, type: "auth", token: els.cloudToken.value,
+            }));
+            log("已发送云端浏览器认证请求（Token 已隐藏）");
         };
 
-        ws.onclose = () => {
+        socket.onclose = () => {
+            if (ws !== socket) return;
             setText(els.wsState, "closed", "state-bad");
             log("WebSocket 已关闭");
             ws = null;
+            cloudAuthenticated = false;
+            cloudSessionId = "";
+            cloudRequestId = "";
+            closePeerConnection();
             updateButtons();
         };
 
-        ws.onerror = () => {
+        socket.onerror = () => {
+            if (ws !== socket) return;
             setText(els.wsState, "error", "state-bad");
             log("WebSocket 错误");
             updateButtons();
         };
 
-        ws.onmessage = async (event) => {
+        socket.onmessage = async (event) => {
+            if (ws !== socket) return;
             if (typeof event.data !== "string") {
                 log("忽略非文本信令消息");
                 return;
             }
 
-            log(`信令接收：${event.data}`);
-            const message = JSON.parse(event.data);
-
-            if (message.id && !els.remoteId.value.trim()) {
-                els.remoteId.value = message.id;
+            let message;
+            try {
+                message = JSON.parse(event.data);
+            } catch (error) {
+                log(`无效 JSON 信令：${error.message}`);
+                return;
             }
-
-            if (message.type === "offer") {
-                await handleOffer(message);
-            } else if (message.type === "answer") {
-                await handleAnswer(message);
-            } else if (message.type === "candidate") {
-                await handleCandidate(message);
-            } else if (message.type === "request") {
-                sendSignaling("ready", {});
-            } else {
-                log(`未知信令类型：${message.type}`);
+            log(`信令接收：${event.data}`);
+            try {
+                await handleCloudMessage(message);
+            } catch (error) {
+                log(`处理云端信令失败：${error.message}`);
             }
         };
     }
@@ -666,12 +887,9 @@
         }
     };
     els.startBtn.onclick = () => {
-        startOffer().catch((err) => {
-            log(`创建 Offer 失败：${err.message}`);
-            closePeerConnection();
-        });
+        openCloudSession();
     };
-    els.resetBtn.onclick = closePeerConnection;
+    els.resetBtn.onclick = closeCloudSession;
     els.pingBtn.onclick = () => sendIpcObject({ cmd: "ping", ts: Date.now() });
     els.statusBtn.onclick = () => sendIpcObject({ cmd: "get_status", ts: Date.now() });
     els.requestKeyFrameBtn.onclick = requestRemoteKeyFrame;
@@ -686,10 +904,12 @@
     setText(els.wsState, "closed");
     setText(els.pcState, "closed");
     setText(els.iceState, "closed");
+    setText(els.icePath, "-");
     setText(els.gatheringState, "new");
     setText(els.dcState, "closed");
     setText(els.keyFrameRequestState,
         supportsKeyFrameRequest() ? "等待视频" : "浏览器不支持",
         supportsKeyFrameRequest() ? "" : "state-bad");
+    log(`测试页面版本：${BROWSER_TEST_PAGE_VERSION}`);
     updateButtons();
 })();
