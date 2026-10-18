@@ -22,6 +22,7 @@ if(BUILD_TARGET STREQUAL "webrtc_signaling_protocol_test" OR BUILD_TARGET STREQU
         ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/dataChannel/webrtcDataChannelMessage.cpp
         ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/signaling/webrtcJson.cpp
         ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/signaling/cloudSignalingProtocol.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/signaling/webrtcSignalingParser.cpp
     )
     target_link_libraries(webrtc_signaling_protocol_test PRIVATE pthread)
     target_compile_features(webrtc_signaling_protocol_test PRIVATE cxx_std_17)
