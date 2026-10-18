@@ -12,33 +12,10 @@
 #include <string>
 
 #include "webrtcMediaTypes.h"
+#include "webrtcSignalingParser.h"
 
 namespace rkmedia {
 namespace webrtc {
-
-/*
- * 简单信令消息结构。
- * 当前只覆盖浏览器测试页需要的 offer/answer/candidate/close 字段，不引入额外 JSON 库。
- */
-struct SignalingMessage {
-    std::string type;      /* 信令类型，如 offer、answer、candidate 或 close。 */
-    std::string sdp;       /* offer/answer 携带的 SDP 内容。 */
-    std::string candidate; /* trickle ICE candidate 的文本描述。 */
-    std::string mid;       /* candidate 所属 SDP m-line 的 a=mid 值。 */
-};
-
-/**
- * @brief 解析浏览器发送的 WebRTC 信令 JSON。
- *
- * 仅提取当前信令协议使用的字符串字段；调用时会先清空 @p message。
- * `sdp`/`description` 和 `mid`/`sdpMid` 分别作为兼容字段写入同一个成员。
- *
- * @param[in] json 待解析的 JSON 文本。
- * @param[out] message 解析后的信令字段。
- * @retval true 成功取得非空的 `type` 字段。
- * @retval false 缺少有效的 `type` 字段。
- */
-bool signaling_parse_message(const std::string &json, SignalingMessage &message);
 
 /**
  * @brief 生成携带 SDP 的 offer 或 answer 信令 JSON。

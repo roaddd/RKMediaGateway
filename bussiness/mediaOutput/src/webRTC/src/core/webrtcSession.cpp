@@ -988,8 +988,9 @@ void WebRtcSession::handleCandidate(const std::string &message)
         LOG_ERROR("[WEBRTC] session=%s candidate ignored: mid missing", sessionId_.c_str());
         return;
     }
-    candidate.reset(new rtc::Candidate(signaling.candidate, signaling.mid));
     try {
+        /* candidate 文本解析也可能失败，必须和提交操作一起纳入异常边界。 */
+        candidate.reset(new rtc::Candidate(signaling.candidate, signaling.mid));
         pc->addRemoteCandidate(*candidate);
         {
             std::lock_guard<std::mutex> lock(mutex_);

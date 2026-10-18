@@ -5,6 +5,7 @@
 #include "cloudSignalingProtocol.h"
 #include "webrtcDataChannelMessage.h"
 #include "webrtcJson.h"
+#include "webrtcSignalingParser.h"
 
 #include <iostream>
 #include <string>
@@ -16,6 +17,8 @@ using rkmedia::webrtc::cloud_signaling_make_registration;
 using rkmedia::webrtc::cloud_signaling_parse_message;
 using rkmedia::webrtc::cloud_signaling_wrap_session_message;
 using rkmedia::webrtc::data_channel_parse_command;
+using rkmedia::webrtc::SignalingMessage;
+using rkmedia::webrtc::signaling_parse_message;
 using rkmedia::webrtc::webrtc_json_escape;
 
 #define CHECK_TRUE(expression)                                                     \
@@ -58,6 +61,28 @@ static bool testCloudMessageParsing()
         "{\"version\":1,\"type\":\"close\",\"type\":\"offer\"}", message));
     CHECK_TRUE(!cloud_signaling_parse_message(
         "{\"version\":1,\"session_id\":\"s-1\"}", message));
+    return true;
+}
+
+/** @brief 验证 type=candidate 不会干扰同名 candidate 键的提取。 */
+static bool testPeerConnectionCandidateParsing()
+{
+    SignalingMessage message;
+    const std::string candidate =
+        "candidate:26429068 1 udp 58400767 124.223.168.114 59605 "
+        "typ relay raddr 58.100.89.107 rport 27551";
+    bool parsed = false;
+
+    /* session_id 特意放在 type 与 candidate 之间，复现原来的错误字段命中顺序。 */
+    parsed = signaling_parse_message(
+        "{\"version\":1,\"type\":\"candidate\","
+        "\"session_id\":\"gT4PUrNHb7jo2MB6ALDkccU7\","
+        "\"candidate\":\"" + candidate + "\",\"mid\":\"0\"}",
+        message);
+    CHECK_TRUE(parsed);
+    CHECK_TRUE(message.type == "candidate");
+    CHECK_TRUE(message.candidate == candidate);
+    CHECK_TRUE(message.mid == "0");
     return true;
 }
 
@@ -111,6 +136,7 @@ static bool testDataChannelCommandParsing()
 int main()
 {
     if (!testJsonEscape() || !testCloudMessageParsing() ||
+        !testPeerConnectionCandidateParsing() ||
         !testCloudMessageBuilding() || !testDataChannelCommandParsing()) {
         std::cerr << "webrtc signaling protocol tests failed" << std::endl;
         return 1;
