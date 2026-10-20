@@ -8,3 +8,4 @@ if(BUILD_TARGET STREQUAL "enum_frame_interval_test" OR BUILD_TARGET STREQUAL "al
 endif()
 
 add_subdirectory(webRTC)
+add_subdirectory(MPP)
