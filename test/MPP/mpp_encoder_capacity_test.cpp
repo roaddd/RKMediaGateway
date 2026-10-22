@@ -7,9 +7,7 @@
  * 能否持续达到目标帧率。完整产品能力仍需在本测试通过后使用 rkmgw 验证。
  */
 
-#include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +19,7 @@
 #include <thread>
 #include <vector>
 
+#include "latencyStatistics.h"
 #include "mppEncoder.h"
 #include "systemMetricsMonitor.h"
 
@@ -60,7 +59,12 @@ struct StreamResult {
     uint64_t encoded_bytes;          /* 编码输出总字节数。 */
     uint64_t deadline_misses;        /* 编码完成时间晚于该帧计划周期的次数。 */
     double elapsed_seconds;          /* 本线程正式测试的实际持续时间。 */
-    std::vector<uint64_t> latency_us;/* 每帧编码接口总耗时。 */
+    std::vector<uint64_t> input_copy_latency_us; /* 输入NV12复制和stride重排耗时。 */
+    std::vector<uint64_t> submit_latency_us;     /* MPP提交输入帧调用耗时。 */
+    std::vector<uint64_t> packet_wait_latency_us; /* 等待MPP输出编码包耗时。 */
+    std::vector<uint64_t> packet_copy_latency_us; /* 编码包复制到复用缓存耗时。 */
+    std::vector<uint64_t> other_latency_us;      /* 总耗时中未归属上述阶段的耗时。 */
+    std::vector<uint64_t> total_latency_us;      /* 每帧编码接口总耗时。 */
 };
 
 /** 多线程统一起跑屏障，避免先启动的编码器提前消耗统计时间。 */
@@ -403,6 +407,7 @@ void runStreamWorker(size_t stream_index,
     int encode_ret = 0;
     bool init_success = false;
     uint64_t frame_id = 0;
+    uint64_t known_stage_us = 0;
     MppEncoderTiming timing = {};
 
     if (barrier == NULL || result == NULL) {
@@ -412,7 +417,17 @@ void runStreamWorker(size_t stream_index,
     *result = StreamResult();
 
     try {
-        result->latency_us.reserve(
+        result->input_copy_latency_us.reserve(
+            static_cast<size_t>(duration_seconds) * config.fps + 1U);
+        result->submit_latency_us.reserve(
+            static_cast<size_t>(duration_seconds) * config.fps + 1U);
+        result->packet_wait_latency_us.reserve(
+            static_cast<size_t>(duration_seconds) * config.fps + 1U);
+        result->packet_copy_latency_us.reserve(
+            static_cast<size_t>(duration_seconds) * config.fps + 1U);
+        result->other_latency_us.reserve(
+            static_cast<size_t>(duration_seconds) * config.fps + 1U);
+        result->total_latency_us.reserve(
             static_cast<size_t>(duration_seconds) * config.fps + 1U);
     } catch (...) {
         std::fprintf(stderr,
@@ -502,7 +517,21 @@ void runStreamWorker(size_t stream_index,
             result->encoded_bytes += encoded_size;
             result->key_frames += key_frame != 0 ? 1U : 0U;
         }
-        result->latency_us.push_back(timing.encode_frame_total_us);
+        /*
+         * 所有阶段样本必须在同一帧上同步入列，保证各统计数组的样本数量一致。
+         * other使用饱和减法，避免微秒级时钟采样误差导致无符号下溢。
+         */
+        known_stage_us = timing.encoder_input_buffer_copy_us +
+                         timing.encoder_submit_frame_call_us +
+                         timing.encoder_poll_packet_call_us +
+                         timing.encoder_packet_copy_us;
+        result->input_copy_latency_us.push_back(timing.encoder_input_buffer_copy_us);
+        result->submit_latency_us.push_back(timing.encoder_submit_frame_call_us);
+        result->packet_wait_latency_us.push_back(timing.encoder_poll_packet_call_us);
+        result->packet_copy_latency_us.push_back(timing.encoder_packet_copy_us);
+        result->other_latency_us.push_back(
+            calculateUnaccountedLatency(timing.encode_frame_total_us, known_stage_us));
+        result->total_latency_us.push_back(timing.encode_frame_total_us);
 
         ++frame_id;
         scheduled_time = start_time + frame_period * frame_id;
@@ -519,19 +548,32 @@ void runStreamWorker(size_t stream_index,
 }
 
 /**
- * @brief 计算已排序样本的指定百分位值。
+ * @brief 按统一格式打印一个编码阶段的延迟统计。
+ * @param stage_name 阶段名称。
+ * @param samples 该阶段逐帧采集的微秒耗时。
  */
-uint64_t percentile(const std::vector<uint64_t> &sorted_values, double ratio) {
-    size_t index = 0;
+void printLatencyStage(const char *stage_name,
+                       const std::vector<uint64_t> &samples) {
+    LatencyStatistics statistics = {};
+    bool result = false;
 
-    if (sorted_values.empty()) {
-        return 0;
+    if (stage_name == NULL) {
+        std::fprintf(stderr, "[ERROR] print latency stage failed: name is null\n");
+        return;
     }
-    index = static_cast<size_t>(std::ceil(ratio * sorted_values.size())) - 1U;
-    if (index >= sorted_values.size()) {
-        index = sorted_values.size() - 1U;
+    result = calculateLatencyStatistics(samples, &statistics);
+    if (!result) {
+        std::printf("    %-12s samples=0 unavailable\n", stage_name);
+        return;
     }
-    return sorted_values[index];
+    std::printf("    %-12s samples=%zu avg=%llu p50=%llu p95=%llu p99=%llu max=%llu\n",
+                stage_name,
+                statistics.sample_count,
+                static_cast<unsigned long long>(statistics.average_us),
+                static_cast<unsigned long long>(statistics.p50_us),
+                static_cast<unsigned long long>(statistics.p95_us),
+                static_cast<unsigned long long>(statistics.p99_us),
+                static_cast<unsigned long long>(statistics.max_us));
 }
 
 /**
@@ -541,23 +583,11 @@ uint64_t percentile(const std::vector<uint64_t> &sorted_values, double ratio) {
 bool printStreamResult(size_t stream_index,
                        const StreamConfig &config,
                        const StreamResult &result) {
-    std::vector<uint64_t> sorted_latency = result.latency_us;
-    uint64_t latency_sum = 0;
-    uint64_t latency_average = 0;
     double submitted_fps = 0.0;
     double encoded_fps = 0.0;
     double actual_bitrate = 0.0;
     double fps_ratio = 0.0;
     bool passed = false;
-    size_t index = 0;
-
-    std::sort(sorted_latency.begin(), sorted_latency.end());
-    for (index = 0; index < sorted_latency.size(); ++index) {
-        latency_sum += sorted_latency[index];
-    }
-    if (!sorted_latency.empty()) {
-        latency_average = latency_sum / sorted_latency.size();
-    }
     if (result.elapsed_seconds > 0.0) {
         submitted_fps = result.submitted_frames / result.elapsed_seconds;
         encoded_fps = result.encoded_frames / result.elapsed_seconds;
@@ -588,12 +618,14 @@ bool printStreamResult(size_t stream_index,
                 encoded_fps,
                 fps_ratio * 100.0,
                 actual_bitrate);
-    std::printf("  encode_latency_us avg=%llu p95=%llu p99=%llu max=%llu "
-                "deadline_misses=%llu\n",
-                static_cast<unsigned long long>(latency_average),
-                static_cast<unsigned long long>(percentile(sorted_latency, 0.95)),
-                static_cast<unsigned long long>(percentile(sorted_latency, 0.99)),
-                static_cast<unsigned long long>(sorted_latency.empty() ? 0 : sorted_latency.back()),
+    std::printf("  latency_breakdown_us:\n");
+    printLatencyStage("input_copy", result.input_copy_latency_us);
+    printLatencyStage("submit", result.submit_latency_us);
+    printLatencyStage("packet_wait", result.packet_wait_latency_us);
+    printLatencyStage("packet_copy", result.packet_copy_latency_us);
+    printLatencyStage("other", result.other_latency_us);
+    printLatencyStage("total", result.total_latency_us);
+    std::printf("  deadline_misses=%llu\n",
                 static_cast<unsigned long long>(result.deadline_misses));
     std::printf("  result=%s\n", passed ? "PASS" : "FAIL");
     return passed;
