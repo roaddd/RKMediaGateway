@@ -8,6 +8,7 @@
  */
 
 #include <chrono>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +16,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <poll.h>
 
 #include "latencyStatistics.h"
 #include "mppEncoder.h"
@@ -27,6 +30,7 @@ const int kDefaultDurationSeconds = 60;
 const int kDefaultMetricsIntervalMs = 1000;
 const char *kDefaultMetricsFile = "mpp_dmabuf_metrics.csv";
 const double kMinimumFpsRatio = 0.98;
+const int kCapturePollTimeoutMs = 1000;
 
 /** 单路真实采集和编码配置。 */
 struct StreamConfig {
@@ -53,6 +57,7 @@ struct StreamResult {
     uint64_t captured_frames;          /* 从V4L2成功取出的帧数，包括门控跳过帧。 */
     uint64_t gated_frames;             /* 因目标编码帧率较低而主动跳过的帧数。 */
     uint64_t sequence_gaps;            /* V4L2 sequence不连续缺失的帧数。 */
+    uint64_t capture_timeouts;         /* 等待V4L2可读超过限定时间的次数。 */
     uint64_t submitted_frames;         /* 提交给MPP的DMA-BUF帧数。 */
     uint64_t encoded_frames;           /* 成功取得非空编码包的帧数。 */
     uint64_t empty_packets;            /* 编码成功但没有输出包的次数。 */
@@ -444,6 +449,8 @@ void runStreamWorker(size_t stream_index,
     uint32_t previous_sequence = 0;
     bool have_previous_frame = false;
     MppEncoderTiming timing = {};
+    struct pollfd capture_poll_fd = {};
+    int poll_ret = -1;
 
     if (runtime == NULL || !runtime->capture_ready || !runtime->encoder_ready) {
         std::fprintf(stderr, "[ERROR] DMA-BUF worker[%zu] has invalid runtime\n", stream_index);
@@ -453,10 +460,41 @@ void runStreamWorker(size_t stream_index,
     *result = StreamResult();
     gate_divisor = sensor_fps / runtime->config.fps;
     frame_period_us = 1000000ULL / static_cast<uint64_t>(runtime->config.fps);
+    capture_poll_fd.fd = runtime->capture.fd;
+    capture_poll_fd.events = POLLIN | POLLPRI;
 
     std::this_thread::sleep_until(start_time);
     end_time = start_time + std::chrono::seconds(duration_seconds);
     while (std::chrono::steady_clock::now() < end_time) {
+        /*
+         * V4L2 fd默认是阻塞模式。先用poll等待帧就绪，既避免正常路径忙轮询，
+         * 也确保Sensor或某个ISP输出节点停止产帧时worker能够超时退出并打印结果。
+         */
+        capture_poll_fd.revents = 0;
+        do {
+            poll_ret = poll(&capture_poll_fd, 1, kCapturePollTimeoutMs);
+        } while (poll_ret < 0 && errno == EINTR &&
+                 std::chrono::steady_clock::now() < end_time);
+        if (std::chrono::steady_clock::now() >= end_time) break;
+        if (poll_ret == 0) {
+            ++result->capture_timeouts;
+            std::fprintf(stderr,
+                         "[ERROR] DMA-BUF worker[%zu] capture poll timeout: device=%s count=%llu\n",
+                         stream_index, runtime->config.device_path.c_str(),
+                         static_cast<unsigned long long>(result->capture_timeouts));
+            continue;
+        }
+        if (poll_ret < 0 ||
+            (capture_poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            ++result->failed_frames;
+            std::fprintf(stderr,
+                         "[ERROR] DMA-BUF worker[%zu] capture poll failed: device=%s "
+                         "ret=%d revents=0x%x errno=%d\n",
+                         stream_index, runtime->config.device_path.c_str(), poll_ret,
+                         capture_poll_fd.revents, errno);
+            break;
+        }
+
         buffer_ref = NULL;
         ret = v4l2_capture_acquire_frame(&runtime->capture, &frame_data, &frame_len,
                                          &frame_id, &dqbuf_ts_us, &camera_wait_us,
@@ -590,18 +628,21 @@ bool printStreamResult(size_t index, int sensor_fps, const StreamRuntime &runtim
     }
     fps_ratio = encoded_fps / runtime.config.fps;
     passed = result.failed_frames == 0 && result.empty_packets == 0 &&
-             result.sequence_gaps == 0 && fps_ratio >= kMinimumFpsRatio &&
+             result.sequence_gaps == 0 && result.capture_timeouts == 0 &&
+             fps_ratio >= kMinimumFpsRatio &&
              capture_fps / sensor_fps >= kMinimumFpsRatio;
 
     std::printf("\nstream[%zu] device=%s %dx%d encode_fps=%d source_fps=%d\n",
                 index, runtime.config.device_path.c_str(), runtime.config.width,
                 runtime.config.height, runtime.config.fps, sensor_fps);
     std::printf("  elapsed=%.3fs captured=%llu gated=%llu sequence_gaps=%llu "
+                "capture_timeouts=%llu "
                 "submitted=%llu encoded=%llu empty=%llu failed=%llu key=%llu\n",
                 result.elapsed_seconds,
                 static_cast<unsigned long long>(result.captured_frames),
                 static_cast<unsigned long long>(result.gated_frames),
                 static_cast<unsigned long long>(result.sequence_gaps),
+                static_cast<unsigned long long>(result.capture_timeouts),
                 static_cast<unsigned long long>(result.submitted_frames),
                 static_cast<unsigned long long>(result.encoded_frames),
                 static_cast<unsigned long long>(result.empty_packets),
@@ -643,6 +684,10 @@ int main(int argc, char **argv) {
     bool all_passed = true;
     size_t index = 0;
     int ret = -1;
+
+    /* 设备终端和重定向场景都按行刷新，避免长测期间初始化信息滞留在stdio缓存。 */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
 
     if (!parseArguments(argc, argv, &config)) {
         printUsage(argv != NULL && argv[0] != NULL ? argv[0] : "mpp_encoder_dmabuf_test");
