@@ -27,6 +27,7 @@
 namespace {
 
 const int kDefaultDurationSeconds = 60;
+const int kDefaultWarmupSeconds = 2;
 const int kDefaultMetricsIntervalMs = 1000;
 const char *kDefaultMetricsFile = "mpp_dmabuf_metrics.csv";
 const double kMinimumFpsRatio = 0.98;
@@ -45,11 +46,20 @@ struct StreamConfig {
 /** 测试程序完整运行参数。 */
 struct TestConfig {
     int duration_seconds;              /* 正式统计持续时间，单位秒。 */
+    int warmup_seconds;                /* Sensor切换后的预热时间，单位秒。 */
     int sensor_fps;                    /* Sensor及V4L2源目标帧率。 */
     std::vector<StreamConfig> streams; /* 同时运行的采集编码链路。 */
     bool metrics_enabled;              /* 是否采集系统状态。 */
     int metrics_interval_ms;           /* 系统状态采样周期。 */
     std::string metrics_file;          /* 系统状态CSV文件。 */
+};
+
+/** 单路预热阶段统计，不参与正式容量测试的PASS/FAIL判定。 */
+struct WarmupResult {
+    uint64_t captured_frames;  /* 预热期间成功取出并归还的V4L2帧数。 */
+    uint64_t sequence_gaps;    /* 预热期间观察到的V4L2序号缺失数。 */
+    uint64_t capture_timeouts; /* 预热期间等待V4L2帧超时的次数。 */
+    uint64_t failed_frames;    /* 预热期间取帧失败的次数。 */
 };
 
 /** 单路DMA-BUF测试统计结果。 */
@@ -84,6 +94,7 @@ struct StreamRuntime {
     MppEncoderCtx encoder;     /* 该路独占的MPP编码上下文。 */
     bool capture_ready;        /* V4L2是否初始化成功。 */
     bool encoder_ready;        /* MPP是否初始化成功。 */
+    WarmupResult warmup;       /* Sensor和ISP稳定期间的采集统计。 */
     StreamResult result;       /* 线程写入的测试结果。 */
 };
 
@@ -98,6 +109,7 @@ void printUsage(const char *program_name) {
         "[--stream ...] [options]\n\n"
         "Options:\n"
         "  --duration SECONDS       Test duration, default 60\n"
+        "  --warmup SECONDS         Warm-up duration after FPS switch, default 2\n"
         "  --sensor-fps FPS         V4L2 source FPS for custom streams\n"
         "  --metrics-interval MS    Metrics interval, default 1000\n"
         "  --metrics-file PATH      Metrics CSV, default mpp_dmabuf_metrics.csv\n"
@@ -222,6 +234,7 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
         return false;
     }
     config->duration_seconds = kDefaultDurationSeconds;
+    config->warmup_seconds = kDefaultWarmupSeconds;
     config->sensor_fps = 0;
     config->streams.clear();
     config->metrics_enabled = true;
@@ -243,6 +256,7 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
             if (!parseStream(argv[index], &stream)) return false;
             config->streams.push_back(stream);
         } else if (std::strcmp(argv[index], "--duration") == 0 ||
+                   std::strcmp(argv[index], "--warmup") == 0 ||
                    std::strcmp(argv[index], "--sensor-fps") == 0 ||
                    std::strcmp(argv[index], "--metrics-interval") == 0) {
             option = argv[index];
@@ -262,6 +276,12 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
                     return false;
                 }
                 config->duration_seconds = static_cast<int>(value);
+            } else if (std::strcmp(option, "--warmup") == 0) {
+                if (value > 60) {
+                    std::fprintf(stderr, "[ERROR] warmup exceeds 60 seconds\n");
+                    return false;
+                }
+                config->warmup_seconds = static_cast<int>(value);
             } else if (std::strcmp(option, "--sensor-fps") == 0) {
                 if (value > 240) {
                     std::fprintf(stderr, "[ERROR] sensor fps exceeds 240: %ld\n", value);
@@ -411,6 +431,98 @@ void deinitializeStream(StreamRuntime *runtime) {
     if (runtime->capture_ready) {
         v4l2_capture_deinit(&runtime->capture);
         runtime->capture_ready = false;
+    }
+}
+
+/**
+ * @brief 在正式统计前持续取出并归还V4L2帧，等待Sensor和ISP稳定。
+ *
+ * 预热线程不向MPP提交帧。多个采集节点并行预热，避免双路测试中先后预热
+ * 导致较早完成的节点重新积压旧帧。预热期间的序号跳变单独记录，不参与
+ * 正式容量测试的PASS/FAIL判定。
+ */
+void runWarmupWorker(size_t stream_index,
+                     int warmup_seconds,
+                     const std::chrono::steady_clock::time_point &start_time,
+                     StreamRuntime *runtime) {
+    std::chrono::steady_clock::time_point end_time;
+    uint8_t *frame_data = NULL;
+    V4L2CaptureBufferRef *buffer_ref = NULL;
+    int frame_len = 0;
+    uint64_t frame_id = 0;
+    uint64_t dqbuf_ts_us = 0;
+    uint64_t camera_wait_us = 0;
+    uint64_t dqbuf_duration_us = 0;
+    uint32_t sequence = 0;
+    uint32_t previous_sequence = 0;
+    bool have_previous_frame = false;
+    struct pollfd capture_poll_fd = {};
+    int poll_ret = -1;
+    int ret = -1;
+
+    if (runtime == NULL || !runtime->capture_ready || warmup_seconds <= 0) {
+        std::fprintf(stderr,
+                     "[ERROR] DMA-BUF warmup[%zu] has invalid runtime or duration\n",
+                     stream_index);
+        return;
+    }
+
+    runtime->warmup = WarmupResult();
+    capture_poll_fd.fd = runtime->capture.fd;
+    capture_poll_fd.events = POLLIN | POLLPRI;
+    std::this_thread::sleep_until(start_time);
+    end_time = start_time + std::chrono::seconds(warmup_seconds);
+
+    while (std::chrono::steady_clock::now() < end_time) {
+        capture_poll_fd.revents = 0;
+        do {
+            poll_ret = poll(&capture_poll_fd, 1, kCapturePollTimeoutMs);
+        } while (poll_ret < 0 && errno == EINTR &&
+                 std::chrono::steady_clock::now() < end_time);
+        if (std::chrono::steady_clock::now() >= end_time) break;
+        if (poll_ret == 0) {
+            ++runtime->warmup.capture_timeouts;
+            std::fprintf(stderr,
+                         "[ERROR] DMA-BUF warmup[%zu] capture poll timeout: "
+                         "device=%s count=%llu\n",
+                         stream_index, runtime->config.device_path.c_str(),
+                         static_cast<unsigned long long>(runtime->warmup.capture_timeouts));
+            continue;
+        }
+        if (poll_ret < 0 ||
+            (capture_poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+            ++runtime->warmup.failed_frames;
+            std::fprintf(stderr,
+                         "[ERROR] DMA-BUF warmup[%zu] capture poll failed: device=%s "
+                         "ret=%d revents=0x%x errno=%d\n",
+                         stream_index, runtime->config.device_path.c_str(), poll_ret,
+                         capture_poll_fd.revents, errno);
+            break;
+        }
+
+        buffer_ref = NULL;
+        ret = v4l2_capture_acquire_frame(&runtime->capture, &frame_data, &frame_len,
+                                         &frame_id, &dqbuf_ts_us, &camera_wait_us,
+                                         &dqbuf_duration_us, &buffer_ref);
+        if (ret != 0 || buffer_ref == NULL) {
+            ++runtime->warmup.failed_frames;
+            std::fprintf(stderr,
+                         "[ERROR] DMA-BUF warmup[%zu] acquire frame failed ret=%d\n",
+                         stream_index, ret);
+            break;
+        }
+
+        sequence = v4l2_capture_buffer_sequence(buffer_ref);
+        if (have_previous_frame && sequence > previous_sequence + 1U) {
+            runtime->warmup.sequence_gaps += sequence - previous_sequence - 1U;
+        }
+        previous_sequence = sequence;
+        have_previous_frame = true;
+        ++runtime->warmup.captured_frames;
+
+        /* 预热只用于排空切帧率前后的旧buffer，取出后立即归还驱动。 */
+        v4l2_capture_buffer_unref(buffer_ref);
+        buffer_ref = NULL;
     }
 }
 
@@ -675,12 +787,15 @@ bool printStreamResult(size_t index, int sensor_fps, const StreamRuntime &runtim
 int main(int argc, char **argv) {
     TestConfig config = {};
     std::vector<StreamRuntime> runtimes;
+    std::vector<std::thread> warmup_workers;
     std::vector<std::thread> workers;
+    std::chrono::steady_clock::time_point warmup_start_time;
     std::chrono::steady_clock::time_point start_time;
     SystemMetricsMonitor metrics_monitor;
     SystemMetricsConfig metrics_config = {};
     bool metrics_started = false;
     bool initialized = true;
+    bool warmup_passed = true;
     bool all_passed = true;
     size_t index = 0;
     int ret = -1;
@@ -693,8 +808,10 @@ int main(int argc, char **argv) {
         printUsage(argv != NULL && argv[0] != NULL ? argv[0] : "mpp_encoder_dmabuf_test");
         return EXIT_FAILURE;
     }
-    std::printf("[INFO] V4L2 DMA-BUF capacity test: duration=%ds sensor_fps=%d streams=%zu\n",
-                config.duration_seconds, config.sensor_fps, config.streams.size());
+    std::printf("[INFO] V4L2 DMA-BUF capacity test: duration=%ds warmup=%ds "
+                "sensor_fps=%d streams=%zu\n",
+                config.duration_seconds, config.warmup_seconds,
+                config.sensor_fps, config.streams.size());
 
     runtimes.resize(config.streams.size());
     for (index = 0; index < runtimes.size(); ++index) {
@@ -713,6 +830,47 @@ int main(int argc, char **argv) {
         }
     }
     if (!initialized) {
+        for (index = 0; index < runtimes.size(); ++index) deinitializeStream(&runtimes[index]);
+        return EXIT_FAILURE;
+    }
+
+    /*
+     * Sensor帧率切换后，并行排空各V4L2节点中的过渡帧。正式统计从预热完成后
+     * 重新开始，避免把启动阶段允许出现的序号跳变误判成稳态丢帧。
+     */
+    warmup_start_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    try {
+        warmup_workers.reserve(runtimes.size());
+        for (index = 0; index < runtimes.size(); ++index) {
+            warmup_workers.push_back(std::thread(runWarmupWorker, index,
+                                                 config.warmup_seconds,
+                                                 std::cref(warmup_start_time),
+                                                 &runtimes[index]));
+        }
+    } catch (...) {
+        std::fprintf(stderr, "[ERROR] create DMA-BUF warmup worker failed\n");
+        warmup_passed = false;
+    }
+    for (index = 0; index < warmup_workers.size(); ++index) {
+        if (warmup_workers[index].joinable()) warmup_workers[index].join();
+    }
+    if (warmup_workers.size() != runtimes.size()) warmup_passed = false;
+    for (index = 0; index < runtimes.size(); ++index) {
+        std::printf("[INFO] DMA-BUF warmup complete: stream=%zu device=%s "
+                    "captured=%llu sequence_gaps=%llu timeouts=%llu failed=%llu\n",
+                    index, runtimes[index].config.device_path.c_str(),
+                    static_cast<unsigned long long>(runtimes[index].warmup.captured_frames),
+                    static_cast<unsigned long long>(runtimes[index].warmup.sequence_gaps),
+                    static_cast<unsigned long long>(runtimes[index].warmup.capture_timeouts),
+                    static_cast<unsigned long long>(runtimes[index].warmup.failed_frames));
+        if (runtimes[index].warmup.captured_frames == 0 ||
+            runtimes[index].warmup.capture_timeouts != 0 ||
+            runtimes[index].warmup.failed_frames != 0) {
+            warmup_passed = false;
+        }
+    }
+    if (!warmup_passed) {
+        std::fprintf(stderr, "[ERROR] DMA-BUF warmup failed; formal test is cancelled\n");
         for (index = 0; index < runtimes.size(); ++index) deinitializeStream(&runtimes[index]);
         return EXIT_FAILURE;
     }
