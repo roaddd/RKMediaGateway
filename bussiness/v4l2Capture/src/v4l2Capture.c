@@ -1017,6 +1017,30 @@ size_t v4l2_capture_buffer_size(const V4L2CaptureBufferRef *buffer_ref) {
     return (size_t)ctx->buf_len[buffer_ref->index];
 }
 
+/**
+ * @description: 查询当前采集buffer对应的V4L2帧序号。
+ */
+uint32_t v4l2_capture_buffer_sequence(const V4L2CaptureBufferRef *buffer_ref) {
+    if (!buffer_ref || !buffer_ref->capture || buffer_ref->index < 0 ||
+        buffer_ref->index >= buffer_ref->capture->buf_count) {
+        LOG_ERROR("v4l2_capture_buffer_sequence failed: invalid buffer reference");
+        return 0;
+    }
+    return buffer_ref->sequence;
+}
+
+/**
+ * @description: 查询当前采集buffer对应的驱动时间戳。
+ */
+uint64_t v4l2_capture_buffer_timestamp_us(const V4L2CaptureBufferRef *buffer_ref) {
+    if (!buffer_ref || !buffer_ref->capture || buffer_ref->index < 0 ||
+        buffer_ref->index >= buffer_ref->capture->buf_count) {
+        LOG_ERROR("v4l2_capture_buffer_timestamp_us failed: invalid buffer reference");
+        return 0;
+    }
+    return buffer_ref->timestamp_us;
+}
+
 #if V4L2_CAPTURE_ENABLE_OSD
 /**
  * @description: 获取当前实时时钟时间，单位微秒。
@@ -1568,6 +1592,8 @@ int v4l2_capture_acquire_frame(V4L2CaptureCtx *ctx,
     *frame_len = (int)planes[0].bytesused;
     pthread_mutex_lock(&ctx->buffer_lock);
     ctx->buffer_refs[buf.index].refs = 1;
+    ctx->buffer_refs[buf.index].sequence = buf.sequence;
+    ctx->buffer_refs[buf.index].timestamp_us = driver_ts_us;
     pthread_mutex_unlock(&ctx->buffer_lock);
     *buffer_ref = &ctx->buffer_refs[buf.index];
     return 0;

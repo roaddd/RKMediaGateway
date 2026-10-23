@@ -39,6 +39,8 @@ typedef struct {
     V4L2CaptureCtx *capture; /* 所属 V4L2 采集上下文。 */
     int index;               /* 对应驱动 buffer 下标。 */
     int refs;                /* 仍持有该 buffer 的上层引用数，归零后 QBUF 回驱动。 */
+    uint32_t sequence;       /* 驱动为本次出队帧填写的采集序号。 */
+    uint64_t timestamp_us;   /* 驱动为本次出队帧填写的时间戳，单位微秒。 */
 } V4L2CaptureBufferRef;
 
 typedef struct {
@@ -169,6 +171,20 @@ int v4l2_capture_buffer_dmabuf_fd(const V4L2CaptureBufferRef *buffer_ref);
  * @return {size_t} buffer 容量；引用无效时返回 0。
  */
 size_t v4l2_capture_buffer_size(const V4L2CaptureBufferRef *buffer_ref);
+
+/**
+ * @description: 查询当前采集 buffer 对应的V4L2帧序号。
+ * @param {const V4L2CaptureBufferRef *} buffer_ref 待查询的采集buffer引用。
+ * @return {uint32_t} 驱动帧序号；引用无效时返回0。
+ */
+uint32_t v4l2_capture_buffer_sequence(const V4L2CaptureBufferRef *buffer_ref);
+
+/**
+ * @description: 查询当前采集 buffer 对应的驱动时间戳。
+ * @param {const V4L2CaptureBufferRef *} buffer_ref 待查询的采集buffer引用。
+ * @return {uint64_t} 驱动时间戳，单位微秒；引用无效时返回0。
+ */
+uint64_t v4l2_capture_buffer_timestamp_us(const V4L2CaptureBufferRef *buffer_ref);
 
 #ifdef __cplusplus
 }

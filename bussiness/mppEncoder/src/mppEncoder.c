@@ -568,6 +568,7 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
     frame_size = (size_t)enc->input.hor_stride * enc->input.ver_stride * 3 / 2;
     if (dmabuf_size < frame_size) {
         LOG_ERROR("mpp_encoder_encode_dmabuf failed: buffer too small got=%zu need=%zu", dmabuf_size, frame_size);
+        if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
         return -1;
     }
 
@@ -580,9 +581,15 @@ int mpp_encoder_encode_dmabuf(MppEncoderCtx *enc,
     buffer_info.type = MPP_BUFFER_TYPE_EXT_DMA;
     buffer_info.fd = dmabuf_fd;
     buffer_info.size = dmabuf_size;
+    stage_start_us = get_now_us();
     ret = mpp_buffer_import(&imported_buffer, &buffer_info);
+    stage_end_us = get_now_us();
+    if (timing) {
+        timing->encoder_input_buffer_import_us = stage_end_us - stage_start_us;
+    }
     if (ret != MPP_OK || !imported_buffer) {
         mpp_log_error("mpp_buffer_import external dmabuf failed", ret);
+        if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
         return -1;
     }
     /*
@@ -682,6 +689,7 @@ fail:
     if (packet) mpp_packet_deinit(&packet);
     mpp_frame_set_buffer(enc->input.frame, enc->input.frame_buffer);
     mpp_buffer_put(imported_buffer);
+    if (timing) timing->encode_frame_total_us = get_now_us() - total_start_us;
     LOG_ERROR("mpp_encoder_encode_dmabuf failed frame=%" PRIu64, frame_id);
     return -1;
 }

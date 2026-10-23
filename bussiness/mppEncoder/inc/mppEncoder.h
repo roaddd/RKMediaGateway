@@ -116,11 +116,12 @@ typedef struct {
 } MppEncoderOptions;
 
 typedef struct {
-    uint64_t encoder_input_buffer_copy_us; /* NV12 copy into MPP input buffer. */
-    uint64_t encoder_submit_frame_call_us; /* encode_put_frame call duration. */
-    uint64_t encoder_poll_packet_call_us;  /* encode_get_packet call duration. */
-    uint64_t encoder_packet_copy_us;       /* encoded packet copy duration. */
-    uint64_t encode_frame_total_us;        /* Whole mpp_encoder_encode_frame duration. */
+    uint64_t encoder_input_buffer_copy_us;   /* NV12复制并重排到MPP输入buffer的耗时。 */
+    uint64_t encoder_input_buffer_import_us; /* 外部DMA-BUF导入为MppBuffer的耗时。 */
+    uint64_t encoder_submit_frame_call_us;   /* encode_put_frame调用耗时。 */
+    uint64_t encoder_poll_packet_call_us;    /* encode_get_packet及轮询等待耗时。 */
+    uint64_t encoder_packet_copy_us;         /* 编码包复制到稳定缓存的耗时。 */
+    uint64_t encode_frame_total_us;          /* 单帧编码接口的完整调用耗时。 */
 } MppEncoderTiming;
 
 typedef struct {
