@@ -522,6 +522,7 @@ void runStreamWorker(size_t stream_index,
          * other使用饱和减法，避免微秒级时钟采样误差导致无符号下溢。
          */
         known_stage_us = timing.encoder_input_buffer_copy_us +
+                         timing.encoder_input_buffer_import_us +
                          timing.encoder_submit_frame_call_us +
                          timing.encoder_poll_packet_call_us +
                          timing.encoder_packet_copy_us;
