@@ -48,6 +48,8 @@ struct TestConfig {
     int duration_seconds;              /* 正式统计持续时间，单位秒。 */
     int warmup_seconds;                /* Sensor切换后的预热时间，单位秒。 */
     int sensor_fps;                    /* Sensor及V4L2源目标帧率。 */
+    int buffer_count;                  /* 每路申请的V4L2 mmap buffer数量。 */
+    bool capture_only;                 /* 是否只采集并归还buffer，不执行MPP编码。 */
     std::vector<StreamConfig> streams; /* 同时运行的采集编码链路。 */
     bool metrics_enabled;              /* 是否采集系统状态。 */
     int metrics_interval_ms;           /* 系统状态采样周期。 */
@@ -75,8 +77,15 @@ struct StreamResult {
     uint64_t key_frames;               /* 输出IDR帧数量。 */
     uint64_t encoded_bytes;            /* H.264输出总字节数。 */
     uint64_t deadline_misses;          /* 编码总耗时超过目标编码周期的次数。 */
+    uint64_t consecutive_deadline_misses; /* 当前连续编码超期帧数。 */
+    uint64_t max_consecutive_deadline_misses; /* 最长连续编码超期帧数。 */
+    uint64_t gap_event_count;          /* sequence发生不连续的事件次数。 */
+    uint64_t max_single_gap;           /* 单次sequence跳变最多缺失帧数。 */
+    uint64_t first_gap_elapsed_ms;     /* 首次gap相对正式统计起点的时间。 */
+    uint64_t last_gap_elapsed_ms;      /* 最后一次gap相对正式统计起点的时间。 */
     double elapsed_seconds;            /* 本路实际运行时间。 */
     std::vector<uint64_t> capture_interval_us; /* 相邻V4L2驱动时间戳间隔。 */
+    std::vector<uint64_t> camera_buffer_wait_us; /* 驱动时间戳到DQBUF返回的帧龄。 */
     std::vector<uint64_t> dqbuf_ioctl_us;      /* VIDIOC_DQBUF阻塞调用耗时。 */
     std::vector<uint64_t> dqbuf_to_encode_us;  /* DQBUF返回到开始编码的耗时。 */
     std::vector<uint64_t> dmabuf_import_us;    /* mpp_buffer_import耗时。 */
@@ -110,6 +119,8 @@ void printUsage(const char *program_name) {
         "Options:\n"
         "  --duration SECONDS       Test duration, default 60\n"
         "  --warmup SECONDS         Warm-up duration after FPS switch, default 2\n"
+        "  --buffer-count COUNT     V4L2 mmap buffers per stream, range 2..16\n"
+        "  --capture-only          Capture and return every V4L2 frame without MPP\n"
         "  --sensor-fps FPS         V4L2 source FPS for custom streams\n"
         "  --metrics-interval MS    Metrics interval, default 1000\n"
         "  --metrics-file PATH      Metrics CSV, default mpp_dmabuf_metrics.csv\n"
@@ -236,6 +247,8 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
     config->duration_seconds = kDefaultDurationSeconds;
     config->warmup_seconds = kDefaultWarmupSeconds;
     config->sensor_fps = 0;
+    config->buffer_count = V4L2_CAPTURE_DEFAULT_BUFFER_COUNT;
+    config->capture_only = false;
     config->streams.clear();
     config->metrics_enabled = true;
     config->metrics_interval_ms = kDefaultMetricsIntervalMs;
@@ -258,6 +271,7 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
         } else if (std::strcmp(argv[index], "--duration") == 0 ||
                    std::strcmp(argv[index], "--warmup") == 0 ||
                    std::strcmp(argv[index], "--sensor-fps") == 0 ||
+                   std::strcmp(argv[index], "--buffer-count") == 0 ||
                    std::strcmp(argv[index], "--metrics-interval") == 0) {
             option = argv[index];
             if (++index >= argc) {
@@ -288,6 +302,14 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
                     return false;
                 }
                 config->sensor_fps = static_cast<int>(value);
+            } else if (std::strcmp(option, "--buffer-count") == 0) {
+                if (value < 2 || value > V4L2_CAPTURE_MAX_BUFFER_COUNT) {
+                    std::fprintf(stderr,
+                                 "[ERROR] buffer count must be 2..%d: %ld\n",
+                                 V4L2_CAPTURE_MAX_BUFFER_COUNT, value);
+                    return false;
+                }
+                config->buffer_count = static_cast<int>(value);
             } else {
                 if (value < 100 || value > 60000) {
                     std::fprintf(stderr,
@@ -305,6 +327,8 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
             config->metrics_file = argv[index];
         } else if (std::strcmp(argv[index], "--no-metrics") == 0) {
             config->metrics_enabled = false;
+        } else if (std::strcmp(argv[index], "--capture-only") == 0) {
+            config->capture_only = true;
         } else if (std::strcmp(argv[index], "--help") == 0 ||
                    std::strcmp(argv[index], "-h") == 0) {
             printUsage(argv[0]);
@@ -335,7 +359,10 @@ bool parseArguments(int argc, char **argv, TestConfig *config) {
 /**
  * @brief 初始化真实V4L2采集器和匹配其内存布局的MPP编码器。
  */
-bool initializeStream(const StreamConfig &config, StreamRuntime *runtime) {
+bool initializeStream(const StreamConfig &config,
+                      int buffer_count,
+                      bool capture_only,
+                      StreamRuntime *runtime) {
     V4L2CaptureConfig capture_config = {};
     MppEncoderOptions encoder_options = {};
     const V4L2CaptureFormat *format = NULL;
@@ -357,7 +384,7 @@ bool initializeStream(const StreamConfig &config, StreamRuntime *runtime) {
     capture_config.width = config.width;
     capture_config.height = config.height;
     capture_config.pixelformat = V4L2_PIX_FMT_NV12;
-    capture_config.buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    capture_config.buffer_count = buffer_count;
     ret = v4l2_capture_init_with_config(&runtime->capture, &capture_config);
     if (ret != 0) {
         std::fprintf(stderr, "[ERROR] init V4L2 failed: device=%s ret=%d\n",
@@ -366,6 +393,15 @@ bool initializeStream(const StreamConfig &config, StreamRuntime *runtime) {
     }
     runtime->capture_ready = true;
     format = &runtime->capture.format;
+
+    /* buffer数量是本轮对照实验的唯一变量之一，驱动不足额时禁止静默继续。 */
+    if (runtime->capture.buf_count != buffer_count) {
+        std::fprintf(stderr,
+                     "[ERROR] V4L2 buffer count mismatch: device=%s request=%d actual=%d\n",
+                     config.device_path.c_str(), buffer_count,
+                     runtime->capture.buf_count);
+        return false;
+    }
 
     /* DMA-BUF测试禁止静默回退：协商布局不匹配时直接终止。 */
     if (format->width != config.width || format->height != config.height ||
@@ -403,16 +439,20 @@ bool initializeStream(const StreamConfig &config, StreamRuntime *runtime) {
                      format->planes[0].sizeimage, required_size);
         return false;
     }
-    ret = mpp_encoder_init(&runtime->encoder, config.width, config.height,
-                           config.fps, config.bitrate, config.gop, &encoder_options);
-    if (ret != 0) {
-        std::fprintf(stderr, "[ERROR] init MPP failed: device=%s ret=%d\n",
-                     config.device_path.c_str(), ret);
-        return false;
+    if (!capture_only) {
+        ret = mpp_encoder_init(&runtime->encoder, config.width, config.height,
+                               config.fps, config.bitrate, config.gop,
+                               &encoder_options);
+        if (ret != 0) {
+            std::fprintf(stderr, "[ERROR] init MPP failed: device=%s ret=%d\n",
+                         config.device_path.c_str(), ret);
+            return false;
+        }
+        runtime->encoder_ready = true;
     }
-    runtime->encoder_ready = true;
-    std::printf("[INFO] DMA-BUF stream ready: device=%s size=%dx%d encode_fps=%d "
-                "stride=%ux%d sizeimage=%u buffers=%d\n",
+    std::printf("[INFO] DMA-BUF stream ready: mode=%s device=%s size=%dx%d "
+                "encode_fps=%d stride=%ux%d sizeimage=%u buffers=%d\n",
+                capture_only ? "capture-only" : "encode",
                 config.device_path.c_str(), config.width, config.height, config.fps,
                 format->planes[0].bytesperline, format->height,
                 format->planes[0].sizeimage, runtime->capture.buf_count);
@@ -532,6 +572,7 @@ void runWarmupWorker(size_t stream_index,
 void runStreamWorker(size_t stream_index,
                      int sensor_fps,
                      int duration_seconds,
+                     bool capture_only,
                      const std::chrono::steady_clock::time_point &start_time,
                      StreamRuntime *runtime) {
     std::chrono::steady_clock::time_point end_time;
@@ -557,6 +598,11 @@ void runStreamWorker(size_t stream_index,
     uint64_t previous_timestamp_us = 0;
     uint64_t known_stage_us = 0;
     uint64_t frame_period_us = 0;
+    uint64_t gap_frames = 0;
+    uint64_t gap_elapsed_ms = 0;
+    uint64_t timestamp_delta_us = 0;
+    uint64_t previous_encode_total_us = 0;
+    uint64_t previous_submit_us = 0;
     uint32_t sequence = 0;
     uint32_t previous_sequence = 0;
     bool have_previous_frame = false;
@@ -564,7 +610,8 @@ void runStreamWorker(size_t stream_index,
     struct pollfd capture_poll_fd = {};
     int poll_ret = -1;
 
-    if (runtime == NULL || !runtime->capture_ready || !runtime->encoder_ready) {
+    if (runtime == NULL || !runtime->capture_ready ||
+        (!capture_only && !runtime->encoder_ready)) {
         std::fprintf(stderr, "[ERROR] DMA-BUF worker[%zu] has invalid runtime\n", stream_index);
         return;
     }
@@ -627,9 +674,44 @@ void runStreamWorker(size_t stream_index,
         sequence = v4l2_capture_buffer_sequence(buffer_ref);
         driver_timestamp_us = v4l2_capture_buffer_timestamp_us(buffer_ref);
         result->dqbuf_ioctl_us.push_back(dqbuf_duration_us);
+        result->camera_buffer_wait_us.push_back(camera_wait_us);
         if (have_previous_frame) {
             if (sequence > previous_sequence + 1U) {
-                result->sequence_gaps += sequence - previous_sequence - 1U;
+                gap_frames = sequence - previous_sequence - 1U;
+                gap_elapsed_ms = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - start_time).count());
+                timestamp_delta_us = driver_timestamp_us > previous_timestamp_us
+                    ? driver_timestamp_us - previous_timestamp_us : 0;
+                result->sequence_gaps += gap_frames;
+                ++result->gap_event_count;
+                if (gap_frames > result->max_single_gap) {
+                    result->max_single_gap = gap_frames;
+                }
+                if (result->gap_event_count == 1U) {
+                    result->first_gap_elapsed_ms = gap_elapsed_ms;
+                }
+                result->last_gap_elapsed_ms = gap_elapsed_ms;
+                std::fprintf(stderr,
+                             "[GAP] stream=%zu device=%s elapsed_ms=%llu "
+                             "previous_sequence=%u current_sequence=%u gap_frames=%llu "
+                             "previous_driver_timestamp_us=%llu "
+                             "current_driver_timestamp_us=%llu timestamp_delta_us=%llu "
+                             "camera_buffer_wait_us=%llu last_encode_total_us=%llu "
+                             "last_submit_us=%llu "
+                             "captured=%llu deadline_misses=%llu\n",
+                             stream_index, runtime->config.device_path.c_str(),
+                             static_cast<unsigned long long>(gap_elapsed_ms),
+                             previous_sequence, sequence,
+                             static_cast<unsigned long long>(gap_frames),
+                             static_cast<unsigned long long>(previous_timestamp_us),
+                             static_cast<unsigned long long>(driver_timestamp_us),
+                             static_cast<unsigned long long>(timestamp_delta_us),
+                             static_cast<unsigned long long>(camera_wait_us),
+                             static_cast<unsigned long long>(previous_encode_total_us),
+                             static_cast<unsigned long long>(previous_submit_us),
+                             static_cast<unsigned long long>(result->captured_frames),
+                             static_cast<unsigned long long>(result->deadline_misses));
             }
             if (driver_timestamp_us > previous_timestamp_us) {
                 result->capture_interval_us.push_back(
@@ -639,6 +721,13 @@ void runStreamWorker(size_t stream_index,
         previous_sequence = sequence;
         previous_timestamp_us = driver_timestamp_us;
         have_previous_frame = true;
+
+        /* 纯采集模式保持相同DQBUF/QBUF路径，但不持有buffer等待MPP编码。 */
+        if (capture_only) {
+            v4l2_capture_buffer_unref(buffer_ref);
+            buffer_ref = NULL;
+            continue;
+        }
 
         /* 低帧率码流仍及时归还不编码的采集buffer，避免拖空V4L2队列。 */
         if (((result->captured_frames - 1U) % static_cast<uint64_t>(gate_divisor)) != 0U) {
@@ -692,7 +781,17 @@ void runStreamWorker(size_t stream_index,
         result->total_us.push_back(timing.encode_frame_total_us);
         if (timing.encode_frame_total_us > frame_period_us) {
             ++result->deadline_misses;
+            ++result->consecutive_deadline_misses;
+            if (result->consecutive_deadline_misses >
+                result->max_consecutive_deadline_misses) {
+                result->max_consecutive_deadline_misses =
+                    result->consecutive_deadline_misses;
+            }
+        } else {
+            result->consecutive_deadline_misses = 0;
         }
+        previous_encode_total_us = timing.encode_frame_total_us;
+        previous_submit_us = timing.encoder_submit_frame_call_us;
     }
     completed_time = std::chrono::steady_clock::now();
     result->elapsed_seconds =
@@ -725,7 +824,10 @@ void printLatency(const char *name, const std::vector<uint64_t> &samples) {
 /**
  * @brief 打印单路结果并执行通过条件判断。
  */
-bool printStreamResult(size_t index, int sensor_fps, const StreamRuntime &runtime) {
+bool printStreamResult(size_t index,
+                       int sensor_fps,
+                       bool capture_only,
+                       const StreamRuntime &runtime) {
     const StreamResult &result = runtime.result;
     double capture_fps = 0.0;
     double encoded_fps = 0.0;
@@ -738,14 +840,18 @@ bool printStreamResult(size_t index, int sensor_fps, const StreamRuntime &runtim
         encoded_fps = result.encoded_frames / result.elapsed_seconds;
         bitrate = result.encoded_bytes * 8.0 / result.elapsed_seconds;
     }
-    fps_ratio = encoded_fps / runtime.config.fps;
-    passed = result.failed_frames == 0 && result.empty_packets == 0 &&
-             result.sequence_gaps == 0 && result.capture_timeouts == 0 &&
-             fps_ratio >= kMinimumFpsRatio &&
+    fps_ratio = capture_only ? 0.0 : encoded_fps / runtime.config.fps;
+    passed = result.failed_frames == 0 && result.sequence_gaps == 0 &&
+             result.capture_timeouts == 0 &&
              capture_fps / sensor_fps >= kMinimumFpsRatio;
+    if (!capture_only) {
+        passed = passed && result.empty_packets == 0 &&
+                 fps_ratio >= kMinimumFpsRatio;
+    }
 
-    std::printf("\nstream[%zu] device=%s %dx%d encode_fps=%d source_fps=%d\n",
-                index, runtime.config.device_path.c_str(), runtime.config.width,
+    std::printf("\nstream[%zu] mode=%s device=%s %dx%d encode_fps=%d source_fps=%d\n",
+                index, capture_only ? "capture-only" : "encode",
+                runtime.config.device_path.c_str(), runtime.config.width,
                 runtime.config.height, runtime.config.fps, sensor_fps);
     std::printf("  elapsed=%.3fs captured=%llu gated=%llu sequence_gaps=%llu "
                 "capture_timeouts=%llu "
@@ -760,21 +866,38 @@ bool printStreamResult(size_t index, int sensor_fps, const StreamRuntime &runtim
                 static_cast<unsigned long long>(result.empty_packets),
                 static_cast<unsigned long long>(result.failed_frames),
                 static_cast<unsigned long long>(result.key_frames));
-    std::printf("  capture_fps=%.2f encoded_fps=%.2f target_ratio=%.2f%% "
-                "actual_bitrate=%.0fbit/s deadline_misses=%llu\n",
-                capture_fps, encoded_fps, fps_ratio * 100.0, bitrate,
-                static_cast<unsigned long long>(result.deadline_misses));
+    std::printf("  gap_events=%llu max_single_gap=%llu first_gap_ms=%llu "
+                "last_gap_ms=%llu\n",
+                static_cast<unsigned long long>(result.gap_event_count),
+                static_cast<unsigned long long>(result.max_single_gap),
+                static_cast<unsigned long long>(result.first_gap_elapsed_ms),
+                static_cast<unsigned long long>(result.last_gap_elapsed_ms));
+    if (capture_only) {
+        std::printf("  capture_fps=%.2f source_ratio=%.2f%%\n",
+                    capture_fps, capture_fps / sensor_fps * 100.0);
+    } else {
+        std::printf("  capture_fps=%.2f encoded_fps=%.2f target_ratio=%.2f%% "
+                    "actual_bitrate=%.0fbit/s deadline_misses=%llu "
+                    "max_consecutive_deadline_misses=%llu\n",
+                    capture_fps, encoded_fps, fps_ratio * 100.0, bitrate,
+                    static_cast<unsigned long long>(result.deadline_misses),
+                    static_cast<unsigned long long>(
+                        result.max_consecutive_deadline_misses));
+    }
     std::printf("  capture_latency_us:\n");
     printLatency("frame_interval", result.capture_interval_us);
+    printLatency("buffer_wait", result.camera_buffer_wait_us);
     printLatency("dqbuf_ioctl", result.dqbuf_ioctl_us);
-    printLatency("dqbuf_to_encode", result.dqbuf_to_encode_us);
-    std::printf("  encode_latency_us:\n");
-    printLatency("dmabuf_import", result.dmabuf_import_us);
-    printLatency("submit", result.submit_us);
-    printLatency("packet_wait", result.packet_wait_us);
-    printLatency("packet_copy", result.packet_copy_us);
-    printLatency("other", result.other_us);
-    printLatency("total", result.total_us);
+    if (!capture_only) {
+        printLatency("dqbuf_to_encode", result.dqbuf_to_encode_us);
+        std::printf("  encode_latency_us:\n");
+        printLatency("dmabuf_import", result.dmabuf_import_us);
+        printLatency("submit", result.submit_us);
+        printLatency("packet_wait", result.packet_wait_us);
+        printLatency("packet_copy", result.packet_copy_us);
+        printLatency("other", result.other_us);
+        printLatency("total", result.total_us);
+    }
     std::printf("  result=%s\n", passed ? "PASS" : "FAIL");
     return passed;
 }
@@ -808,14 +931,16 @@ int main(int argc, char **argv) {
         printUsage(argv != NULL && argv[0] != NULL ? argv[0] : "mpp_encoder_dmabuf_test");
         return EXIT_FAILURE;
     }
-    std::printf("[INFO] V4L2 DMA-BUF capacity test: duration=%ds warmup=%ds "
-                "sensor_fps=%d streams=%zu\n",
+    std::printf("[INFO] V4L2 DMA-BUF capacity test: mode=%s duration=%ds "
+                "warmup=%ds sensor_fps=%d buffer_count=%d streams=%zu\n",
+                config.capture_only ? "capture-only" : "encode",
                 config.duration_seconds, config.warmup_seconds,
-                config.sensor_fps, config.streams.size());
+                config.sensor_fps, config.buffer_count, config.streams.size());
 
     runtimes.resize(config.streams.size());
     for (index = 0; index < runtimes.size(); ++index) {
-        if (!initializeStream(config.streams[index], &runtimes[index])) {
+        if (!initializeStream(config.streams[index], config.buffer_count,
+                              config.capture_only, &runtimes[index])) {
             initialized = false;
             break;
         }
@@ -890,7 +1015,7 @@ int main(int argc, char **argv) {
         workers.reserve(runtimes.size());
         for (index = 0; index < runtimes.size(); ++index) {
             workers.push_back(std::thread(runStreamWorker, index, config.sensor_fps,
-                                          config.duration_seconds,
+                                          config.duration_seconds, config.capture_only,
                                           std::cref(start_time), &runtimes[index]));
         }
     } catch (...) {
@@ -905,7 +1030,8 @@ int main(int argc, char **argv) {
     std::printf("\n========== V4L2 DMA-BUF CAPACITY RESULT ==========\n");
     if (workers.size() != runtimes.size()) all_passed = false;
     for (index = 0; index < runtimes.size(); ++index) {
-        if (!printStreamResult(index, config.sensor_fps, runtimes[index])) {
+        if (!printStreamResult(index, config.sensor_fps, config.capture_only,
+                               runtimes[index])) {
             all_passed = false;
         }
     }

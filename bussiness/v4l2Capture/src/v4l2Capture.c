@@ -1183,12 +1183,13 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
     capture_height = (config && config->height > 0) ? config->height : CAPTURE_HEIGHT;
     pixelformat = (config && config->pixelformat != 0) ? config->pixelformat : CAPTURE_FORMAT;
     buffer_count = (config && config->buffer_count > 0) ? config->buffer_count : V4L2_CAPTURE_BUFFER_COUNT;
-    if (buffer_count > V4L2_CAPTURE_BUFFER_COUNT) buffer_count = V4L2_CAPTURE_BUFFER_COUNT;
+    if (buffer_count > V4L2_CAPTURE_MAX_BUFFER_COUNT)
+        buffer_count = V4L2_CAPTURE_MAX_BUFFER_COUNT;
 
     memset(ctx, 0, sizeof(V4L2CaptureCtx));
     ctx->fd = -1;
     snprintf(ctx->device_path, sizeof(ctx->device_path), "%s", device_path);
-    for (i = 0; i < V4L2_CAPTURE_BUFFER_COUNT; ++i)
+    for (i = 0; i < V4L2_CAPTURE_MAX_BUFFER_COUNT; ++i)
     {
         ctx->buf_dmabuf_fd[i] = -1;
     }
@@ -1323,10 +1324,10 @@ int v4l2_capture_init_with_config(V4L2CaptureCtx *ctx, const V4L2CaptureConfig *
         return -1;
     }
     ctx->buf_count = req.count;
-    if (ctx->buf_count > V4L2_CAPTURE_BUFFER_COUNT) {
+    if (ctx->buf_count > V4L2_CAPTURE_MAX_BUFFER_COUNT) {
         LOG_ERROR("v4l2_capture_init_with_config failed: driver returned too many buffers count=%d max=%d",
                   ctx->buf_count,
-                  V4L2_CAPTURE_BUFFER_COUNT);
+                  V4L2_CAPTURE_MAX_BUFFER_COUNT);
         close(ctx->fd);
         ctx->fd = -1;
         return -1;

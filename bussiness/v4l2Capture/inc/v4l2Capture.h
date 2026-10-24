@@ -22,7 +22,10 @@
 #define SAVE_FRAME_COUNT 300
 #define OUTPUT_FILE "capture_nv12.yuv"
 
-#define V4L2_CAPTURE_BUFFER_COUNT 4
+#define V4L2_CAPTURE_DEFAULT_BUFFER_COUNT 4
+#define V4L2_CAPTURE_MAX_BUFFER_COUNT 16
+/* 保留原名称作为默认值，避免现有调用方的默认行为发生变化。 */
+#define V4L2_CAPTURE_BUFFER_COUNT V4L2_CAPTURE_DEFAULT_BUFFER_COUNT
 #define V4L2_CAPTURE_MAX_PLANES 1
 
 typedef struct {
@@ -61,10 +64,10 @@ struct V4L2CaptureCtx {
     char device_path[PATH_MAX];        /* 当前采集 video node，例如 /dev/video0。 */
     char sensor_subdev_path[PATH_MAX]; /* 绑定的 sensor subdev，例如 /dev/v4l-subdev3。 */
     int fd;                 /* 摄像头设备文件描述符。 */
-    void *buf[V4L2_CAPTURE_BUFFER_COUNT]; /* 驱动 mmap 出来的采集缓冲区地址。 */
-    int buf_len[V4L2_CAPTURE_BUFFER_COUNT]; /* 每个采集缓冲区的长度。 */
-    int buf_dmabuf_fd[V4L2_CAPTURE_BUFFER_COUNT]; /* 由 MMAP buffer 导出的 DMA-BUF fd。 */
-    V4L2CaptureBufferRef buffer_refs[V4L2_CAPTURE_BUFFER_COUNT]; /* 零拷贝路径的采集 buffer 引用状态。 */
+    void *buf[V4L2_CAPTURE_MAX_BUFFER_COUNT]; /* 驱动 mmap 出来的采集缓冲区地址。 */
+    int buf_len[V4L2_CAPTURE_MAX_BUFFER_COUNT]; /* 每个采集缓冲区的长度。 */
+    int buf_dmabuf_fd[V4L2_CAPTURE_MAX_BUFFER_COUNT]; /* 由 MMAP buffer 导出的 DMA-BUF fd。 */
+    V4L2CaptureBufferRef buffer_refs[V4L2_CAPTURE_MAX_BUFFER_COUNT]; /* 零拷贝路径的采集 buffer 引用状态。 */
     pthread_mutex_t buffer_lock; /* 保护 buffer_refs 和归还 QBUF 的引用计数锁。 */
     int buffer_lock_ready; /* buffer_lock 是否初始化成功。 */
     int buf_count;          /* 实际申请到的驱动缓冲区数量。 */
