@@ -9,10 +9,12 @@
 
 #include <chrono>
 #include <cerrno>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -106,6 +108,40 @@ struct StreamRuntime {
     WarmupResult warmup;       /* Sensor和ISP稳定期间的采集统计。 */
     StreamResult result;       /* 线程写入的测试结果。 */
 };
+
+/** 协调所有采集线程从连续预热阶段原子切换到正式统计阶段。 */
+struct TestPhaseControl {
+    std::mutex mutex;                              /* 保护以下阶段状态。 */
+    std::condition_variable condition;             /* 通知主线程所有worker已完成预热。 */
+    size_t ready_workers;                          /* 已达到预热时长的worker数量。 */
+    bool formal_started;                           /* 是否已进入正式统计阶段。 */
+    bool aborted;                                  /* 任一worker预热失败时终止测试。 */
+    std::chrono::steady_clock::time_point formal_start_time; /* 正式统计统一起点。 */
+};
+
+/**
+ * @brief 通知主线程和其他采集线程终止本次阶段切换。
+ * @param phase_control 测试阶段共享状态。
+ */
+void abortTestPhase(TestPhaseControl *phase_control) {
+    if (phase_control == NULL) return;
+
+    std::lock_guard<std::mutex> lock(phase_control->mutex);
+    phase_control->aborted = true;
+    phase_control->condition.notify_all();
+}
+
+/**
+ * @brief 查询测试阶段是否已经因错误终止。
+ * @param phase_control 测试阶段共享状态。
+ * @return 已终止返回true，否则返回false。
+ */
+bool isTestPhaseAborted(TestPhaseControl *phase_control) {
+    if (phase_control == NULL) return true;
+
+    std::lock_guard<std::mutex> lock(phase_control->mutex);
+    return phase_control->aborted;
+}
 
 /**
  * @brief 打印命令行帮助。
@@ -481,11 +517,12 @@ void deinitializeStream(StreamRuntime *runtime) {
  * 导致较早完成的节点重新积压旧帧。预热期间的序号跳变单独记录，不参与
  * 正式容量测试的PASS/FAIL判定。
  */
-void runWarmupWorker(size_t stream_index,
-                     int warmup_seconds,
-                     const std::chrono::steady_clock::time_point &start_time,
-                     StreamRuntime *runtime) {
-    std::chrono::steady_clock::time_point end_time;
+bool drainWarmupUntilFormalStart(size_t stream_index,
+                                 int warmup_seconds,
+                                 TestPhaseControl *phase_control,
+                                 StreamRuntime *runtime,
+                                 std::chrono::steady_clock::time_point *formal_start_time) {
+    std::chrono::steady_clock::time_point warmup_end_time;
     uint8_t *frame_data = NULL;
     V4L2CaptureBufferRef *buffer_ref = NULL;
     int frame_len = 0;
@@ -496,30 +533,32 @@ void runWarmupWorker(size_t stream_index,
     uint32_t sequence = 0;
     uint32_t previous_sequence = 0;
     bool have_previous_frame = false;
+    bool ready_reported = false;
+    bool formal_started = false;
     struct pollfd capture_poll_fd = {};
     int poll_ret = -1;
     int ret = -1;
 
-    if (runtime == NULL || !runtime->capture_ready || warmup_seconds <= 0) {
+    if (phase_control == NULL || runtime == NULL || !runtime->capture_ready ||
+        formal_start_time == NULL || warmup_seconds <= 0) {
         std::fprintf(stderr,
                      "[ERROR] DMA-BUF warmup[%zu] has invalid runtime or duration\n",
                      stream_index);
-        return;
+        abortTestPhase(phase_control);
+        return false;
     }
 
     runtime->warmup = WarmupResult();
     capture_poll_fd.fd = runtime->capture.fd;
     capture_poll_fd.events = POLLIN | POLLPRI;
-    std::this_thread::sleep_until(start_time);
-    end_time = start_time + std::chrono::seconds(warmup_seconds);
-
-    while (std::chrono::steady_clock::now() < end_time) {
+    warmup_end_time = std::chrono::steady_clock::now() +
+                      std::chrono::seconds(warmup_seconds);
+    while (!formal_started) {
         capture_poll_fd.revents = 0;
         do {
             poll_ret = poll(&capture_poll_fd, 1, kCapturePollTimeoutMs);
         } while (poll_ret < 0 && errno == EINTR &&
-                 std::chrono::steady_clock::now() < end_time);
-        if (std::chrono::steady_clock::now() >= end_time) break;
+                 !formal_started);
         if (poll_ret == 0) {
             ++runtime->warmup.capture_timeouts;
             std::fprintf(stderr,
@@ -527,7 +566,8 @@ void runWarmupWorker(size_t stream_index,
                          "device=%s count=%llu\n",
                          stream_index, runtime->config.device_path.c_str(),
                          static_cast<unsigned long long>(runtime->warmup.capture_timeouts));
-            continue;
+            abortTestPhase(phase_control);
+            return false;
         }
         if (poll_ret < 0 ||
             (capture_poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
@@ -537,7 +577,8 @@ void runWarmupWorker(size_t stream_index,
                          "ret=%d revents=0x%x errno=%d\n",
                          stream_index, runtime->config.device_path.c_str(), poll_ret,
                          capture_poll_fd.revents, errno);
-            break;
+            abortTestPhase(phase_control);
+            return false;
         }
 
         buffer_ref = NULL;
@@ -549,7 +590,8 @@ void runWarmupWorker(size_t stream_index,
             std::fprintf(stderr,
                          "[ERROR] DMA-BUF warmup[%zu] acquire frame failed ret=%d\n",
                          stream_index, ret);
-            break;
+            abortTestPhase(phase_control);
+            return false;
         }
 
         sequence = v4l2_capture_buffer_sequence(buffer_ref);
@@ -563,7 +605,27 @@ void runWarmupWorker(size_t stream_index,
         /* 预热只用于排空切帧率前后的旧buffer，取出后立即归还驱动。 */
         v4l2_capture_buffer_unref(buffer_ref);
         buffer_ref = NULL;
+
+        /*
+         * 达到预热时长后只上报ready，仍持续DQBUF/QBUF。主线程可在此期间启动
+         * metrics；直到主线程发布正式起点前，采集队列始终有人消费。
+         */
+        if (!ready_reported && std::chrono::steady_clock::now() >= warmup_end_time) {
+            std::lock_guard<std::mutex> lock(phase_control->mutex);
+            ++phase_control->ready_workers;
+            ready_reported = true;
+            phase_control->condition.notify_all();
+        }
+        if (ready_reported) {
+            std::lock_guard<std::mutex> lock(phase_control->mutex);
+            if (phase_control->aborted) return false;
+            formal_started = phase_control->formal_started;
+            if (formal_started) {
+                *formal_start_time = phase_control->formal_start_time;
+            }
+        }
     }
+    return true;
 }
 
 /**
@@ -572,9 +634,11 @@ void runWarmupWorker(size_t stream_index,
 void runStreamWorker(size_t stream_index,
                      int sensor_fps,
                      int duration_seconds,
+                     int warmup_seconds,
                      bool capture_only,
-                     const std::chrono::steady_clock::time_point &start_time,
+                     TestPhaseControl *phase_control,
                      StreamRuntime *runtime) {
+    std::chrono::steady_clock::time_point start_time;
     std::chrono::steady_clock::time_point end_time;
     std::chrono::steady_clock::time_point completed_time;
     StreamResult *result = NULL;
@@ -611,8 +675,15 @@ void runStreamWorker(size_t stream_index,
     int poll_ret = -1;
 
     if (runtime == NULL || !runtime->capture_ready ||
-        (!capture_only && !runtime->encoder_ready)) {
+        (!capture_only && !runtime->encoder_ready) || phase_control == NULL) {
         std::fprintf(stderr, "[ERROR] DMA-BUF worker[%zu] has invalid runtime\n", stream_index);
+        abortTestPhase(phase_control);
+        return;
+    }
+    if (!drainWarmupUntilFormalStart(stream_index, warmup_seconds,
+                                     phase_control, runtime, &start_time)) {
+        std::fprintf(stderr, "[ERROR] DMA-BUF worker[%zu] warmup failed\n",
+                     stream_index);
         return;
     }
     result = &runtime->result;
@@ -622,7 +693,6 @@ void runStreamWorker(size_t stream_index,
     capture_poll_fd.fd = runtime->capture.fd;
     capture_poll_fd.events = POLLIN | POLLPRI;
 
-    std::this_thread::sleep_until(start_time);
     end_time = start_time + std::chrono::seconds(duration_seconds);
     while (std::chrono::steady_clock::now() < end_time) {
         /*
@@ -910,15 +980,12 @@ bool printStreamResult(size_t index,
 int main(int argc, char **argv) {
     TestConfig config = {};
     std::vector<StreamRuntime> runtimes;
-    std::vector<std::thread> warmup_workers;
     std::vector<std::thread> workers;
-    std::chrono::steady_clock::time_point warmup_start_time;
-    std::chrono::steady_clock::time_point start_time;
+    TestPhaseControl phase_control = {};
     SystemMetricsMonitor metrics_monitor;
     SystemMetricsConfig metrics_config = {};
     bool metrics_started = false;
     bool initialized = true;
-    bool warmup_passed = true;
     bool all_passed = true;
     size_t index = 0;
     int ret = -1;
@@ -963,23 +1030,63 @@ int main(int argc, char **argv) {
      * Sensor帧率切换后，并行排空各V4L2节点中的过渡帧。正式统计从预热完成后
      * 重新开始，避免把启动阶段允许出现的序号跳变误判成稳态丢帧。
      */
-    warmup_start_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    /*
+     * 每路只创建一个worker。worker先连续排空预热帧，达到预热时长后报告ready，但仍继续
+     * DQBUF/QBUF。这样主线程启动系统指标监控时，V4L2队列不会因无人消费而积满。
+     */
     try {
-        warmup_workers.reserve(runtimes.size());
+        workers.reserve(runtimes.size());
         for (index = 0; index < runtimes.size(); ++index) {
-            warmup_workers.push_back(std::thread(runWarmupWorker, index,
-                                                 config.warmup_seconds,
-                                                 std::cref(warmup_start_time),
-                                                 &runtimes[index]));
+            workers.push_back(std::thread(runStreamWorker, index, config.sensor_fps,
+                                          config.duration_seconds,
+                                          config.warmup_seconds,
+                                          config.capture_only, &phase_control,
+                                          &runtimes[index]));
         }
     } catch (...) {
-        std::fprintf(stderr, "[ERROR] create DMA-BUF warmup worker failed\n");
-        warmup_passed = false;
+        std::fprintf(stderr, "[ERROR] create DMA-BUF worker failed\n");
+        abortTestPhase(&phase_control);
+        all_passed = false;
     }
-    for (index = 0; index < warmup_workers.size(); ++index) {
-        if (warmup_workers[index].joinable()) warmup_workers[index].join();
+
+    if (workers.size() == runtimes.size()) {
+        std::unique_lock<std::mutex> lock(phase_control.mutex);
+        phase_control.condition.wait(lock, [&phase_control, &runtimes]() {
+            return phase_control.aborted ||
+                   phase_control.ready_workers == runtimes.size();
+        });
+    } else {
+        abortTestPhase(&phase_control);
     }
-    if (warmup_workers.size() != runtimes.size()) warmup_passed = false;
+
+    if (!isTestPhaseAborted(&phase_control) && config.metrics_enabled) {
+        metrics_config.sample_interval_ms = config.metrics_interval_ms;
+        metrics_config.csv_path = config.metrics_file;
+        metrics_started = metrics_monitor.start(metrics_config);
+        if (!metrics_started) {
+            std::fprintf(stderr, "[WARN] system metrics unavailable; test continues\n");
+        }
+    }
+
+    /*
+     * 发布所有worker共用的正式统计起点。发布之前，各worker一直消费并归还预热帧，
+     * 因此预热、指标监控初始化和正式统计之间不存在采集空窗。
+     */
+    {
+        std::lock_guard<std::mutex> lock(phase_control.mutex);
+        if (!phase_control.aborted) {
+            phase_control.formal_start_time = std::chrono::steady_clock::now();
+            phase_control.formal_started = true;
+        } else {
+            all_passed = false;
+        }
+        phase_control.condition.notify_all();
+    }
+    for (index = 0; index < workers.size(); ++index) {
+        if (workers[index].joinable()) workers[index].join();
+    }
+    if (metrics_started) metrics_monitor.stop();
+
     for (index = 0; index < runtimes.size(); ++index) {
         std::printf("[INFO] DMA-BUF warmup complete: stream=%zu device=%s "
                     "captured=%llu sequence_gaps=%llu timeouts=%llu failed=%llu\n",
@@ -991,41 +1098,9 @@ int main(int argc, char **argv) {
         if (runtimes[index].warmup.captured_frames == 0 ||
             runtimes[index].warmup.capture_timeouts != 0 ||
             runtimes[index].warmup.failed_frames != 0) {
-            warmup_passed = false;
+            all_passed = false;
         }
     }
-    if (!warmup_passed) {
-        std::fprintf(stderr, "[ERROR] DMA-BUF warmup failed; formal test is cancelled\n");
-        for (index = 0; index < runtimes.size(); ++index) deinitializeStream(&runtimes[index]);
-        return EXIT_FAILURE;
-    }
-
-    if (config.metrics_enabled) {
-        metrics_config.sample_interval_ms = config.metrics_interval_ms;
-        metrics_config.csv_path = config.metrics_file;
-        metrics_started = metrics_monitor.start(metrics_config);
-        if (!metrics_started) {
-            std::fprintf(stderr, "[WARN] system metrics unavailable; test continues\n");
-        }
-    }
-
-    /* 预留启动时间，保证所有worker使用同一个统计起点。 */
-    start_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-    try {
-        workers.reserve(runtimes.size());
-        for (index = 0; index < runtimes.size(); ++index) {
-            workers.push_back(std::thread(runStreamWorker, index, config.sensor_fps,
-                                          config.duration_seconds, config.capture_only,
-                                          std::cref(start_time), &runtimes[index]));
-        }
-    } catch (...) {
-        std::fprintf(stderr, "[ERROR] create DMA-BUF worker failed\n");
-        all_passed = false;
-    }
-    for (index = 0; index < workers.size(); ++index) {
-        if (workers[index].joinable()) workers[index].join();
-    }
-    if (metrics_started) metrics_monitor.stop();
 
     std::printf("\n========== V4L2 DMA-BUF CAPACITY RESULT ==========\n");
     if (workers.size() != runtimes.size()) all_passed = false;
