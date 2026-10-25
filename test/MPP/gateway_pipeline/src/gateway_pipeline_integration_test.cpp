@@ -19,6 +19,7 @@ extern "C"
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 /** 正式网关运行线程的输入与返回结果。 */
@@ -154,7 +155,7 @@ static MediaResult verify_video_stream(MediaGatewayCtx *gateway, int stream_idx)
 /**
  * @brief 启动正式视频链路、持续指定秒数并校验运行统计。
  *
- * 用法：gateway_pipeline_integration_test [配置文件] [持续秒数]
+ * 用法：gateway_pipeline_integration_test [配置文件] [持续秒数] [fixed|adaptive]
  */
 int main(int argc, char **argv)
 {
@@ -163,7 +164,9 @@ int main(int argc, char **argv)
     GatewayPipelineTestRuntime runtime = {0};
     pthread_t run_thread = {0};
     const char *config_path = "media_gateway.toml";
+    const char *fps_mode = "fixed";
     int duration_sec = 30;
+    int adaptive_fps_enabled = 0;
     int thread_ret = 0;
     int source_idx = 0;
     int stream_idx = 0;
@@ -174,9 +177,24 @@ int main(int argc, char **argv)
         config_path = argv[1];
     if (argc > 2)
         duration_sec = atoi(argv[2]);
+    if (argc > 3 && argv[3] && argv[3][0] != '\0')
+        fps_mode = argv[3];
     if (duration_sec <= 0)
     {
         fprintf(stderr, "invalid duration: %d\n", duration_sec);
+        return EXIT_FAILURE;
+    }
+    if (strcmp(fps_mode, "fixed") == 0)
+    {
+        adaptive_fps_enabled = 0;
+    }
+    else if (strcmp(fps_mode, "adaptive") == 0)
+    {
+        adaptive_fps_enabled = 1;
+    }
+    else
+    {
+        fprintf(stderr, "invalid fps mode: %s, expected fixed or adaptive\n", fps_mode);
         return EXIT_FAILURE;
     }
 
@@ -193,6 +211,13 @@ int main(int argc, char **argv)
      */
     config.audio.source.enabled = 0;
     config.audio.talkback.enabled = 0;
+    if (!adaptive_fps_enabled)
+    {
+        /* 容量测试必须保持固定负载，禁止亮度和网络策略在运行中改变编码参数。 */
+        config.policy.light_fps.enabled = 0;
+        config.policy.network_encode.enabled = 0;
+        config.policy.network_encode.pacing_enabled = 0;
+    }
     config.output.switches.enable_rtsp = 1;
     config.output.switches.enable_rtmp = 0;
     config.output.switches.enable_gb28181 = 0;
@@ -222,8 +247,9 @@ int main(int argc, char **argv)
     log_set_level(static_cast<LogLevel>(config.system.log.level));
     log_set_immediate_flush(1);
 
-    printf("gateway pipeline integration test: duration=%ds capture_sources=%d streams=%d\n",
+    printf("gateway pipeline integration test: duration=%ds fps_mode=%s capture_sources=%d streams=%d\n",
            duration_sec,
+           fps_mode,
            config.input.capture_source_count,
            config.video.stream_count);
     for (stream_idx = 0; stream_idx < config.video.stream_count; ++stream_idx)
