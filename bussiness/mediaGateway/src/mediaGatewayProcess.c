@@ -518,6 +518,7 @@ static int encode_stream_frame(MediaGatewayCtx *ctx,
                                MppEncoderTiming *encoder_timing)
 {
     const MediaGatewayStreamConfig *stream_cfg = &ctx->config.video.streams[stream_idx];
+    /* 获取buf对应的dmabuf fd */
     int dmabuf_fd = frame->capture_buffer ? v4l2_capture_buffer_dmabuf_fd(frame->capture_buffer) : -1;
     size_t dmabuf_size = frame->capture_buffer ? v4l2_capture_buffer_size(frame->capture_buffer) : 0;
     const char *dmabuf_direct_reason = NULL;

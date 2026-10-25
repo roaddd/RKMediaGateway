@@ -15,6 +15,7 @@ configure_file(${PROJECT_SOURCE_DIR}/main/media_gateway.toml
                ${CMAKE_BINARY_DIR}/media_gateway.toml COPYONLY)
 
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/v4l2Capture/inc)
+include_directories(${PROJECT_SOURCE_DIR}/capability/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioCapture/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioDecoder/inc)
 include_directories(${PROJECT_SOURCE_DIR}/bussiness/audioPlayback/inc)
@@ -115,6 +116,8 @@ file(GLOB UTIL_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/util/src/*.c)
 file(GLOB THREAD_MESSAGE_QUEUE_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/threadMessageQueue/src/*.c)
 file(GLOB debug_command_SRC ${PROJECT_SOURCE_DIR}/bussiness/common/debugCommand/src/*.c)
 file(GLOB SYSTEM_DEBUG_SRC ${PROJECT_SOURCE_DIR}/bussiness/systemDebug/src/*.c)
+
+add_subdirectory(capability)
 
 option(ENABLE_RTMP "Build RTMP output support" ON)
 option(ENABLE_RKAIQ "Build RKAIQ/ISP lifecycle support" ON)
@@ -384,7 +387,7 @@ if(BUILD_TARGET STREQUAL "rtsp_gateway" OR BUILD_TARGET STREQUAL "all")
         ${SYSTEM_DEBUG_SRC}
         ${GATEWAY_OUTPUT_SRC}
     )
-    target_link_libraries(rtsp_gateway PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
+    target_link_libraries(rtsp_gateway PRIVATE media_capability rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(rtsp_gateway)
     target_enable_opus_codec(rtsp_gateway)
     if(ENABLE_RKAIQ)
@@ -434,7 +437,7 @@ if(BUILD_TARGET STREQUAL "dual_output_test" OR BUILD_TARGET STREQUAL "all")
         ${SYSTEM_DEBUG_SRC}
         ${DUAL_OUTPUT_SRC}
     )
-    target_link_libraries(dual_output_test PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
+    target_link_libraries(dual_output_test PRIVATE media_capability rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(dual_output_test)
     target_enable_opus_codec(dual_output_test)
     if(ENABLE_RKAIQ)
@@ -481,7 +484,7 @@ if(BUILD_TARGET STREQUAL "all_services" OR BUILD_TARGET STREQUAL "gb28181_device
         ${MEDIA_GATEWAY_SRC}
         ${MEDIA_GATEWAY_DEBUG_SRC}
     )
-    target_link_libraries(all_services PRIVATE rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
+    target_link_libraries(all_services PRIVATE media_capability rockchip_mpp rtsp_server eXosip2 osip2 osipparser2 ssl crypto logger pthread m)
     target_enable_webrtc_output(all_services)
     target_enable_opus_codec(all_services)
     if(ENABLE_RKAIQ)

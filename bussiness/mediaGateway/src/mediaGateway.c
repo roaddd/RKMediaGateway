@@ -8,6 +8,7 @@
 
 #include "mediaGateway.h"
 #include "mediaGatewayClock.h"
+#include "mediaGatewayCapabilityAdapter.h"
 #include "mediaGatewayMetrics.h"
 #include "mediaGatewayPipeline.h"
 #include "mediaGatewayPolicy.h"
@@ -48,6 +49,8 @@ typedef struct {
     uint32_t encoder_pending_mask;        /* 等待结果的编码器集合。 */
     uint32_t encoder_success_mask;        /* 已成功编码器集合。 */
     uint32_t encoder_failed_mask;         /* 待重试编码器集合。 */
+    int rejected_target_fps;              /* 最近被能力准入拒绝的目标帧率；0 表示无拒绝记录。 */
+    MediaVideoCapabilityCode rejection_code; /* 最近一次能力拒绝原因，用于目标变化诊断。 */
 } MediaGatewayVideoControlTransition;
 
 typedef struct {
@@ -1970,6 +1973,9 @@ static void log_effective_config(const MediaGatewayConfig *cfg)
  */
 static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
 {
+    MediaVideoEncodeCapability video_capability = {0};
+    MediaVideoCapabilityValidation video_validation = {0};
+    MediaResult capability_result = MEDIA_ERR;
     int i = 0;
 
     memset(ctx, 0, sizeof(*ctx));
@@ -1987,6 +1993,32 @@ static int init_gateway_base(MediaGatewayCtx *ctx, const MediaGatewayConfig *con
         return -1;
     }
     log_set_level((LogLevel)ctx->config.system.log.level);
+
+    /*
+     * 配置已经完成结构和取值校验，此时在创建 V4L2、MPP 等硬件资源前执行整机
+     * 编码能力准入。这样超出实例数或总像素吞吐预算的组合会直接拒绝启动。
+     */
+    capability_result = media_gateway_evaluate_video_capability(&ctx->config.video,
+                                                                 &video_capability,
+                                                                 &video_validation);
+    if (capability_result != MEDIA_OK)
+    {
+        LOG_ERROR("media gateway video capability rejected: result=%d reason=%s confidence=%s active_instances=%d requested_pixels_per_second=%" PRIu64 " limit_pixels_per_second=%" PRIu64 " rejected_stream=%d",
+                  capability_result,
+                  media_video_capability_code_string(video_validation.code),
+                  media_capability_confidence_string(video_validation.confidence),
+                  video_validation.active_encoder_instances,
+                  video_validation.requested_pixels_per_second,
+                  video_validation.limit_pixels_per_second,
+                  video_validation.rejected_stream_index);
+        return -1;
+    }
+    LOG_INFO("media gateway video capability accepted: confidence=%s active_instances=%d requested_pixels_per_second=%" PRIu64 " limit_pixels_per_second=%" PRIu64,
+             media_capability_confidence_string(video_capability.confidence),
+             video_validation.active_encoder_instances,
+             video_validation.requested_pixels_per_second,
+             video_validation.limit_pixels_per_second);
+
     log_effective_config(&ctx->config);
     ctx->output.network_feedback_holder.callback = media_gateway_handle_output_network_feedback;
     ctx->output.network_feedback_holder.userdata = ctx;
@@ -3235,6 +3267,9 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
                                                                            MediaGatewayRunResources *res)
 {
     MediaGatewayVideoControlTransition *transition = NULL;
+    MediaVideoEncodeCapability video_capability = {0};
+    MediaVideoCapabilityValidation video_validation = {0};
+    MediaResult capability_result = MEDIA_ERR;
     uint64_t now_us = 0;
     uint32_t retry_mask = 0;
     int target_fps = 0;
@@ -3298,6 +3333,40 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
         now_us < transition->retry_after_ts_us ||
         (need_sensor_fps && !res->frame_source_started[0]))
         return;
+
+    /*
+     * 策略层只负责计算目标值。在创建 request_id 和投递任何硬件命令前，必须用
+     * 变更后的完整码流组合执行能力准入，保证拒绝结果不会产生部分硬件变更。
+     * 相同目标被拒绝后不在每轮主循环重复评估，直到策略生成新的目标帧率。
+     */
+    if (transition->rejected_target_fps == target_fps)
+        return;
+    if (transition->rejected_target_fps != 0 && transition->rejected_target_fps != target_fps)
+    {
+        transition->rejected_target_fps = 0;
+        transition->rejection_code = MEDIA_VIDEO_CAPABILITY_OK;
+    }
+    capability_result = media_gateway_evaluate_video_source_fps(&ctx->config.video,
+                                                                 0,
+                                                                 target_fps,
+                                                                 &video_capability,
+                                                                 &video_validation);
+    if (capability_result != MEDIA_OK)
+    {
+        transition->rejected_target_fps = target_fps;
+        transition->rejection_code = video_validation.code;
+        LOG_ERROR("[VIDEO_CONTROL] capability rejected before transition: target=%d result=%d reason=%s active_instances=%d requested_pixels_per_second=%" PRIu64 " limit_pixels_per_second=%" PRIu64 " rejected_stream=%d",
+                  target_fps,
+                  capability_result,
+                  media_video_capability_code_string(video_validation.code),
+                  video_validation.active_encoder_instances,
+                  video_validation.requested_pixels_per_second,
+                  video_validation.limit_pixels_per_second,
+                  video_validation.rejected_stream_index);
+        return;
+    }
+    transition->rejected_target_fps = 0;
+    transition->rejection_code = MEDIA_VIDEO_CAPABILITY_OK;
 
     /*
      * 为新事务生成非零 request_id。worker 回传相同 request_id，

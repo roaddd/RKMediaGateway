@@ -181,7 +181,7 @@ static void log_isp_status(MediaGatewayCtx *ctx)
  * 到达周期后打印日志、重置窗口并刷新 last_ts_us，形成下一轮统计窗口。
  */
 void media_gateway_log_throughput_if_due(MediaGatewayCtx *ctx)
-{
+{  /* todo:这个函数名字需要改一下，看不出是统计什么数据 */
     uint64_t now = media_gateway_get_now_us();
     uint64_t span_us = now - ctx->metrics.throughput.last_ts_us;
     double span_sec;

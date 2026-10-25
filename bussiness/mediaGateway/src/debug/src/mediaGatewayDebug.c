@@ -4,6 +4,7 @@
  */
 
 #include "mediaGatewayDebug.h"
+#include "mediaGatewayCapabilityAdapter.h"
 
 #include "logger.h"
 #include "debugCommandServer.h"
@@ -596,6 +597,9 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
 {
     MediaGatewayCtx *ctx = NULL;
     MediaLightFpsState *state = NULL;
+    MediaVideoEncodeCapability video_capability = {0};
+    MediaVideoCapabilityValidation video_validation = {0};
+    MediaResult capability_result = MEDIA_ERR;
     char *reply = NULL;
     char *end = NULL;
     size_t offset = 0;
@@ -693,6 +697,38 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
         debug_command_reply_append(reply, &offset, "ret=-1\n");
         debug_command_reply_append(reply, &offset, "error=light_fps disabled\n");
         debug_command_reply_append(reply, &offset, "hint=enable light_fps or extend transition driver for manual mode\n");
+        return -1;
+    }
+
+    /*
+     * 在修改手动覆盖状态前预检完整码流组合。校验失败时保留原有自动/手动状态，
+     * 同时把明确的能力拒绝原因返回给调试客户端。
+     */
+    capability_result = media_gateway_evaluate_video_source_fps(&ctx->config.video,
+                                                                 0,
+                                                                 target_fps,
+                                                                 &video_capability,
+                                                                 &video_validation);
+    if (capability_result != MEDIA_OK)
+    {
+        LOG_ERROR("gateway_shell_set_fps failed: capability rejected target=%d result=%d reason=%s requested_pixels_per_second=%" PRIu64 " limit_pixels_per_second=%" PRIu64,
+                  target_fps,
+                  capability_result,
+                  media_video_capability_code_string(video_validation.code),
+                  video_validation.requested_pixels_per_second,
+                  video_validation.limit_pixels_per_second);
+        debug_command_reply_append(reply, &offset, "ret=%d\n", capability_result);
+        debug_command_reply_append(reply, &offset, "error=video capability rejected\n");
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "reason=%s rejected_stream=%d\n",
+                                   media_video_capability_code_string(video_validation.code),
+                                   video_validation.rejected_stream_index);
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "requested_pixels_per_second=%" PRIu64 "\nlimit_pixels_per_second=%" PRIu64 "\n",
+                                   video_validation.requested_pixels_per_second,
+                                   video_validation.limit_pixels_per_second);
         return -1;
     }
 
@@ -902,6 +938,99 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         debug_command_reply_append(reply, &offset, "stream%d_pacing_rate_bps=%d\n", stream_idx, state.output.pacing_rate_bps[stream_idx]);
     }
 
+    return 0;
+}
+
+/**
+ * @brief 处理 getCapability 调试命令，输出平台能力和当前配置的准入结果。
+ *
+ * 命令只读取内存中的已生效配置，不访问硬件。配置评估复用启动阶段的统一适配
+ * 接口，因此 active_instances 和 requested_pixels_per_second 与启动日志口径一致。
+ */
+static int gateway_shell_get_capability(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    const MediaGatewayStreamConfig *stream = NULL;
+    MediaVideoEncodeCapability capability = {0};
+    MediaVideoCapabilityValidation validation = {0};
+    MediaResult result = MEDIA_ERR;
+    char *reply = NULL;
+    size_t offset = 0;
+    int stream_index = 0;
+
+    (void)input;
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_get_capability failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return -1;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+
+    /* 通过与启动阶段相同的入口取得能力快照并重新评估当前配置。 */
+    result = media_gateway_evaluate_video_capability(&ctx->config.video,
+                                                      &capability,
+                                                      &validation);
+
+    debug_command_reply_append(reply, &offset, "cmd=getCapability\n");
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_GREEN, "VIDEO_ENCODE_CAPABILITY");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  codec=H264 confidence=%s verified_combinations=%lu\n",
+                               media_capability_confidence_string(capability.confidence),
+                               (unsigned long)capability.verified_combination_count);
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  limits instances=%d single_stream=%dx%d@%dfps aggregate_pixels_per_second=%" PRIu64 "\n",
+                               capability.max_encoder_instances,
+                               capability.max_width,
+                               capability.max_height,
+                               capability.max_single_stream_fps,
+                               capability.max_pixels_per_second);
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "CONFIGURED_VIDEO_LOAD");
+    for (stream_index = 0;
+         stream_index < ctx->config.video.stream_count && stream_index < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_index)
+    {
+        stream = &ctx->config.video.streams[stream_index];
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "  stream[%d] enabled=%s size=%dx%d fps=%d pixels_per_second=%" PRIu64 "\n",
+                                   stream_index,
+                                   gateway_debug_switch_name(stream->enabled),
+                                   stream->width,
+                                   stream->height,
+                                   stream->fps,
+                                   stream->enabled
+                                       ? (uint64_t)stream->width * (uint64_t)stream->height * (uint64_t)stream->fps
+                                       : 0);
+    }
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  validation=%s result=%d reason=%s rejected_stream=%d\n",
+                               result == MEDIA_OK ? "accepted" : "rejected",
+                               result,
+                               media_video_capability_code_string(validation.code),
+                               validation.rejected_stream_index);
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  active_instances=%d requested_pixels_per_second=%" PRIu64 " limit_pixels_per_second=%" PRIu64 " verified_match=%s\n",
+                               validation.active_encoder_instances,
+                               validation.requested_pixels_per_second,
+                               validation.limit_pixels_per_second,
+                               gateway_debug_switch_name(validation.matched_verified_combination));
+
+    /* 未形成明确校验结论表示能力查询或配置转换失败，不能伪装成普通能力拒绝。 */
+    if (result != MEDIA_OK && validation.code == MEDIA_VIDEO_CAPABILITY_OK)
+    {
+        LOG_ERROR("gateway_shell_get_capability failed: capability evaluation result=%d", result);
+        return -1;
+    }
     return 0;
 }
 
@@ -1640,6 +1769,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("getStatus", gateway_shell_get_status, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getStatus");
+        return -1;
+    }
+    if (regDebugCmd("getCapability", gateway_shell_get_capability, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd getCapability");
         return -1;
     }
     if (regDebugCmd("getFps", gateway_shell_get_fps, ctx) != 0)
