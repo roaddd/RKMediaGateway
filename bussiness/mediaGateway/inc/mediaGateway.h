@@ -9,6 +9,7 @@
 #include "v4l2Capture.h"
 #include "mediaOutput.h"
 #include "mediaControlMessage.h"
+#include "mediaFrameSourceStats.h"
 #include "mediaGatewayVideoPipelineStats.h"
 #include "audioCapture.h"
 #include "audioEncoder.h"
