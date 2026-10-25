@@ -298,6 +298,7 @@ void media_frame_reset(MediaFrame *frame) {
  */
 static int frame_source_find_write_slot(MediaFrameSource *source) {
     int i = 0;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source)
     {
@@ -320,6 +321,13 @@ static int frame_source_find_write_slot(MediaFrameSource *source) {
         !source->runtime.slots[source->runtime.latest_slot].in_use)
     {
         source->runtime.dropped_frames++;
+        stats_ret = media_frame_source_stats_record_overwrite(&source->runtime.stats);
+        if (stats_ret != MEDIA_OK)
+        {
+            LOG_ERROR("frame_source_find_write_slot failed: record overwrite source=%d ret=%d",
+                      source->config.source_index,
+                      stats_ret);
+        }
         return source->runtime.latest_slot;
     }
 
@@ -331,6 +339,13 @@ static int frame_source_find_write_slot(MediaFrameSource *source) {
             if (source->runtime.slots[i].valid)
             {
                 source->runtime.dropped_frames++;
+                stats_ret = media_frame_source_stats_record_overwrite(&source->runtime.stats);
+                if (stats_ret != MEDIA_OK)
+                {
+                    LOG_ERROR("frame_source_find_write_slot failed: record overwrite source=%d ret=%d",
+                              source->config.source_index,
+                              stats_ret);
+                }
             }
             return i;
         }
@@ -351,6 +366,7 @@ static int frame_source_find_write_slot(MediaFrameSource *source) {
  */
 static void frame_source_drop_stale_slots(MediaFrameSource *source, int keep_slot) {
     int i = 0;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source || keep_slot < 0 || keep_slot >= MEDIA_FRAME_SOURCE_SLOTS)
     {
@@ -367,6 +383,13 @@ static void frame_source_drop_stale_slots(MediaFrameSource *source, int keep_slo
             media_frame_reset(&source->runtime.slots[i].frame);
             source->runtime.slots[i].valid = 0;
             source->runtime.dropped_frames++;
+            stats_ret = media_frame_source_stats_record_overwrite(&source->runtime.stats);
+            if (stats_ret != MEDIA_OK)
+            {
+                LOG_ERROR("frame_source_drop_stale_slots failed: record overwrite source=%d ret=%d",
+                          source->config.source_index,
+                          stats_ret);
+            }
         }
     }
 }
@@ -385,6 +408,7 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     MediaFrameSourceSlot *slot = NULL;
     uint64_t publish_start_us = 0;
     uint64_t publish_done_us = 0;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source || !src_frame || !src_frame->raw_frame || src_frame->raw_len <= 0 || !src_frame->capture_buffer) {
         LOG_ERROR("frame_source_publish_frame failed: source=%p frame=%p raw=%p len=%d capture_buffer=%p",
@@ -402,6 +426,13 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     slot_idx = frame_source_find_write_slot(source);
     if (slot_idx < 0) {
         source->runtime.dropped_frames++;
+        stats_ret = media_frame_source_stats_record_no_writable_slot_drop(&source->runtime.stats);
+        if (stats_ret != MEDIA_OK)
+        {
+            LOG_ERROR("frame_source_publish_frame failed: record no-slot drop source=%d ret=%d",
+                      source->config.source_index,
+                      stats_ret);
+        }
         pthread_mutex_unlock(&source->runtime.lock);
         LOG_ERROR("frame_source_publish_frame failed: no writable slot source=%d dropped=%" PRIu64,
                   source->config.source_index,
@@ -418,6 +449,13 @@ static int frame_source_publish_frame(MediaFrameSource *source, const MediaFrame
     source->runtime.latest_slot = slot_idx;
 
     frame_source_drop_stale_slots(source, slot_idx);
+    stats_ret = media_frame_source_stats_record_publish(&source->runtime.stats);
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("frame_source_publish_frame failed: record publish source=%d ret=%d",
+                  source->config.source_index,
+                  stats_ret);
+    }
     publish_done_us = frame_source_now_us();
     slot->frame.metrics.frame_source_publish_us = publish_done_us - publish_start_us;
     pthread_mutex_unlock(&source->runtime.lock);
@@ -453,6 +491,8 @@ static void *frame_source_thread(void *arg) {
     uint64_t capture_start_us = 0;
     uint64_t capture_end_us = 0;
     MediaFrame frame = {0}; /* 存放采集的一帧数据 */
+    uint32_t capture_sequence = 0;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source)
     {
@@ -501,6 +541,22 @@ static void *frame_source_thread(void *arg) {
         frame.metrics.capture_call_duration_us = capture_end_us - capture_start_us;
         frame.metrics.mmap_to_frame_cache_copy_us = 0;
         source->runtime.consecutive_failures = 0;
+
+        /* DQBUF成功后立即记录驱动sequence，避免后续发布失败掩盖采集层缺帧。 */
+        capture_sequence = v4l2_capture_buffer_sequence(frame.capture_buffer);
+        pthread_mutex_lock(&source->runtime.lock);
+        stats_ret = media_frame_source_stats_record_capture(&source->runtime.stats,
+                                                             capture_sequence);
+        pthread_mutex_unlock(&source->runtime.lock);
+        if (stats_ret != MEDIA_OK)
+        {
+            LOG_ERROR("frame_source_thread failed: record capture source=%d sequence=%u ret=%d",
+                      source->config.source_index,
+                      capture_sequence,
+                      stats_ret);
+            media_frame_reset(&frame);
+            break;
+        }
 
         if (!frame_source_should_run(source)) 
         {
@@ -564,6 +620,7 @@ int media_frame_source_init(MediaFrameSource *source,
     int queue_ret = 0;
     int mutex_ret = 0;
     int event_fd = -1;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source || !capture || !result_queue)
     {
@@ -588,6 +645,14 @@ int media_frame_source_init(MediaFrameSource *source,
     source->runtime.latest_slot = -1;
     source->runtime.next_seq = 1;
     source->messaging.result_queue = result_queue;
+    stats_ret = media_frame_source_stats_init(&source->runtime.stats);
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("media_frame_source_init failed: init stats source=%d ret=%d",
+                  source_index,
+                  stats_ret);
+        return stats_ret;
+    }
     /* 第一步：初始化保护 latest-frame 槽和帧源状态的互斥锁。 */
     mutex_ret = pthread_mutex_init(&source->runtime.lock, NULL);
     if (mutex_ret != 0) {
@@ -708,6 +773,7 @@ int media_frame_source_try_acquire_latest(MediaFrameSource *source,
                                           MediaFrame *frame,
                                           int *slot_index) {
     int idx = -1;
+    MediaResult stats_ret = MEDIA_OK;
 
     if (!source || !frame || !slot_index) {
         LOG_ERROR("media_frame_source_try_acquire_latest failed: source=%p frame=%p slot_index=%p",
@@ -744,9 +810,58 @@ int media_frame_source_try_acquire_latest(MediaFrameSource *source,
     source->runtime.latest_slot = -1;
     /* 第三步：复制的是 V4L2 buffer 引用而非整帧 NV12，调用方随后必须 reset。 */
     media_frame_copy_ref(frame, &source->runtime.slots[idx].frame);
+    stats_ret = media_frame_source_stats_record_acquire(&source->runtime.stats);
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("media_frame_source_try_acquire_latest failed: record acquire source=%d ret=%d",
+                  source->config.source_index,
+                  stats_ret);
+    }
     *slot_index = idx;
     pthread_mutex_unlock(&source->runtime.lock);
     return 1;
+}
+
+MediaResult media_frame_source_get_stats(MediaFrameSource *source,
+                                         MediaFrameSourceStats *stats)
+{
+    MediaResult ret = MEDIA_OK;
+    int lock_ret = 0;
+
+    if (!source || !stats)
+    {
+        LOG_ERROR("media_frame_source_get_stats failed: source=%p stats=%p",
+                  (void *)source,
+                  (void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    lock_ret = pthread_mutex_lock(&source->runtime.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_frame_source_get_stats failed: lock source=%d ret=%d(%s)",
+                  source->config.source_index,
+                  lock_ret,
+                  strerror(lock_ret));
+        return MEDIA_ERR;
+    }
+    ret = media_frame_source_stats_snapshot(&source->runtime.stats, stats);
+    lock_ret = pthread_mutex_unlock(&source->runtime.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_frame_source_get_stats failed: unlock source=%d ret=%d(%s)",
+                  source->config.source_index,
+                  lock_ret,
+                  strerror(lock_ret));
+        return MEDIA_ERR;
+    }
+    if (ret != MEDIA_OK)
+    {
+        LOG_ERROR("media_frame_source_get_stats failed: source=%d ret=%d",
+                  source->config.source_index,
+                  ret);
+    }
+    return ret;
 }
 
 /**

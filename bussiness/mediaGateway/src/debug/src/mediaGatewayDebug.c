@@ -361,6 +361,8 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     MediaGatewayCtx *ctx = NULL;
     MediaGatewayStatsSnapshot stats_snapshot = {0};
     MediaGatewayAudioEncoderGroupStats audio_group_stats[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS] = {{0}};
+    MediaFrameSourceStats capture_stats[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {{0}};
+    MediaGatewayVideoPipelineStats video_pipeline_stats[MEDIA_GATEWAY_MAX_STREAMS] = {{0}};
     AudioTalkbackStats talkback_stats = {0};
     MediaOutputStats output_stats = {0};
     char *reply = NULL;
@@ -368,6 +370,8 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     uint64_t audio_xruns = 0;
     size_t audio_group_count = 0;
     double average_encode_us = 0.0;
+    double video_average_encode_us = 0.0;
+    double video_average_wait_us = 0.0;
     int lock_ret = 0;
     MediaResult talkback_result = MEDIA_ERR_NOT_READY;
     int i = 0;
@@ -408,6 +412,19 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
             memcpy(audio_group_stats,
                    ctx->metrics.throughput.audio_groups,
                    audio_group_count * sizeof(audio_group_stats[0]));
+            memcpy(capture_stats,
+                   ctx->metrics.capture_sources,
+                   sizeof(capture_stats));
+            for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+            {
+                if (media_gateway_video_pipeline_stats_snapshot(
+                        &ctx->metrics.video_pipeline[i],
+                        &video_pipeline_stats[i]) != MEDIA_OK)
+                {
+                    LOG_ERROR("gateway_shell_get_status failed: snapshot video pipeline stream=%d",
+                              i);
+                }
+            }
             lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
             if (lock_ret != 0)
                 LOG_ERROR("gateway_shell_get_status failed: pthread_mutex_unlock ret=%d", lock_ret);
@@ -455,13 +472,26 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                talkback_stats.stream_resets);
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_CYAN, "CAPTURE");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  id  ready  captured  gap_events  gap_frames  published  overwritten  no_slot  acquired\n");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  --  -----  --------  ----------  ----------  ---------  -----------  -------  --------\n");
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
     {
         debug_command_reply_append(reply,
                                    &offset,
-                                   "  capture[%d]  ready=%s\n",
+                                   "  %-2d  %-5s  %8" PRIu64 "  %10" PRIu64 "  %10" PRIu64 "  %9" PRIu64 "  %11" PRIu64 "  %7" PRIu64 "  %8" PRIu64 "\n",
                                    i,
-                                   gateway_debug_switch_name(ctx->video.captures[i].ready));
+                                   gateway_debug_switch_name(ctx->video.captures[i].ready),
+                                   capture_stats[i].captured_frames,
+                                   capture_stats[i].sequence_gap_events,
+                                   capture_stats[i].sequence_gap_frames,
+                                   capture_stats[i].published_frames,
+                                   capture_stats[i].overwritten_frames,
+                                   capture_stats[i].no_writable_slot_drops,
+                                   capture_stats[i].acquired_frames);
     }
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_BLUE, "VIDEO_STREAMS");
@@ -481,6 +511,41 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                    gateway_debug_switch_name(ctx->video.streams[i].encoder_ready),
                                    stats_snapshot.streams[i].fps,
                                    stats_snapshot.streams[i].bytes);
+    }
+
+    gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_BLUE, "VIDEO_PIPELINE");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  id  acquired  encoded  failures  busy_overwrite  deadline_miss  max_streak  avg_us  max_us  wait_avg_us\n");
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  --  --------  -------  --------  --------------  -------------  ----------  ------  ------  -----------\n");
+    for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
+    {
+        video_average_encode_us = 0.0;
+        video_average_wait_us = 0.0;
+        if (video_pipeline_stats[i].encoded_frames > 0U)
+        {
+            video_average_encode_us =
+                (double)video_pipeline_stats[i].encode_total_us /
+                (double)video_pipeline_stats[i].encoded_frames;
+            video_average_wait_us =
+                (double)video_pipeline_stats[i].packet_wait_total_us /
+                (double)video_pipeline_stats[i].encoded_frames;
+        }
+        debug_command_reply_append(reply,
+                                   &offset,
+                                   "  %-2d  %8" PRIu64 "  %7" PRIu64 "  %8" PRIu64 "  %14" PRIu64 "  %13" PRIu64 "  %10" PRIu64 "  %6.1f  %6" PRIu64 "  %11.1f\n",
+                                   i,
+                                   video_pipeline_stats[i].acquired_frames,
+                                   video_pipeline_stats[i].encoded_frames,
+                                   video_pipeline_stats[i].encode_failures,
+                                   video_pipeline_stats[i].overwrites_while_encoder_busy,
+                                   video_pipeline_stats[i].deadline_miss_frames,
+                                   video_pipeline_stats[i].max_consecutive_deadline_misses,
+                                   video_average_encode_us,
+                                   video_pipeline_stats[i].encode_max_us,
+                                   video_average_wait_us);
     }
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_YELLOW, "AUDIO_ENCODERS");

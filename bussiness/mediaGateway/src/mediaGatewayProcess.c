@@ -972,6 +972,80 @@ static void maybe_record_stream_file(MediaGatewayCtx *ctx,
 }
 
 /**
+ * @brief 记录一次正式链路MPP编码结果及分阶段耗时。
+ *
+ * 本函数只负责把具体MPP结构转换为硬件无关的统计视图。统计模块不直接依赖
+ * MppEncoderTiming，便于在没有RK MPP SDK的主机上独立执行单元测试。
+ */
+static int record_video_pipeline_encode_stats(MediaGatewayCtx *ctx,
+                                              int stream_idx,
+                                              int encode_result,
+                                              const MppEncoderTiming *encoder_timing)
+{
+    MediaGatewayVideoEncodeTiming timing = {0};
+    MediaResult stats_ret = MEDIA_OK;
+    uint64_t frame_period_us = 0;
+    int fps = 0;
+    int lock_ret = 0;
+
+    if (!ctx || !encoder_timing || stream_idx < 0 ||
+        stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("record_video_pipeline_encode_stats failed: ctx=%p stream=%d timing=%p",
+                  (void *)ctx,
+                  stream_idx,
+                  (const void *)encoder_timing);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    fps = ctx->config.video.streams[stream_idx].fps;
+    if (fps <= 0)
+    {
+        LOG_ERROR("record_video_pipeline_encode_stats failed: invalid fps stream=%d fps=%d",
+                  stream_idx,
+                  fps);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    frame_period_us = 1000000ULL / (uint64_t)fps;
+    timing.input_import_us = encoder_timing->encoder_input_buffer_copy_us +
+                             encoder_timing->encoder_input_buffer_import_us;
+    timing.submit_us = encoder_timing->encoder_submit_frame_call_us;
+    timing.packet_wait_us = encoder_timing->encoder_poll_packet_call_us;
+    timing.packet_copy_us = encoder_timing->encoder_packet_copy_us;
+    timing.total_us = encoder_timing->encode_frame_total_us;
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("record_video_pipeline_encode_stats failed: lock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    stats_ret = media_gateway_video_pipeline_stats_record_encode(
+        &ctx->metrics.video_pipeline[stream_idx],
+        frame_period_us,
+        encode_result,
+        &timing);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("record_video_pipeline_encode_stats failed: unlock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("record_video_pipeline_encode_stats failed: record stream=%d ret=%d",
+                  stream_idx,
+                  stats_ret);
+        return stats_ret;
+    }
+    return MEDIA_OK;
+}
+
+/**
  * @description: 处理一帧视频，完成输入准备、编码、分发和统计。
  */
 int media_gateway_process_stream(MediaGatewayCtx *ctx,
@@ -1012,6 +1086,16 @@ int media_gateway_process_stream(MediaGatewayCtx *ctx,
                                      &encode_start_ts_us,
                                      &encode_done_ts_us,
                                      &encoder_timing);
+    if (record_video_pipeline_encode_stats(ctx,
+                                           stream_idx,
+                                           encode_ret == 0 ? MEDIA_OK : MEDIA_ERR,
+                                           &encoder_timing) != MEDIA_OK)
+    {
+        LOG_ERROR("media_gateway_process_stream failed: record encode stats stream=%d frame=%" PRIu64,
+                  stream_idx,
+                  frame ? frame->frame_id : 0);
+        return -1;
+    }
     if (encode_ret != 0)
     {
         LOG_ERROR("media_gateway_process_stream failed: encode stream=%d frame=%" PRIu64 " ret=%d",

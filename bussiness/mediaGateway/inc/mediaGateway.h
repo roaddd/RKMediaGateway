@@ -9,6 +9,7 @@
 #include "v4l2Capture.h"
 #include "mediaOutput.h"
 #include "mediaControlMessage.h"
+#include "mediaGatewayVideoPipelineStats.h"
 #include "audioCapture.h"
 #include "audioEncoder.h"
 #include "audioTalkbackModule.h"
@@ -526,6 +527,8 @@ typedef struct {
     int lock_ready;                /* lock 是否已初始化。 */
     MediaGatewayStats throughput;  /* 吞吐统计窗口。 */
     MediaGatewayBenchmarkStats benchmark; /* benchmark 埋点配置与统计窗口。 */
+    MediaFrameSourceStats capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 主循环缓存的采集源统计快照。 */
+    MediaGatewayVideoPipelineStatsTracker video_pipeline[MEDIA_GATEWAY_MAX_STREAMS]; /* 正式视频链路累计统计。 */
 } MediaGatewayMetricsRuntime;
 
 /** @description: 低照度、动态帧率和网络自适应策略的运行时状态。 */
@@ -577,6 +580,29 @@ void media_gateway_deinit(MediaGatewayCtx *ctx);
  * @description: 读取当前统计窗口快照。
  */
 void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSnapshot *snapshot);
+
+/**
+ * @brief 获取指定采集源的正式链路累计统计快照。
+ * @param ctx 网关上下文。
+ * @param source_idx 采集源下标。
+ * @param stats 输出统计快照。
+ * @return 成功返回MEDIA_OK；参数或运行状态非法返回对应MediaResult错误码。
+ */
+MediaResult media_gateway_get_capture_source_stats(MediaGatewayCtx *ctx,
+                                                   int source_idx,
+                                                   MediaFrameSourceStats *stats);
+
+/**
+ * @brief 获取指定视频流的正式编码pipeline累计统计快照。
+ * @param ctx 网关上下文。
+ * @param stream_idx 视频流下标。
+ * @param stats 输出统计快照。
+ * @return 成功返回MEDIA_OK；参数或运行状态非法返回对应MediaResult错误码。
+ */
+MediaResult media_gateway_get_video_pipeline_stats(
+    MediaGatewayCtx *ctx,
+    int stream_idx,
+    MediaGatewayVideoPipelineStats *stats);
 
 #ifdef __cplusplus
 }

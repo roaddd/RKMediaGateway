@@ -13,6 +13,7 @@
 #include <stddef.h>
 
 #include "v4l2Capture.h"
+#include "mediaFrameSourceStats.h"
 #include "threadMessageQueue.h"
 
 #ifdef __cplusplus
@@ -76,6 +77,7 @@ typedef struct {
     uint64_t next_seq;            /* 下一帧发布序号。 */
     uint64_t consumed_seq;        /* 视频编码线程最近消费的帧序号。 */
     uint64_t dropped_frames;      /* 因下游消费不及时而丢弃的旧帧数。 */
+    MediaFrameSourceStatsTracker stats; /* 采集序号、发布、覆盖和消费累计统计。 */
     int consecutive_failures;     /* 当前连续采集失败次数。 */
     int running;                  /* frame source 是否应继续运行。 */
     int started;                  /* 采集线程是否已成功启动。 */
@@ -139,6 +141,15 @@ int media_frame_source_start(MediaFrameSource *source);
 int media_frame_source_try_acquire_latest(MediaFrameSource *source,
                                           MediaFrame *frame,
                                           int *slot_index);
+
+/**
+ * @brief 获取视频帧源从启动至当前时刻的线程安全统计快照。
+ * @param source 视频帧源对象。
+ * @param stats 输出统计快照。
+ * @return 成功返回MEDIA_OK；参数非法返回MEDIA_ERR_INVALID_PARAM。
+ */
+MediaResult media_frame_source_get_stats(MediaFrameSource *source,
+                                         MediaFrameSourceStats *stats);
 
 /**
  * @description: 获取用于等待新帧、停止和致命错误事件的 eventfd。

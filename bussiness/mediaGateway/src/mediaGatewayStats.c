@@ -303,3 +303,96 @@ void media_gateway_get_stats_snapshot(MediaGatewayCtx *ctx, MediaGatewayStatsSna
     if (ctx->metrics.lock_ready)
         pthread_mutex_unlock(&ctx->metrics.lock);
 }
+
+MediaResult media_gateway_get_capture_source_stats(MediaGatewayCtx *ctx,
+                                                   int source_idx,
+                                                   MediaFrameSourceStats *stats)
+{
+    int lock_ret = 0;
+
+    if (!ctx || !stats || source_idx < 0 ||
+        source_idx >= MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
+    {
+        LOG_ERROR("media_gateway_get_capture_source_stats failed: ctx=%p source=%d stats=%p",
+                  (void *)ctx,
+                  source_idx,
+                  (void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (!ctx->metrics.lock_ready)
+    {
+        LOG_ERROR("media_gateway_get_capture_source_stats failed: metrics lock not ready source=%d",
+                  source_idx);
+        return MEDIA_ERR_NOT_READY;
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_get_capture_source_stats failed: lock source=%d ret=%d",
+                  source_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    *stats = ctx->metrics.capture_sources[source_idx];
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_get_capture_source_stats failed: unlock source=%d ret=%d",
+                  source_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    return MEDIA_OK;
+}
+
+MediaResult media_gateway_get_video_pipeline_stats(
+    MediaGatewayCtx *ctx,
+    int stream_idx,
+    MediaGatewayVideoPipelineStats *stats)
+{
+    MediaResult result = MEDIA_OK;
+    int lock_ret = 0;
+
+    if (!ctx || !stats || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("media_gateway_get_video_pipeline_stats failed: ctx=%p stream=%d stats=%p",
+                  (void *)ctx,
+                  stream_idx,
+                  (void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (!ctx->metrics.lock_ready)
+    {
+        LOG_ERROR("media_gateway_get_video_pipeline_stats failed: metrics lock not ready stream=%d",
+                  stream_idx);
+        return MEDIA_ERR;
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_get_video_pipeline_stats failed: lock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    result = media_gateway_video_pipeline_stats_snapshot(
+        &ctx->metrics.video_pipeline[stream_idx],
+        stats);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("media_gateway_get_video_pipeline_stats failed: unlock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    if (result != MEDIA_OK)
+    {
+        LOG_ERROR("media_gateway_get_video_pipeline_stats failed: snapshot stream=%d ret=%d",
+                  stream_idx,
+                  result);
+    }
+    return result;
+}

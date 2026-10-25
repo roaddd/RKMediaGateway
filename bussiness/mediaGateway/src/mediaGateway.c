@@ -33,6 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#define MEDIA_GATEWAY_CAPTURE_STATS_REFRESH_INTERVAL_US 100000ULL
 
 typedef enum {
     MEDIA_GATEWAY_FPS_TRANSITION_IDLE = 0,
@@ -63,6 +64,7 @@ typedef struct {
     ThreadMessageQueue result_queue;                              /* 所有 worker 共用的执行结果队列。 */
     int result_queue_inited;                                      /* 结果队列是否初始化成功。 */
     MediaGatewayVideoControlTransition video_control_transition;      /* 运行期视频控制异步事务。 */
+    uint64_t last_capture_stats_refresh_us;                       /* 上次缓存采集统计快照的时间。 */
 } MediaGatewayRunResources;
 
 /**
@@ -2559,8 +2561,29 @@ static int init_gateway_record_file(MediaGatewayCtx *ctx)
 /**
  * @description: 初始化运行期统计和 benchmark 窗口。
  */
-static void init_gateway_runtime_stats(MediaGatewayCtx *ctx)
+static int init_gateway_runtime_stats(MediaGatewayCtx *ctx)
 {
+    MediaResult stats_ret = MEDIA_OK;
+    int stream_idx = 0;
+
+    if (!ctx)
+    {
+        LOG_ERROR("init_gateway_runtime_stats failed: ctx is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        stats_ret = media_gateway_video_pipeline_stats_init(
+            &ctx->metrics.video_pipeline[stream_idx]);
+        if (stats_ret != MEDIA_OK)
+        {
+            LOG_ERROR("init_gateway_runtime_stats failed: init video stats stream=%d ret=%d",
+                      stream_idx,
+                      stats_ret);
+            return stats_ret;
+        }
+    }
     ctx->running = 1;
     ctx->metrics.throughput.last_ts_us = media_gateway_get_now_us();
     ctx->metrics.benchmark.enable = ctx->config.system.bench.enabled ? 1 : 0;
@@ -2576,6 +2599,7 @@ static void init_gateway_runtime_stats(MediaGatewayCtx *ctx)
              ctx->metrics.benchmark.sample_every,
              ctx->metrics.benchmark.print_interval_sec);
     media_gateway_bench_reset_window(ctx);
+    return MEDIA_OK;
 }
 
 /**
@@ -2631,7 +2655,11 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
         goto fail;
     }
 
-    init_gateway_runtime_stats(ctx);
+    if (init_gateway_runtime_stats(ctx) != MEDIA_OK)
+    {
+        LOG_ERROR("media_gateway_init failed: init runtime stats");
+        goto fail;
+    }
 
     /* 初始化调试命令 */
     if (media_gateway_debug_register_debug_commands(ctx) != 0)
@@ -3451,6 +3479,72 @@ static void media_gateway_run_adaptive_control_once(MediaGatewayCtx *ctx, MediaG
 }
 
 /**
+ * @brief 将run生命周期内帧源的统计快照同步到稳定的网关运行时对象。
+ *
+ * MediaFrameSource属于media_gateway_run栈上的短期资源，调试命令不能保存其指针。
+ * 主循环周期性复制纯数据快照，使其它线程可通过MediaGatewayCtx安全读取统计值。
+ */
+static int refresh_capture_source_stats(MediaGatewayCtx *ctx,
+                                        MediaGatewayRunResources *res,
+                                        int force_refresh)
+{
+    MediaFrameSourceStats snapshots[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {{0}};
+    uint64_t now_us = 0;
+    int source_idx = 0;
+    int lock_ret = 0;
+
+    if (!ctx || !res)
+    {
+        LOG_ERROR("refresh_capture_source_stats failed: ctx=%p res=%p",
+                  (void *)ctx,
+                  (void *)res);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    now_us = media_gateway_get_now_us();
+    if (!force_refresh && res->last_capture_stats_refresh_us != 0U &&
+        now_us - res->last_capture_stats_refresh_us <
+            MEDIA_GATEWAY_CAPTURE_STATS_REFRESH_INTERVAL_US)
+    {
+        return MEDIA_OK;
+    }
+
+    /* 先逐个读取帧源锁，避免持有metrics锁时嵌套获取帧源锁。 */
+    for (source_idx = 0;
+         source_idx < ctx->config.input.capture_source_count;
+         ++source_idx)
+    {
+        if (!res->frame_source_inited[source_idx])
+            continue;
+        if (media_frame_source_get_stats(&res->frame_sources[source_idx],
+                                         &snapshots[source_idx]) != MEDIA_OK)
+        {
+            LOG_ERROR("refresh_capture_source_stats failed: snapshot source=%d",
+                      source_idx);
+            return MEDIA_ERR;
+        }
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("refresh_capture_source_stats failed: lock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+    memcpy(ctx->metrics.capture_sources,
+           snapshots,
+           sizeof(ctx->metrics.capture_sources));
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("refresh_capture_source_stats failed: unlock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+    res->last_capture_stats_refresh_us = now_us;
+    return MEDIA_OK;
+}
+
+/**
  * @description: 执行一次 run 主循环控制调度。
  * 视频编码线程已经通过 eventfd 直接等待各自帧源，主循环只负责错误检查、
  * 自适应控制和周期统计，不再搬运视频帧。
@@ -3469,6 +3563,12 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
     if (media_gateway_pipeline_get_ret(&res->pipeline) != 0)
     {
         LOG_ERROR("run_gateway_once failed: pipeline ret");
+        return -1;
+    }
+
+    if (refresh_capture_source_stats(ctx, res, 0) != MEDIA_OK)
+    {
+        LOG_ERROR("run_gateway_once failed: refresh capture source stats");
         return -1;
     }
 
@@ -3502,6 +3602,9 @@ static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources
     /* 第二步：消费者退出后释放其持有的帧引用和控制 eventfd。 */
     media_gateway_pipeline_join_workers(&res->pipeline);
     media_gateway_pipeline_deinit(&res->pipeline);
+    /* 帧源和消费者均已停止，此时保存的退出快照不会再发生变化。 */
+    if (refresh_capture_source_stats(ctx, res, 1) != MEDIA_OK)
+        LOG_ERROR("cleanup_run_resources failed: refresh final capture source stats");
     /* 第三步：编码线程不再 poll 帧源 fd 后，才能安全关闭 fd 并销毁视频帧槽。 */
     for (source_idx = 0; source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++source_idx)
     {

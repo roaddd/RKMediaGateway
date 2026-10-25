@@ -601,6 +601,107 @@ static int video_worker_handle_control_event(MediaGatewayPipeline *pipeline,
 }
 
 /**
+ * @brief 记录视频worker成功取得一帧输入。
+ */
+static int video_worker_record_acquire(MediaGatewayCtx *ctx, int stream_idx)
+{
+    MediaResult stats_ret = MEDIA_OK;
+    int lock_ret = 0;
+
+    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("video_worker_record_acquire failed: ctx=%p stream=%d",
+                  (void *)ctx,
+                  stream_idx);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_acquire failed: lock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    stats_ret = media_gateway_video_pipeline_stats_record_acquire(
+        &ctx->metrics.video_pipeline[stream_idx]);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_acquire failed: unlock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_record_acquire failed: record stream=%d ret=%d",
+                  stream_idx,
+                  stats_ret);
+        return stats_ret;
+    }
+    return MEDIA_OK;
+}
+
+/**
+ * @brief 记录同步编码调用期间latest-frame缓存覆盖的旧帧数量。
+ *
+ * 编码前后分别读取帧源累计覆盖数，差值表示当前worker同步执行编码和分发期间
+ * 采集线程仍在发布、但旧帧来不及消费的数量。该指标与MPP耗时结合后，可用于
+ * 判断sequence gap是否由同步编码形成的调度空洞引起。
+ */
+static int video_worker_record_busy_overwrites(MediaGatewayCtx *ctx,
+                                               int stream_idx,
+                                               const MediaFrameSourceStats *before,
+                                               const MediaFrameSourceStats *after)
+{
+    MediaResult stats_ret = MEDIA_OK;
+    int lock_ret = 0;
+
+    if (!ctx || !before || !after || stream_idx < 0 ||
+        stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("video_worker_record_busy_overwrites failed: ctx=%p stream=%d before=%p after=%p",
+                  (void *)ctx,
+                  stream_idx,
+                  (const void *)before,
+                  (const void *)after);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_busy_overwrites failed: lock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    stats_ret = media_gateway_video_pipeline_stats_record_busy_overwrite_window(
+        &ctx->metrics.video_pipeline[stream_idx],
+        before->overwritten_frames,
+        after->overwritten_frames);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_busy_overwrites failed: unlock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_record_busy_overwrites failed: record stream=%d before=%" PRIu64 " after=%" PRIu64 " ret=%d",
+                  stream_idx,
+                  before->overwritten_frames,
+                  after->overwritten_frames,
+                  stats_ret);
+        return stats_ret;
+    }
+    return MEDIA_OK;
+}
+
+/**
  * @description: 处理帧源 eventfd，取得最新视频帧并完成本轮编码。
  *
  * 主要流程：清空帧事件、取得最新帧、尽早释放帧源槽位、处理最新控制命令，
@@ -612,6 +713,8 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
                                            int stream_idx)
 {
     MediaFrame frame = {0};
+    MediaFrameSourceStats source_stats_before = {0};
+    MediaFrameSourceStats source_stats_after = {0};
     int source_slot = -1;
     int ret = 0;
 
@@ -652,6 +755,16 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
     if (ret == 0)
         return 0;
 
+    if (video_worker_record_acquire(pipeline->ctx, stream_idx) != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: record acquire stream=%d source=%d",
+                  stream_idx,
+                  source->config.source_index);
+        media_frame_reset(&frame);
+        media_frame_source_release(source, source_slot);
+        return -1;
+    }
+
     /* frame 已持有 buffer 引用，可先释放 ring slot，避免编码期间占用帧源槽位。 */
     media_frame_source_release(source, source_slot);
     source_slot = -1;
@@ -664,7 +777,35 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
         return 0;
     }
 
+    if (media_frame_source_get_stats(source, &source_stats_before) != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: get pre-encode stats stream=%d source=%d",
+                  stream_idx,
+                  source->config.source_index);
+        media_frame_reset(&frame);
+        return -1;
+    }
+
     ret = media_gateway_process_stream(pipeline->ctx, &pipeline->state, &frame, stream_idx);
+    if (media_frame_source_get_stats(source, &source_stats_after) != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: get post-encode stats stream=%d source=%d",
+                  stream_idx,
+                  source->config.source_index);
+        media_frame_reset(&frame);
+        return -1;
+    }
+    if (video_worker_record_busy_overwrites(pipeline->ctx,
+                                            stream_idx,
+                                            &source_stats_before,
+                                            &source_stats_after) != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: record busy overwrites stream=%d source=%d",
+                  stream_idx,
+                  source->config.source_index);
+        media_frame_reset(&frame);
+        return -1;
+    }
     if (ret != 0)
     {
         LOG_ERROR("video_worker_handle_frame_event failed: process stream=%d frame=%" PRIu64 " ret=%d",
