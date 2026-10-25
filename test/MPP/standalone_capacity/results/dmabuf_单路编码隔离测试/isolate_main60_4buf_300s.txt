@@ -1,0 +1,69 @@
+[INFO] V4L2 DMA-BUF capacity test: mode=encode duration=300s warmup=2s sensor_fps=60 buffer_count=4 streams=1
+[INFO] open camera /dev/video0 success
+[INFO] camera support video capture and streaming
+[INFO] v4l2 negotiated format: 1920x1080 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1920 sizeimage=3110400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7fa8adf000, len=3133440
+[INFO] buffer 1 mapped: addr=0x7fa87e2000, len=3133440
+[INFO] buffer 2 mapped: addr=0x7fa84e5000, len=3133440
+[INFO] buffer 3 mapped: addr=0x7fa81e8000, len=3133440
+[INFO] start streaming capture success
+[INFO] mpp encoder input format: fmt=0 width=1920 height=1080 hor_stride=1920 ver_stride=1080 frame_size=3110400
+[INFO] mpp encoder init success: 1920x1080 fps=60 bitrate=12582912 gop=60
+[INFO] DMA-BUF stream ready: mode=encode device=/dev/video0 size=1920x1080 encode_fps=60 stride=1920x1080 sizeimage=3110400 buffers=4
+[INFO] metrics source: soc_temp=/sys/class/thermal/thermal_zone0/temp gpu_temp=/sys/class/thermal/thermal_zone1/temp cpu_freq=/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq
+[INFO] metrics source: ddr_load=/sys/class/devfreq/dmc/load ddr_freq=/sys/class/devfreq/dmc/cur_freq rkvenc_clock=/sys/kernel/debug/clk/clk_summary
+[INFO] system metrics monitor started: interval=1000ms csv=isolate_main60_4buf_300s.csv
+[GAP] stream=0 device=/dev/video0 elapsed_ms=27601 previous_sequence=1776 current_sequence=1778 gap_frames=1 previous_driver_timestamp_us=2206308260 current_driver_timestamp_us=2206341498 timestamp_delta_us=33238 camera_buffer_wait_us=13053 last_encode_total_us=13698 last_submit_us=13192 captured=1658 deadline_misses=82
+[GAP] stream=0 device=/dev/video0 elapsed_ms=45040 previous_sequence=2824 current_sequence=2826 gap_frames=1 previous_driver_timestamp_us=2223746943 current_driver_timestamp_us=2223780223 timestamp_delta_us=33280 camera_buffer_wait_us=12975 last_encode_total_us=13874 last_submit_us=13360 captured=2705 deadline_misses=135
+[GAP] stream=0 device=/dev/video0 elapsed_ms=50148 previous_sequence=3131 current_sequence=3133 gap_frames=1 previous_driver_timestamp_us=2228855466 current_driver_timestamp_us=2228888749 timestamp_delta_us=33283 camera_buffer_wait_us=11918 last_encode_total_us=13512 last_submit_us=12995 captured=3011 deadline_misses=154
+[GAP] stream=0 device=/dev/video0 elapsed_ms=58337 previous_sequence=3623 current_sequence=3625 gap_frames=1 previous_driver_timestamp_us=2237042311 current_driver_timestamp_us=2237075594 timestamp_delta_us=33283 camera_buffer_wait_us=14017 last_encode_total_us=16152 last_submit_us=13816 captured=3502 deadline_misses=181
+[GAP] stream=0 device=/dev/video0 elapsed_ms=78784 previous_sequence=4852 current_sequence=4854 gap_frames=1 previous_driver_timestamp_us=2257492865 current_driver_timestamp_us=2257526180 timestamp_delta_us=33315 camera_buffer_wait_us=11147 last_encode_total_us=13157 last_submit_us=12790 captured=4730 deadline_misses=240
+[GAP] stream=0 device=/dev/video0 elapsed_ms=100289 previous_sequence=6144 current_sequence=6146 gap_frames=1 previous_driver_timestamp_us=2278991757 current_driver_timestamp_us=2279025117 timestamp_delta_us=33360 camera_buffer_wait_us=16634 last_encode_total_us=15829 last_submit_us=15367 captured=6021 deadline_misses=317
+[GAP] stream=0 device=/dev/video0 elapsed_ms=130986 previous_sequence=7989 current_sequence=7991 gap_frames=1 previous_driver_timestamp_us=2309692663 current_driver_timestamp_us=2309725924 timestamp_delta_us=33261 camera_buffer_wait_us=13168 last_encode_total_us=13789 last_submit_us=13262 captured=7865 deadline_misses=414
+[GAP] stream=0 device=/dev/video0 elapsed_ms=144331 previous_sequence=8791 current_sequence=8793 gap_frames=1 previous_driver_timestamp_us=2323037898 current_driver_timestamp_us=2323071152 timestamp_delta_us=33254 camera_buffer_wait_us=12663 last_encode_total_us=13697 last_submit_us=13151 captured=8666 deadline_misses=457
+[GAP] stream=0 device=/dev/video0 elapsed_ms=151505 previous_sequence=9222 current_sequence=9224 gap_frames=1 previous_driver_timestamp_us=2330209679 current_driver_timestamp_us=2330242967 timestamp_delta_us=33288 camera_buffer_wait_us=14738 last_encode_total_us=16245 last_submit_us=13983 captured=9096 deadline_misses=483
+[GAP] stream=0 device=/dev/video0 elapsed_ms=157643 previous_sequence=9591 current_sequence=9593 gap_frames=1 previous_driver_timestamp_us=2336349866 current_driver_timestamp_us=2336383126 timestamp_delta_us=33260 camera_buffer_wait_us=13049 last_encode_total_us=14009 last_submit_us=13529 captured=9464 deadline_misses=505
+[GAP] stream=0 device=/dev/video0 elapsed_ms=169923 previous_sequence=10329 current_sequence=10331 gap_frames=1 previous_driver_timestamp_us=2348630148 current_driver_timestamp_us=2348663428 timestamp_delta_us=33280 camera_buffer_wait_us=12560 last_encode_total_us=13443 last_submit_us=12983 captured=10201 deadline_misses=538
+[GAP] stream=0 device=/dev/video0 elapsed_ms=171975 previous_sequence=10452 current_sequence=10454 gap_frames=1 previous_driver_timestamp_us=2350676952 current_driver_timestamp_us=2350710242 timestamp_delta_us=33290 camera_buffer_wait_us=17733 last_encode_total_us=14875 last_submit_us=14355 captured=10323 deadline_misses=544
+[GAP] stream=0 device=/dev/video0 elapsed_ms=204704 previous_sequence=12419 current_sequence=12421 gap_frames=1 previous_driver_timestamp_us=2383407846 current_driver_timestamp_us=2383441111 timestamp_delta_us=33265 camera_buffer_wait_us=16177 last_encode_total_us=15326 last_submit_us=14823 captured=12289 deadline_misses=643
+[GAP] stream=0 device=/dev/video0 elapsed_ms=236434 previous_sequence=14326 current_sequence=14328 gap_frames=1 previous_driver_timestamp_us=2415140289 current_driver_timestamp_us=2415173584 timestamp_delta_us=33295 camera_buffer_wait_us=13287 last_encode_total_us=13879 last_submit_us=13334 captured=14195 deadline_misses=746
+[GAP] stream=0 device=/dev/video0 elapsed_ms=261975 previous_sequence=15861 current_sequence=15863 gap_frames=1 previous_driver_timestamp_us=2440682657 current_driver_timestamp_us=2440715935 timestamp_delta_us=33278 camera_buffer_wait_us=12415 last_encode_total_us=13852 last_submit_us=13394 captured=15729 deadline_misses=829
+[INFO] system metrics monitor stopped: samples=294 csv=isolate_main60_4buf_300s.csv
+[INFO] DMA-BUF warmup complete: stream=0 device=/dev/video0 captured=118 sequence_gaps=0 timeouts=0 failed=0
+
+========== V4L2 DMA-BUF CAPACITY RESULT ==========
+
+stream[0] mode=encode device=/dev/video0 1920x1080 encode_fps=60 source_fps=60
+  elapsed=300.014s captured=18014 gated=0 sequence_gaps=15 capture_timeouts=0 submitted=18014 encoded=18014 empty=0 failed=0 key=301
+  gap_events=15 max_single_gap=1 first_gap_ms=27601 last_gap_ms=261975
+  capture_fps=60.04 encoded_fps=60.04 target_ratio=100.07% actual_bitrate=12633308bit/s deadline_misses=962 max_consecutive_deadline_misses=3
+  capture_latency_us:
+    frame_interval   samples=18013 avg=16653 p50=16640 p95=16721 p99=16736 max=33360
+    buffer_wait      samples=18014 avg=14593 p50=14494 p95=18051 p99=23701 max=33943
+    dqbuf_ioctl      samples=18014 avg=27 p50=24 p95=34 p99=128 max=1534
+    dqbuf_to_encode  samples=18014 avg=60 p50=43 p95=58 p99=766 max=2431
+  encode_latency_us:
+    dmabuf_import    samples=18014 avg=28 p50=27 p95=36 p99=40 max=1252
+    submit           samples=18014 avg=14315 p50=14073 p95=15924 p99=20439 max=34272
+    packet_wait      samples=18014 avg=27 p50=20 p95=23 p99=92 max=3322
+    packet_copy      samples=18014 avg=541 p50=419 p95=2136 p99=3063 max=6032
+    other            samples=18014 avg=76 p50=50 p95=63 p99=1168 max=2819
+    total            samples=18014 avg=14990 p50=14859 p95=16720 p99=21283 max=34811
+  result=FAIL
+
+overall=FAIL
+
+========== SYSTEM METRICS ==========
+  samples                294
+  soc_temperature        min=48.33 avg=54.98 max=56.67 C samples=294
+  gpu_temperature        min=43.75 avg=50.06 max=51.88 C samples=294
+  cpu_usage              min=21.43 avg=25.42 max=30.71 % samples=293
+  cpu_frequency          min=408000.00 avg=440489.80 max=1416000.00 kHz samples=294
+  ddr_load               min=15.00 avg=18.87 max=21.00 % samples=294
+  ddr_frequency          min=1560000000.00 avg=1560000000.00 max=1560000000.00 Hz samples=294
+  rkvenc_enabled         min=0.00 avg=0.78 max=1.00 ratio samples=294
+  rkvenc_frequency       min=297000000.00 avg=297000000.00 max=297000000.00 Hz samples=294
+  mem_available          min=3742964.00 avg=3744018.14 max=3747228.00 kB samples=294
+[INFO] v4l2 capture deinit success

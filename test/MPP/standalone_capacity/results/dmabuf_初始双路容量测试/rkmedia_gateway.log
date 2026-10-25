@@ -1,0 +1,164 @@
+[2026-10-23 23:28:04.826] [I] [v4l2Capture.c:v4l2_capture_resolve_sensor_subdev:834] resolve sensor subdev: video entity media=/dev/media0 video=/dev/video0 id=13 name='rkisp_mainpath' type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:512] media_find_upstream_sensor enter: depth=0 id=13 name='rkisp_mainpath' type=0x10001 pads=1 links=0 dev=81:0
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=0 entity='rkisp_mainpath' id=13 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=0 entity='rkisp_mainpath' id=13 pass=1 policy=disabled-data-link-fallback
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:262] media_find_connected_entity_by_scan begin: target_id=13 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=13 owner_id=1 owner='rkisp-isp-subdev' pads=4 links=3 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:412] media_find_connected_entity_by_scan hit: owner='rkisp-isp-subdev' owner_id=1 target_id=13 next_id=1 source=1:2 sink=13:0 flags=0x1 pass=0
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:711] media_find_upstream_sensor scan recurse: depth=0 from='rkisp_mainpath' id=13 next_id=1 pass=0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:512] media_find_upstream_sensor enter: depth=1 id=1 name='rkisp-isp-subdev' type=0x20000 pads=4 links=3 dev=81:9
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=1 entity='rkisp-isp-subdev' id=1 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=0 index=0 source=1:2 sink=13:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=1 entity='rkisp-isp-subdev' index=0 source=1 sink=13
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=0 index=1 source=1:2 sink=19:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=1 entity='rkisp-isp-subdev' index=1 source=1 sink=19
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=0 index=2 source=1:3 sink=55:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=1 entity='rkisp-isp-subdev' index=2 source=1 sink=55
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=1 entity='rkisp-isp-subdev' id=1 pass=1 policy=disabled-data-link-fallback
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=1 index=0 source=1:2 sink=13:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=1 entity='rkisp-isp-subdev' index=0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=1 index=1 source=1:2 sink=19:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=1 entity='rkisp-isp-subdev' index=1 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=1 entity='rkisp-isp-subdev' id=1 pass=1 index=2 source=1:3 sink=55:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=1 entity='rkisp-isp-subdev' index=2 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:262] media_find_connected_entity_by_scan begin: target_id=1 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=1 owner_id=1 owner='rkisp-isp-subdev' pads=4 links=3 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-isp-subdev' owner_id=1 index=0 source=1:2 sink=13:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-isp-subdev' owner_id=1 index=1 source=1:2 sink=19:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-isp-subdev' owner_id=1 index=2 source=1:3 sink=55:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=1 owner_id=6 owner='rkisp-csi-subdev' pads=6 links=4 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-csi-subdev' owner_id=6 index=0 source=6:2 sink=25:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-csi-subdev' owner_id=6 index=1 source=6:4 sink=31:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=1 owner='rkisp-csi-subdev' owner_id=6 index=2 source=6:5 sink=37:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:412] media_find_connected_entity_by_scan hit: owner='rkisp-csi-subdev' owner_id=6 target_id=1 next_id=6 source=6:1 sink=1:0 flags=0x1 pass=0
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:711] media_find_upstream_sensor scan recurse: depth=1 from='rkisp-isp-subdev' id=1 next_id=6 pass=0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:512] media_find_upstream_sensor enter: depth=2 id=6 name='rkisp-csi-subdev' type=0x20000 pads=6 links=4 dev=81:10
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=2 entity='rkisp-csi-subdev' id=6 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=0 index=0 source=6:2 sink=25:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=2 entity='rkisp-csi-subdev' index=0 source=6 sink=25
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=0 index=1 source=6:4 sink=31:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=2 entity='rkisp-csi-subdev' index=1 source=6 sink=31
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=0 index=2 source=6:5 sink=37:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=2 entity='rkisp-csi-subdev' index=2 source=6 sink=37
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=0 index=3 source=6:1 sink=1:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=2 entity='rkisp-csi-subdev' index=3 source=6 sink=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=2 entity='rkisp-csi-subdev' id=6 pass=1 policy=disabled-data-link-fallback
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=1 index=0 source=6:2 sink=25:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=2 entity='rkisp-csi-subdev' index=0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=1 index=1 source=6:4 sink=31:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=2 entity='rkisp-csi-subdev' index=1 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=1 index=2 source=6:5 sink=37:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=2 entity='rkisp-csi-subdev' index=2 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=2 entity='rkisp-csi-subdev' id=6 pass=1 index=3 source=6:1 sink=1:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=2 entity='rkisp-csi-subdev' index=3 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:262] media_find_connected_entity_by_scan begin: target_id=6 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=1 owner='rkisp-isp-subdev' pads=4 links=3 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-isp-subdev' owner_id=1 index=0 source=1:2 sink=13:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-isp-subdev' owner_id=1 index=1 source=1:2 sink=19:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-isp-subdev' owner_id=1 index=2 source=1:3 sink=55:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=6 owner='rkisp-csi-subdev' pads=6 links=4 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-csi-subdev' owner_id=6 index=0 source=6:2 sink=25:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-csi-subdev' owner_id=6 index=1 source=6:4 sink=31:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-csi-subdev' owner_id=6 index=2 source=6:5 sink=37:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-csi-subdev' owner_id=6 index=3 source=6:1 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=13 owner='rkisp_mainpath' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=13 owner='rkisp_mainpath'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=19 owner='rkisp_selfpath' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=19 owner='rkisp_selfpath'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=25 owner='rkisp_rawwr0' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=25 owner='rkisp_rawwr0'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=31 owner='rkisp_rawwr2' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=31 owner='rkisp_rawwr2'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=37 owner='rkisp_rawwr3' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=37 owner='rkisp_rawwr3'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=43 owner='rkisp_rawrd0_m' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp_rawrd0_m' owner_id=43 index=0 source=43:0 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=49 owner='rkisp_rawrd2_s' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp_rawrd2_s' owner_id=49 index=0 source=49:0 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=55 owner='rkisp-statistics' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=6 owner_id=55 owner='rkisp-statistics'
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=61 owner='rkisp-input-params' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=6 owner='rkisp-input-params' owner_id=61 index=0 source=61:0 sink=1:1 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=6 owner_id=67 owner='rockchip-csi2-dphy0' pads=2 links=1 type=0x20000
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:412] media_find_connected_entity_by_scan hit: owner='rockchip-csi2-dphy0' owner_id=67 target_id=6 next_id=67 source=67:1 sink=6:0 flags=0x1 pass=0
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:711] media_find_upstream_sensor scan recurse: depth=2 from='rkisp-csi-subdev' id=6 next_id=67 pass=0 flags=0x1
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:512] media_find_upstream_sensor enter: depth=3 id=67 name='rockchip-csi2-dphy0' type=0x20000 pads=2 links=1 dev=81:11
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=3 entity='rockchip-csi2-dphy0' id=67 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.827] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=3 entity='rockchip-csi2-dphy0' id=67 pass=0 index=0 source=67:1 sink=6:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:642] media_find_upstream_sensor skip link: reason=not-upstream depth=3 entity='rockchip-csi2-dphy0' index=0 source=67 sink=6
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:576] media_find_upstream_sensor pass begin: depth=3 entity='rockchip-csi2-dphy0' id=67 pass=1 policy=disabled-data-link-fallback
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:591] media_find_upstream_sensor link: depth=3 entity='rockchip-csi2-dphy0' id=67 pass=1 index=0 source=67:1 sink=6:0 flags=0x1 data=1 enabled=1 connected=1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:626] media_find_upstream_sensor skip link: reason=enabled-in-fallback-pass depth=3 entity='rockchip-csi2-dphy0' index=0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:262] media_find_connected_entity_by_scan begin: target_id=67 pass=0 policy=enabled-data-link
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=1 owner='rkisp-isp-subdev' pads=4 links=3 type=0x20000
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-isp-subdev' owner_id=1 index=0 source=1:2 sink=13:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-isp-subdev' owner_id=1 index=1 source=1:2 sink=19:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-isp-subdev' owner_id=1 index=2 source=1:3 sink=55:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=6 owner='rkisp-csi-subdev' pads=6 links=4 type=0x20000
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-csi-subdev' owner_id=6 index=0 source=6:2 sink=25:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-csi-subdev' owner_id=6 index=1 source=6:4 sink=31:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-csi-subdev' owner_id=6 index=2 source=6:5 sink=37:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-csi-subdev' owner_id=6 index=3 source=6:1 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=13 owner='rkisp_mainpath' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=13 owner='rkisp_mainpath'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=19 owner='rkisp_selfpath' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=19 owner='rkisp_selfpath'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=25 owner='rkisp_rawwr0' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=25 owner='rkisp_rawwr0'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=31 owner='rkisp_rawwr2' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=31 owner='rkisp_rawwr2'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=37 owner='rkisp_rawwr3' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=37 owner='rkisp_rawwr3'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=43 owner='rkisp_rawrd0_m' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp_rawrd0_m' owner_id=43 index=0 source=43:0 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=49 owner='rkisp_rawrd2_s' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip l[INFO] v4l2 negotiated format: 1920x1080 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1920 sizeimage=3110400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7fbc38e000, len=3133440
+[INFO] buffer 1 mapped: addr=0x7fbc091000, len=3133440
+[INFO] buffer 2 mapped: addr=0x7fbbd94000, len=3133440
+[INFO] buffer 3 mapped: addr=0x7fbba97000, len=3133440
+[INFO] start streaming capture success
+[INFO] mpp encoder input format: fmt=0 width=1920 height=1080 hor_stride=1920 ver_stride=1080 frame_size=3110400
+[INFO] mpp encoder init success: 1920x1080 fps=30 bitrate=6291456 gop=30
+[INFO] DMA-BUF stream ready: device=/dev/video0 size=1920x1080 encode_fps=30 stride=1920x1080 sizeimage=3110400 buffers=4
+
+========== V4L2 DMA-BUF CAPACITY RESULT ==========
+
+stream[0] device=/dev/video0 1920x1080 encode_fps=30 source_fps=30
+  elapsed=3.012s captured=92 gated=0 sequence_gaps=1 capture_timeouts=0 submitted=92 encoded=92 empty=0 failed=0 key=4
+  capture_fps=30.55 encoded_fps=30.55 target_ratio=101.82% actual_bitrate=6425369bit/s deadline_misses=0
+  capture_latency_us:
+    frame_interval   samples=91 avg=33646 p50=33280 p95=33328 p99=66578 max=66578
+    dqbuf_ioctl      samples=92 avg=36 p50=30 p95=98 p99=374 max=374
+    dqbuf_to_encode  samples=92 avg=106 p50=60 p95=171 p99=1627 max=1627
+  encode_latency_us:
+    dmabuf_import    samples=92 avg=40 p50=37 p95=43 p99=267 max=267
+    submit           samples=92 avg=13651 p50=13486 p95=14693 p99=17202 max=17202
+    packet_wait      samples=92 avg=17 p50=18 p95=20 p99=20 max=20
+    packet_copy      samples=92 avg=403 p50=300 p95=912 p99=4004 max=4004
+    other            samples=92 avg=93 p50=52 p95=107 p99=1665 max=1665
+    total            samples=92 avg=14205 p50=13937 p95=17218 p99=18953 max=18953
+  result=FAIL
+
+overall=FAIL
+[INFO] v4l2 capture deinit success
+ink: reason=not-upstream target_id=67 owner='rkisp_rawrd2_s' owner_id=49 index=0 source=49:0 sink=1:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=55 owner='rkisp-statistics' pads=1 links=0 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:314] media_find_connected_entity_by_scan skip owner: reason=no-links target_id=67 owner_id=55 owner='rkisp-statistics'
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=61 owner='rkisp-input-params' pads=1 links=1 type=0x10001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rkisp-input-params' owner_id=61 index=0 source=61:0 sink=1:1 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=67 owner='rockchip-csi2-dphy0' pads=2 links=1 type=0x20000
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:399] media_find_connected_entity_by_scan skip link: reason=not-upstream target_id=67 owner='rockchip-csi2-dphy0' owner_id=67 index=0 source=67:1 sink=6:0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:283] media_find_connected_entity_by_scan owner: target_id=67 owner_id=70 owner='m00_b_ov13850 2-0010' pads=1 links=1 type=0x20001
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_connected_entity_by_scan:412] media_find_connected_entity_by_scan hit: owner='m00_b_ov13850 2-0010' owner_id=70 target_id=67 next_id=70 source=70:0 sink=67:0 flags=0x1 pass=0
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:711] media_find_upstream_sensor scan recurse: depth=3 from='rockchip-csi2-dphy0' id=67 next_id=70 pass=0 flags=0x1
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:512] media_find_upstream_sensor enter: depth=4 id=70 name='m00_b_ov13850 2-0010' type=0x20001 pads=1 links=1 dev=81:12
+[2026-10-23 23:28:04.828] [I] [v4l2Capture.c:media_find_upstream_sensor_recursive:526] media_find_upstream_sensor found sensor: id=70 name='m00_b_ov13850 2-0010' type=0x20001 dev=81:12
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:739] media_find_upstream_sensor leave: depth=3 id=67 name='rockchip-csi2-dphy0' ret=0
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:739] media_find_upstream_sensor leave: depth=2 id=6 name='rkisp-csi-subdev' ret=0
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:739] media_find_upstream_sensor leave: depth=1 id=1 name='rkisp-isp-subdev' ret=0
+[2026-10-23 23:28:04.828] [W] [v4l2Capture.c:media_find_upstream_sensor_recursive:739] media_find_upstream_sensor leave: depth=0 id=13 name='rkisp_mainpath' ret=0
+[2026-10-23 23:28:04.828] [I] [v4l2Capture.c:v4l2_capture_resolve_sensor_subdev:877] resolve sensor subdev success: video=/dev/video0 media=/dev/media0 sensor='m00_b_ov13850 2-0010' subdev=/dev/v4l-subdev3
+[2026-10-23 23:28:04.906] [W] [v4l2Capture.c:v4l2_capture_set_sensor_subdev_fps:1477] v4l2 sensor subdev fps updated: video=/dev/video0 subdev=/dev/v4l-subdev3 request=30 actual=300000/10000

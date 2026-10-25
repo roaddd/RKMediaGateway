@@ -1,0 +1,87 @@
+[INFO] V4L2 DMA-BUF capacity test: mode=encode duration=300s warmup=2s sensor_fps=30 buffer_count=4 streams=2
+[INFO] open camera /dev/video0 success
+[INFO] camera support video capture and streaming
+[INFO] v4l2 negotiated format: 1920x1080 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1920 sizeimage=3110400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7fa42ef000, len=3133440
+[INFO] buffer 1 mapped: addr=0x7fa3ff2000, len=3133440
+[INFO] buffer 2 mapped: addr=0x7fa3cf5000, len=3133440
+[INFO] buffer 3 mapped: addr=0x7fa39f8000, len=3133440
+[INFO] start streaming capture success
+[INFO] mpp encoder input format: fmt=0 width=1920 height=1080 hor_stride=1920 ver_stride=1080 frame_size=3110400
+[INFO] mpp encoder init success: 1920x1080 fps=30 bitrate=6291456 gop=30
+[INFO] DMA-BUF stream ready: mode=encode device=/dev/video0 size=1920x1080 encode_fps=30 stride=1920x1080 sizeimage=3110400 buffers=4
+[INFO] open camera /dev/video1 success
+[INFO] camera support video capture and streaming
+[INFO] v4l2 negotiated format: 1280x720 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1280 sizeimage=1382400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7fa2d9e000, len=1382400
+[INFO] buffer 1 mapped: addr=0x7fa2c4c000, len=1382400
+[INFO] buffer 2 mapped: addr=0x7fa2afa000, len=1382400
+[INFO] buffer 3 mapped: addr=0x7fa29a8000, len=1382400
+[INFO] start streaming capture success
+[INFO] mpp encoder input format: fmt=0 width=1280 height=720 hor_stride=1280 ver_stride=720 frame_size=1382400
+[INFO] mpp encoder init success: 1280x720 fps=30 bitrate=1048576 gop=30
+[INFO] DMA-BUF stream ready: mode=encode device=/dev/video1 size=1280x720 encode_fps=30 stride=1280x720 sizeimage=1382400 buffers=4
+[INFO] metrics source: soc_temp=/sys/class/thermal/thermal_zone0/temp gpu_temp=/sys/class/thermal/thermal_zone1/temp cpu_freq=/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq
+[INFO] metrics source: ddr_load=/sys/class/devfreq/dmc/load ddr_freq=/sys/class/devfreq/dmc/cur_freq rkvenc_clock=/sys/kernel/debug/clk/clk_summary
+[INFO] system metrics monitor started: interval=1000ms csv=gap_current_4buf.csv
+[INFO] system metrics monitor stopped: samples=294 csv=gap_current_4buf.csv
+[INFO] DMA-BUF warmup complete: stream=0 device=/dev/video0 captured=59 sequence_gaps=0 timeouts=0 failed=0
+[INFO] DMA-BUF warmup complete: stream=1 device=/dev/video1 captured=57 sequence_gaps=0 timeouts=0 failed=0
+
+========== V4L2 DMA-BUF CAPACITY RESULT ==========
+
+stream[0] mode=encode device=/dev/video0 1920x1080 encode_fps=30 source_fps=30
+  elapsed=300.001s captured=9013 gated=0 sequence_gaps=0 capture_timeouts=0 submitted=9013 encoded=9013 empty=0 failed=0 key=301
+  gap_events=0 max_single_gap=0 first_gap_ms=0 last_gap_ms=0
+  capture_fps=30.04 encoded_fps=30.04 target_ratio=100.14% actual_bitrate=6336918bit/s deadline_misses=6 max_consecutive_deadline_misses=1
+  capture_latency_us:
+    frame_interval   samples=9012 avg=33280 p50=33280 p95=33354 p99=33361 max=33392
+    buffer_wait      samples=9013 avg=13115 p50=13133 p95=14103 p99=14951 max=22458
+    dqbuf_ioctl      samples=9013 avg=59 p50=35 p95=142 p99=863 max=3241
+    dqbuf_to_encode  samples=9013 avg=110 p50=60 p95=149 p99=1801 max=12077
+  encode_latency_us:
+    dmabuf_import    samples=9013 avg=40 p50=37 p95=42 p99=135 max=1850
+    submit           samples=9013 avg=16027 p50=14035 p95=20048 p99=23101 max=35601
+    packet_wait      samples=9013 avg=18 p50=18 p95=20 p99=21 max=1242
+    packet_copy      samples=9013 avg=452 p50=315 p95=1421 p99=3967 max=6419
+    other            samples=9013 avg=101 p50=53 p95=108 p99=1764 max=12072
+    total            samples=9013 avg=16640 p50=14560 p95=21389 p99=25862 max=36031
+  result=PASS
+
+stream[1] mode=encode device=/dev/video1 1280x720 encode_fps=30 source_fps=30
+  elapsed=300.013s captured=9013 gated=0 sequence_gaps=0 capture_timeouts=0 submitted=9013 encoded=9013 empty=0 failed=0 key=301
+  gap_events=0 max_single_gap=0 first_gap_ms=0 last_gap_ms=0
+  capture_fps=30.04 encoded_fps=30.04 target_ratio=100.14% actual_bitrate=1033752bit/s deadline_misses=8 max_consecutive_deadline_misses=1
+  capture_latency_us:
+    frame_interval   samples=9012 avg=33280 p50=33280 p95=33354 p99=33361 max=33392
+    buffer_wait      samples=9013 avg=13343 p50=13405 p95=14051 p99=14775 max=19660
+    dqbuf_ioctl      samples=9013 avg=32 p50=28 p95=38 p99=115 max=1572
+    dqbuf_to_encode  samples=9013 avg=79 p50=40 p95=128 p99=1295 max=2246
+  encode_latency_us:
+    dmabuf_import    samples=9013 avg=27 p50=23 p95=40 p99=119 max=1433
+    submit           samples=9013 avg=14115 p50=18417 p95=19713 p99=25334 max=36164
+    packet_wait      samples=9013 avg=17 p50=16 p95=20 p99=21 max=1243
+    packet_copy      samples=9013 avg=74 p50=37 p95=81 p99=1175 max=2351
+    other            samples=9013 avg=78 p50=41 p95=57 p99=1295 max=2725
+    total            samples=9013 avg=14314 p50=18563 p95=20020 p99=25857 max=36325
+  result=PASS
+
+overall=PASS
+
+========== SYSTEM METRICS ==========
+  samples                294
+  soc_temperature        min=48.89 avg=52.97 max=54.38 C samples=294
+  gpu_temperature        min=44.38 avg=48.24 max=48.89 C samples=294
+  cpu_usage              min=11.58 avg=14.46 max=17.82 % samples=293
+  cpu_frequency          min=408000.00 avg=445224.49 max=1416000.00 kHz samples=294
+  ddr_load               min=9.00 avg=10.98 max=13.00 % samples=294
+  ddr_frequency          min=1560000000.00 avg=1560000000.00 max=1560000000.00 Hz samples=294
+  rkvenc_enabled         min=0.00 avg=0.53 max=1.00 ratio samples=294
+  rkvenc_frequency       min=297000000.00 avg=297000000.00 max=297000000.00 Hz samples=294
+  mem_available          min=3730780.00 avg=3732117.12 max=3739032.00 kB samples=294
+[INFO] v4l2 capture deinit success
+[INFO] v4l2 capture deinit success

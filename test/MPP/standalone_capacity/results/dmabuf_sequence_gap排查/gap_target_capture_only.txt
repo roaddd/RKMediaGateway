@@ -1,0 +1,67 @@
+[INFO] V4L2 DMA-BUF capacity test: mode=capture-only duration=300s warmup=2s sensor_fps=60 buffer_count=4 streams=2
+[INFO] open camera /dev/video0 success
+[INFO] camera support video capture and streaming
+[INFO] v4l2 negotiated format: 1920x1080 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1920 sizeimage=3110400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7f7f7df000, len=3133440
+[INFO] buffer 1 mapped: addr=0x7f7f4e2000, len=3133440
+[INFO] buffer 2 mapped: addr=0x7f7f1e5000, len=3133440
+[INFO] buffer 3 mapped: addr=0x7f7eee8000, len=3133440
+[INFO] start streaming capture success
+[INFO] DMA-BUF stream ready: mode=capture-only device=/dev/video0 size=1920x1080 encode_fps=60 stride=1920x1080 sizeimage=3110400 buffers=4
+[INFO] open camera /dev/video1 success
+[INFO] camera support video capture and streaming
+[INFO] v4l2 negotiated format: 1280x720 pixelformat=0x3231564e num_planes=1 field=1
+[INFO] v4l2 negotiated plane[0]: bytesperline=1280 sizeimage=1382400
+[INFO] request 4 buffers success
+[INFO] buffer 0 mapped: addr=0x7f7ea9e000, len=1382400
+[INFO] buffer 1 mapped: addr=0x7f7e94c000, len=1382400
+[INFO] buffer 2 mapped: addr=0x7f7e7fa000, len=1382400
+[INFO] buffer 3 mapped: addr=0x7f7e6a8000, len=1382400
+[INFO] start streaming capture success
+[INFO] DMA-BUF stream ready: mode=capture-only device=/dev/video1 size=1280x720 encode_fps=30 stride=1280x720 sizeimage=1382400 buffers=4
+[INFO] metrics source: soc_temp=/sys/class/thermal/thermal_zone0/temp gpu_temp=/sys/class/thermal/thermal_zone1/temp cpu_freq=/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq
+[INFO] metrics source: ddr_load=/sys/class/devfreq/dmc/load ddr_freq=/sys/class/devfreq/dmc/cur_freq rkvenc_clock=/sys/kernel/debug/clk/clk_summary
+[INFO] system metrics monitor started: interval=1000ms csv=gap_target_capture_only.csv
+[INFO] system metrics monitor stopped: samples=294 csv=gap_target_capture_only.csv
+[INFO] DMA-BUF warmup complete: stream=0 device=/dev/video0 captured=118 sequence_gaps=0 timeouts=0 failed=0
+[INFO] DMA-BUF warmup complete: stream=1 device=/dev/video1 captured=116 sequence_gaps=0 timeouts=0 failed=0
+
+========== V4L2 DMA-BUF CAPACITY RESULT ==========
+
+stream[0] mode=capture-only device=/dev/video0 1920x1080 encode_fps=60 source_fps=60
+  elapsed=300.014s captured=18028 gated=0 sequence_gaps=0 capture_timeouts=0 submitted=0 encoded=0 empty=0 failed=0 key=0
+  gap_events=0 max_single_gap=0 first_gap_ms=0 last_gap_ms=0
+  capture_fps=60.09 source_ratio=100.15%
+  capture_latency_us:
+    frame_interval   samples=18027 avg=16640 p50=16640 p95=16719 p99=16732 max=16824
+    buffer_wait      samples=18028 avg=12781 p50=13021 p95=13435 p99=14026 max=15564
+    dqbuf_ioctl      samples=18028 avg=36 p50=34 p95=40 p99=142 max=1872
+  result=PASS
+
+stream[1] mode=capture-only device=/dev/video1 1280x720 encode_fps=30 source_fps=60
+  elapsed=300.014s captured=18028 gated=0 sequence_gaps=0 capture_timeouts=0 submitted=0 encoded=0 empty=0 failed=0 key=0
+  gap_events=0 max_single_gap=0 first_gap_ms=0 last_gap_ms=0
+  capture_fps=60.09 source_ratio=100.15%
+  capture_latency_us:
+    frame_interval   samples=18027 avg=16640 p50=16640 p95=16719 p99=16732 max=16824
+    buffer_wait      samples=18028 avg=13154 p50=13401 p95=13874 p99=14158 max=19121
+    dqbuf_ioctl      samples=18028 avg=29 p50=29 p95=34 p99=97 max=680
+  result=PASS
+
+overall=PASS
+
+========== SYSTEM METRICS ==========
+  samples                294
+  soc_temperature        min=48.33 avg=54.07 max=55.55 C samples=294
+  gpu_temperature        min=43.12 avg=49.13 max=50.62 C samples=294
+  cpu_usage              min=16.17 avg=22.59 max=27.97 % samples=293
+  cpu_frequency          min=408000.00 avg=471265.31 max=1416000.00 kHz samples=294
+  ddr_load               min=15.00 avg=15.94 max=17.00 % samples=294
+  ddr_frequency          min=1560000000.00 avg=1560000000.00 max=1560000000.00 Hz samples=294
+  rkvenc_enabled         min=0.00 avg=0.00 max=0.00 ratio samples=294
+  rkvenc_frequency       min=297000000.00 avg=297000000.00 max=297000000.00 Hz samples=294
+  mem_available          min=3749160.00 avg=3749809.13 max=3750104.00 kB samples=294
+[INFO] v4l2 capture deinit success
+[INFO] v4l2 capture deinit success
