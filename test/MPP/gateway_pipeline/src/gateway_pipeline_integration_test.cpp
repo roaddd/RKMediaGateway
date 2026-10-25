@@ -167,6 +167,7 @@ int main(int argc, char **argv)
     int thread_ret = 0;
     int source_idx = 0;
     int stream_idx = 0;
+    int rtsp_output_selected = 0;
     int test_failed = 0;
 
     if (argc > 1 && argv[1] && argv[1][0] != '\0')
@@ -186,12 +187,13 @@ int main(int argc, char **argv)
     }
     def_value_get_media_gateway_config(&config);
     /*
-     * 本测试只隔离验证正式视频采集和编码链路。关闭音频与网络输出，避免ALSA设备占用、
-     * 云端信令或协议服务器状态把视频pipeline容量测试误判为失败。
+     * 本测试隔离验证正式视频采集、编码和分发链路。关闭音频及外部推送协议，只为
+     * 第一条启用的视频流保留本地RTSP监听；无需连接客户端，但满足生产网关至少存在
+     * 一个输出通道的运行约束。
      */
     config.audio.source.enabled = 0;
     config.audio.talkback.enabled = 0;
-    config.output.switches.enable_rtsp = 0;
+    config.output.switches.enable_rtsp = 1;
     config.output.switches.enable_rtmp = 0;
     config.output.switches.enable_gb28181 = 0;
     config.output.switches.enable_webrtc = 0;
@@ -201,9 +203,37 @@ int main(int argc, char **argv)
         config.video.streams[stream_idx].enable_rtmp = 0;
         config.video.streams[stream_idx].enable_gb28181 = 0;
         config.video.streams[stream_idx].enable_webrtc = 0;
+        if (!rtsp_output_selected && config.video.streams[stream_idx].enabled)
+        {
+            config.video.streams[stream_idx].enable_rtsp = 1;
+            rtsp_output_selected = 1;
+        }
+    }
+    if (!rtsp_output_selected)
+    {
+        fprintf(stderr, "no enabled video stream in config: %s\n", config_path);
+        return EXIT_FAILURE;
     }
     log_set_level(static_cast<LogLevel>(config.system.log.level));
     log_set_immediate_flush(1);
+
+    printf("gateway pipeline integration test: duration=%ds capture_sources=%d streams=%d\n",
+           duration_sec,
+           config.input.capture_source_count,
+           config.video.stream_count);
+    for (stream_idx = 0; stream_idx < config.video.stream_count; ++stream_idx)
+    {
+        if (!config.video.streams[stream_idx].enabled)
+            continue;
+        printf("  stream[%d] source=%d resolution=%dx%d fps=%d bitrate=%d rtsp=%s\n",
+               stream_idx,
+               config.video.streams[stream_idx].source_index,
+               config.video.streams[stream_idx].width,
+               config.video.streams[stream_idx].height,
+               config.video.streams[stream_idx].fps,
+               config.video.streams[stream_idx].bitrate,
+               config.video.streams[stream_idx].enable_rtsp ? "on" : "off");
+    }
 
     if (media_gateway_init(&gateway, &config) != MEDIA_OK)
     {
