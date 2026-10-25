@@ -9,3 +9,4 @@ endif()
 
 add_subdirectory(webRTC)
 add_subdirectory(MPP)
+add_subdirectory(capability)

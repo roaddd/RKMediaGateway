@@ -701,8 +701,7 @@ static void *video_encode_thread_main(void *arg)
     }
     pipeline = thread_arg->pipeline;
     stream_idx = thread_arg->stream_idx;
-    if (!pipeline || !pipeline->ctx ||
-        stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    if (!pipeline || !pipeline->ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
     {
         LOG_ERROR("video_encode_thread_main failed: pipeline=%p ctx=%p stream=%d",
                   (void *)pipeline,
@@ -965,7 +964,7 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     {
         if (!ctx->video.streams[i].enabled)
             continue;
-        source_idx = ctx->config.video.streams[i].source_index;
+        source_idx = ctx->config.video.streams[i].source_index; /* 找到每路流对应的采集源下标 */
         if (source_idx < 0 || source_idx >= ctx->config.input.capture_source_count ||
             !ctx->video.captures[source_idx].ready)
         {
