@@ -203,6 +203,11 @@ int main(int argc, char **argv)
         config.video.streams[stream_idx].enable_rtmp = 0;
         config.video.streams[stream_idx].enable_gb28181 = 0;
         config.video.streams[stream_idx].enable_webrtc = 0;
+        /* 音频已关闭，所有协议的音频编码组绑定也必须显式清空。 */
+        config.video.streams[stream_idx].rtsp_audio.encoder_group = "";
+        config.video.streams[stream_idx].rtmp_audio.encoder_group = "";
+        config.video.streams[stream_idx].gb28181_audio.encoder_group = "";
+        config.video.streams[stream_idx].webrtc_audio.encoder_group = "";
         if (!rtsp_output_selected && config.video.streams[stream_idx].enabled)
         {
             config.video.streams[stream_idx].enable_rtsp = 1;
