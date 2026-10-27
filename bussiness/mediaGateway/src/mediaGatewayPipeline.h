@@ -14,6 +14,7 @@
 #include "audioFrameSource.h"
 #include "mediaFrameSource.h"
 #include "threadMessageQueue.h"
+#include "videoFrameRate.h"
 
 #include <stdint.h>
 
@@ -28,6 +29,7 @@ extern "C" {
  * MediaFrameSource 的 latest-frame 槽中，控制命令仍保存在 command_queue 中。
  */
 typedef struct {
+    VideoFrameRateGate frame_rate_gate; /* 将共享采集帧率转换为本路编码目标帧率。 */
     MediaFrameSource *source;         /* 当前 stream 独占的视频采集帧源。 */
     ThreadMessageQueue command_queue; /* 仅由对应编码线程消费的控制命令队列。 */
     pthread_mutex_t state_lock;       /* 保护 running 生命周期状态。 */

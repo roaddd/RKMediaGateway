@@ -2,7 +2,7 @@
  * @file mediaGatewayVideoPipelineStats.h
  * @brief 正式视频编码pipeline运行统计接口。
  *
- * 模块接收编码worker已经发生的语义事件，统一计算deadline miss、连续超期和MPP阶段耗时。
+ * 模块接收编码worker已经发生的语义事件，统一计算deadline miss、连续超时和MPP阶段耗时。
  * 调用方负责使用所属运行时互斥锁保护记录及快照操作。
  */
 
@@ -20,6 +20,7 @@ extern "C" {
 /** 单路视频编码pipeline从启动至当前时刻的累计统计快照。 */
 typedef struct {
     uint64_t acquired_frames;                 /* 编码worker从帧源取得的帧数。 */
+    uint64_t frame_rate_gate_drops;           /* 为满足本路目标帧率而主动丢弃的输入帧数。 */
     uint64_t encoded_frames;                  /* MPP成功产生编码结果的帧数。 */
     uint64_t encode_failures;                 /* MPP编码调用失败的帧数。 */
     uint64_t overwrites_while_encoder_busy;   /* worker同步编码和分发期间帧源覆盖的旧帧数。 */
@@ -54,6 +55,10 @@ MediaResult media_gateway_video_pipeline_stats_init(
 
 /** @brief 记录编码worker成功从MediaFrameSource取得一帧。 */
 MediaResult media_gateway_video_pipeline_stats_record_acquire(
+    MediaGatewayVideoPipelineStatsTracker *tracker);
+
+/** @brief 记录一帧被本路帧率门控器主动丢弃。 */
+MediaResult media_gateway_video_pipeline_stats_record_frame_rate_gate_drop(
     MediaGatewayVideoPipelineStatsTracker *tracker);
 
 /**

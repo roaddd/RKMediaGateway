@@ -516,10 +516,10 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_BLUE, "VIDEO_PIPELINE");
     debug_command_reply_append(reply,
                                &offset,
-                               "  id  acquired  encoded  failures  busy_overwrite  deadline_miss  max_streak  avg_us  max_us  wait_avg_us\n");
+                               "  id  acquired  gate_drop  encoded  failures  busy_overwrite  deadline_miss  max_streak  avg_us  max_us  wait_avg_us\n");
     debug_command_reply_append(reply,
                                &offset,
-                               "  --  --------  -------  --------  --------------  -------------  ----------  ------  ------  -----------\n");
+                               "  --  --------  ---------  -------  --------  --------------  -------------  ----------  ------  ------  -----------\n");
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
         video_average_encode_us = 0.0;
@@ -535,9 +535,10 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
         }
         debug_command_reply_append(reply,
                                    &offset,
-                                   "  %-2d  %8" PRIu64 "  %7" PRIu64 "  %8" PRIu64 "  %14" PRIu64 "  %13" PRIu64 "  %10" PRIu64 "  %6.1f  %6" PRIu64 "  %11.1f\n",
+                                   "  %-2d  %8" PRIu64 "  %9" PRIu64 "  %7" PRIu64 "  %8" PRIu64 "  %14" PRIu64 "  %13" PRIu64 "  %10" PRIu64 "  %6.1f  %6" PRIu64 "  %11.1f\n",
                                    i,
                                    video_pipeline_stats[i].acquired_frames,
+                                   video_pipeline_stats[i].frame_rate_gate_drops,
                                    video_pipeline_stats[i].encoded_frames,
                                    video_pipeline_stats[i].encode_failures,
                                    video_pipeline_stats[i].overwrites_while_encoder_busy,

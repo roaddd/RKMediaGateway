@@ -126,12 +126,13 @@ static MediaResult verify_video_stream(MediaGatewayCtx *gateway, int stream_idx)
                                  static_cast<double>(stats.encoded_frames);
     }
 
-    printf("stream[%d] acquired=%" PRIu64 " encoded=%" PRIu64
+    printf("stream[%d] acquired=%" PRIu64 " gate_drop=%" PRIu64 " encoded=%" PRIu64
            " failures=%" PRIu64 " busy_overwrite=%" PRIu64
            " deadline_miss=%" PRIu64 " max_streak=%" PRIu64
            " avg_us=%.1f max_us=%" PRIu64 " packet_wait_avg_us=%.1f\n",
            stream_idx,
            stats.acquired_frames,
+           stats.frame_rate_gate_drops,
            stats.encoded_frames,
            stats.encode_failures,
            stats.overwrites_while_encoder_busy,

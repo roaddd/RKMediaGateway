@@ -191,23 +191,41 @@ static int video_worker_is_running(VideoEncodeWorker *worker)
 /**
  * @brief 初始化单路视频编码 worker 的帧源引用、控制事件和命令队列。
  */
-static int video_worker_init(VideoEncodeWorker *worker, MediaFrameSource *source)
+static int video_worker_init(VideoEncodeWorker *worker,
+                             MediaFrameSource *source,
+                             int source_fps,
+                             int stream_fps)
 {
+    MediaResult gate_ret = MEDIA_OK;
     int mutex_ret = 0;
     int queue_ret = 0;
     int event_fd = -1;
 
-    if (!worker || !source)
+    if (!worker || !source || source_fps <= 0 || stream_fps <= 0)
     {
-        LOG_ERROR("video_worker_init failed: worker=%p source=%p",
+        LOG_ERROR("video_worker_init failed: worker=%p source=%p source_fps=%d stream_fps=%d",
                   (void *)worker,
-                  (void *)source);
+                  (void *)source,
+                  source_fps,
+                  stream_fps);
         return -1;
     }
 
     memset(worker, 0, sizeof(*worker));
     worker->control_event_fd = -1;
     worker->source = source;
+    /* worker取得共享采集帧后，先按本路目标帧率决定是否送入MPP编码器。 */
+    gate_ret = video_frame_rate_gate_init(&worker->frame_rate_gate,
+                                          source_fps,
+                                          stream_fps);
+    if (gate_ret != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_init failed: init frame rate gate source_fps=%d stream_fps=%d ret=%d",
+                  source_fps,
+                  stream_fps,
+                  gate_ret);
+        return -1;
+    }
     /* 第一步：初始化只保护 worker 生命周期状态的锁。 */
     mutex_ret = pthread_mutex_init(&worker->state_lock, NULL);
     if (mutex_ret != 0)
@@ -407,6 +425,8 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
 {
     const MediaSetFpsRequest *request = NULL;
     MediaSetFpsResult result = {0};
+    VideoEncodeWorker *worker = NULL;
+    MediaResult gate_ret = MEDIA_OK;
     int ret = -1;
 
     if (!pipeline || !command ||
@@ -426,9 +446,25 @@ static void video_worker_execute_set_fps(MediaGatewayPipeline *pipeline,
     }
 
     request = (const MediaSetFpsRequest *)command->data;
+    worker = &pipeline->video.workers[stream_idx];
     result.requested_fps = request->target_fps;
     ret = mpp_encoder_set_fps(&pipeline->ctx->video.streams[stream_idx].encoder,
                               request->target_fps);
+    if (ret == MEDIA_OK)
+    {
+        /* 动态策略会把共享Sensor和各编码器统一切换到同一目标帧率。 */
+        gate_ret = video_frame_rate_gate_init(&worker->frame_rate_gate,
+                                              request->target_fps,
+                                              request->target_fps);
+        if (gate_ret != MEDIA_OK)
+        {
+            LOG_ERROR("video_worker_execute_set_fps failed: reset frame rate gate stream=%d fps=%d ret=%d",
+                      stream_idx,
+                      request->target_fps,
+                      gate_ret);
+            ret = gate_ret;
+        }
+    }
     if (ret == MEDIA_OK)
     {
         result.applied_fps = request->target_fps;
@@ -458,6 +494,8 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
     const MediaSetVideoEncodeParamsRequest *request = NULL;
     MediaSetVideoEncodeParamsResult result = {0};
     MediaGatewayStreamConfig *stream = NULL;
+    VideoEncodeWorker *worker = NULL;
+    MediaResult gate_ret = MEDIA_OK;
     int ret = -1;
 
     if (!pipeline || !command ||
@@ -477,9 +515,25 @@ static void video_worker_execute_set_video_encode_params(MediaGatewayPipeline *p
     }
 
     request = (const MediaSetVideoEncodeParamsRequest *)command->data;
+    worker = &pipeline->video.workers[stream_idx];
     result.requested_params = request->params;
     ret = mpp_encoder_apply_video_encode_params(&pipeline->ctx->video.streams[stream_idx].encoder,
                                                 &request->params);
+    if (ret == MEDIA_OK)
+    {
+        /* 联合参数切换同样由自适应事务驱动，Sensor与编码器使用相同新帧率。 */
+        gate_ret = video_frame_rate_gate_init(&worker->frame_rate_gate,
+                                              request->params.fps,
+                                              request->params.fps);
+        if (gate_ret != MEDIA_OK)
+        {
+            LOG_ERROR("video_worker_execute_set_video_encode_params failed: reset frame rate gate stream=%d fps=%d ret=%d",
+                      stream_idx,
+                      request->params.fps,
+                      gate_ret);
+            ret = gate_ret;
+        }
+    }
     if (ret == MEDIA_OK)
     {
         result.applied_params = request->params;
@@ -644,6 +698,49 @@ static int video_worker_record_acquire(MediaGatewayCtx *ctx, int stream_idx)
     return MEDIA_OK;
 }
 
+/** @brief 记录一帧因当前编码流目标帧率较低而被主动门控丢弃。 */
+static int video_worker_record_frame_rate_gate_drop(MediaGatewayCtx *ctx,
+                                                    int stream_idx)
+{
+    MediaResult stats_ret = MEDIA_OK;
+    int lock_ret = 0;
+
+    if (!ctx || stream_idx < 0 || stream_idx >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("video_worker_record_frame_rate_gate_drop failed: ctx=%p stream=%d",
+                  (void *)ctx,
+                  stream_idx);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_frame_rate_gate_drop failed: lock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    stats_ret = media_gateway_video_pipeline_stats_record_frame_rate_gate_drop(
+        &ctx->metrics.video_pipeline[stream_idx]);
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("video_worker_record_frame_rate_gate_drop failed: unlock stream=%d ret=%d",
+                  stream_idx,
+                  lock_ret);
+        return MEDIA_ERR;
+    }
+    if (stats_ret != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_record_frame_rate_gate_drop failed: record stream=%d ret=%d",
+                  stream_idx,
+                  stats_ret);
+        return stats_ret;
+    }
+    return MEDIA_OK;
+}
+
 /**
  * @brief 记录同步编码调用期间latest-frame缓存覆盖的旧帧数量。
  *
@@ -715,6 +812,8 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
     MediaFrame frame = {0};
     MediaFrameSourceStats source_stats_before = {0};
     MediaFrameSourceStats source_stats_after = {0};
+    MediaResult gate_ret = MEDIA_OK;
+    int frame_accepted = 0;
     int source_slot = -1;
     int ret = 0;
 
@@ -773,6 +872,36 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
     video_worker_process_commands(pipeline, stream_idx);
     if (!pipeline->ctx->running || !video_worker_is_running(worker))
     {
+        media_frame_reset(&frame);
+        return 0;
+    }
+
+    /*
+     * Sensor按照所有码流中的最高帧率采集；每个worker在进入MPP前独立门控。
+     * 被门控丢弃的帧仍需释放MediaFrame引用，但不会占用硬件编码资源。
+     */
+    gate_ret = video_frame_rate_gate_accept(&worker->frame_rate_gate,
+                                            &frame_accepted);
+    if (gate_ret != MEDIA_OK)
+    {
+        LOG_ERROR("video_worker_handle_frame_event failed: frame rate gate stream=%d input=%u target=%u ret=%d",
+                  stream_idx,
+                  worker->frame_rate_gate.input_fps,
+                  worker->frame_rate_gate.target_fps,
+                  gate_ret);
+        media_frame_reset(&frame);
+        return -1;
+    }
+    if (!frame_accepted)
+    {
+        if (video_worker_record_frame_rate_gate_drop(pipeline->ctx,
+                                                     stream_idx) != MEDIA_OK)
+        {
+            LOG_ERROR("video_worker_handle_frame_event failed: record frame rate gate drop stream=%d",
+                      stream_idx);
+            media_frame_reset(&frame);
+            return -1;
+        }
         media_frame_reset(&frame);
         return 0;
     }
@@ -1071,6 +1200,9 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
                                 MediaFrameSource *video_sources,
                                 AudioFrameSource *audio_source)
 {
+    VideoFrameRateRequirement requirements[MEDIA_GATEWAY_MAX_STREAMS] = {{0}};
+    MediaResult frame_rate_ret = MEDIA_OK;
+    int source_fps = 0;
     int i = 0;
     int source_idx = -1;
     int mutex_ret = 0;
@@ -1100,6 +1232,28 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
     }
     pipeline->ret_lock_ready = 1;
 
+    /* 所有RKISP输出共享Sensor节拍，编码worker以最高目标帧率作为门控输入。 */
+    for (i = 0; i < ctx->config.video.stream_count; ++i)
+    {
+        requirements[i].enabled = ctx->video.streams[i].enabled;
+        requirements[i].target_fps = ctx->config.video.streams[i].fps;
+    }
+    if (ctx->config.video.stream_count > 0)
+    {
+        frame_rate_ret = video_frame_rate_select_source_fps(
+            requirements,
+            (size_t)ctx->config.video.stream_count,
+            &source_fps);
+        if (frame_rate_ret != MEDIA_OK)
+        {
+            LOG_ERROR("media_gateway_pipeline_init failed: select source fps ret=%d",
+                      frame_rate_ret);
+            pthread_mutex_destroy(&pipeline->ret_lock);
+            pipeline->ret_lock_ready = 0;
+            return -1;
+        }
+    }
+
     /* 每路启用 stream 独占一个帧源，worker 直接 poll 帧源和自己的控制 eventfd。 */
     for (i = 0; i < ctx->config.video.stream_count; ++i)
     {
@@ -1117,7 +1271,10 @@ int media_gateway_pipeline_init(MediaGatewayPipeline *pipeline,
                           : 0);
             return -1;
         }
-        if (video_worker_init(&pipeline->video.workers[i], &video_sources[source_idx]) != 0)
+        if (video_worker_init(&pipeline->video.workers[i],
+                              &video_sources[source_idx],
+                              source_fps,
+                              ctx->config.video.streams[i].fps) != 0)
         {
             LOG_ERROR("media_gateway_pipeline_init failed: video worker stream=%d source=%d",
                       i,

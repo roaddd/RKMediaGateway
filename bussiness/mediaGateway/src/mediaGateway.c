@@ -15,6 +15,7 @@
 #include "mediaGatewayProcess.h"
 #include "mediaGatewayStats.h"
 #include "mediaGatewayDebug.h"
+#include "videoFrameRate.h"
 
 #include "audioFrameSource.h"
 #include "mediaControlMessage.h"
@@ -2156,6 +2157,78 @@ static int init_gateway_captures(MediaGatewayCtx *ctx)
 }
 
 /**
+ * @brief 按全部启用码流的最高帧率配置共享Sensor输入帧率。
+ *
+ * RKISP mainpath和selfpath来自同一个Sensor时，共享同一个物理输入帧率。这里通过
+ * 第一条启用码流绑定的采集节点找到Sensor subdev并设置最高需求帧率；较低帧率码流
+ * 由各自视频worker执行确定性门控。
+ */
+static int configure_gateway_sensor_fps(MediaGatewayCtx *ctx)
+{
+    VideoFrameRateRequirement requirements[MEDIA_GATEWAY_MAX_STREAMS] = {{0}};
+    MediaResult plan_ret = MEDIA_OK;
+    int sensor_fps = 0;
+    int sensor_source_idx = -1;
+    int stream_idx = 0;
+    int set_ret = 0;
+
+    if (!ctx)
+    {
+        LOG_ERROR("configure_gateway_sensor_fps failed: ctx is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (ctx->config.video.stream_count <= 0)
+        return MEDIA_OK;
+
+    for (stream_idx = 0; stream_idx < ctx->config.video.stream_count; ++stream_idx)
+    {
+        requirements[stream_idx].enabled = ctx->config.video.streams[stream_idx].enabled;
+        requirements[stream_idx].target_fps = ctx->config.video.streams[stream_idx].fps;
+        if (sensor_source_idx < 0 && requirements[stream_idx].enabled)
+            sensor_source_idx = ctx->config.video.streams[stream_idx].source_index;
+    }
+    plan_ret = video_frame_rate_select_source_fps(requirements,
+                                                   (size_t)ctx->config.video.stream_count,
+                                                   &sensor_fps);
+    if (plan_ret != MEDIA_OK)
+    {
+        LOG_ERROR("configure_gateway_sensor_fps failed: select sensor fps ret=%d",
+                  plan_ret);
+        return plan_ret;
+    }
+    if (sensor_source_idx < 0 ||
+        sensor_source_idx >= ctx->config.input.capture_source_count ||
+        !ctx->video.captures[sensor_source_idx].ready)
+    {
+        LOG_ERROR("configure_gateway_sensor_fps failed: source=%d count=%d ready=%d",
+                  sensor_source_idx,
+                  ctx->config.input.capture_source_count,
+                  (sensor_source_idx >= 0 &&
+                   sensor_source_idx < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES)
+                      ? ctx->video.captures[sensor_source_idx].ready
+                      : 0);
+        return MEDIA_ERR_NOT_READY;
+    }
+
+    set_ret = v4l2_capture_set_fps(
+        &ctx->video.captures[sensor_source_idx].capture,
+        sensor_fps);
+    if (set_ret != MEDIA_OK)
+    {
+        LOG_ERROR("configure_gateway_sensor_fps failed: source=%d fps=%d ret=%d",
+                  sensor_source_idx,
+                  sensor_fps,
+                  set_ret);
+        return set_ret;
+    }
+    LOG_INFO("gateway sensor fps configured: source=%d fps=%d streams=%d",
+             sensor_source_idx,
+             sensor_fps,
+             ctx->config.video.stream_count);
+    return MEDIA_OK;
+}
+
+/**
  * @description: 初始化所有启用 stream 的视频编码器。
  */
 static int init_gateway_video_encoders(MediaGatewayCtx *ctx)
@@ -2626,6 +2699,11 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config)
     if (init_gateway_captures(ctx) != 0)
     {
         LOG_ERROR("init gateway captures");
+        goto fail;
+    }
+    if (configure_gateway_sensor_fps(ctx) != MEDIA_OK)
+    {
+        LOG_ERROR("init gateway sensor fps");
         goto fail;
     }
     if (init_gateway_video_encoders(ctx) != 0)

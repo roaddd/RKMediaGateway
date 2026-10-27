@@ -8,6 +8,7 @@
 #   ./build.sh mpp_latency_statistics_test Release OFF
 #   ./build.sh media_frame_source_stats_test Release OFF
 #   ./build.sh video_pipeline_stats_test Release OFF
+#   ./build.sh video_frame_rate_plan_test Release OFF
 #   ./build.sh gateway_pipeline_integration_test Release
 #   ./build.sh media_capability_test Release
 #   ./build.sh rtsp_gateway Release
@@ -81,4 +82,4 @@ fi
 
 echo -e "${GREEN}=== Build succeeded ===${NC}"
 echo "Artifacts: ${BUILD_DIR}"
-ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|mpp_encoder_capacity_test|mpp_encoder_dmabuf_test|mpp_latency_statistics_test|media_frame_source_stats_test|video_pipeline_stats_test|gateway_pipeline_integration_test|media_capability_test|rtsp_gateway|dual_output_test|audio_capture_test|audio_pipeline_test|audio_multi_encoder_test|audio_playback_test|audio_decoder_test|gb28181_device|webrtc_peerconnection_test|webrtc_ws_server_test|webrtc_audio_receiver_test"
+ls -l "${BUILD_DIR}" | grep -E "v4l2_test|mpp_test|mpp_encoder_capacity_test|mpp_encoder_dmabuf_test|mpp_latency_statistics_test|media_frame_source_stats_test|video_pipeline_stats_test|video_frame_rate_plan_test|gateway_pipeline_integration_test|media_capability_test|rtsp_gateway|dual_output_test|audio_capture_test|audio_pipeline_test|audio_multi_encoder_test|audio_playback_test|audio_decoder_test|gb28181_device|webrtc_peerconnection_test|webrtc_ws_server_test|webrtc_audio_receiver_test"

@@ -35,6 +35,19 @@ MediaResult media_gateway_video_pipeline_stats_record_acquire(
     return MEDIA_OK;
 }
 
+MediaResult media_gateway_video_pipeline_stats_record_frame_rate_gate_drop(
+    MediaGatewayVideoPipelineStatsTracker *tracker)
+{
+    if (!tracker)
+    {
+        LOG_ERROR("media_gateway_video_pipeline_stats_record_frame_rate_gate_drop failed: tracker is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    tracker->totals.frame_rate_gate_drops++;
+    return MEDIA_OK;
+}
+
 MediaResult media_gateway_video_pipeline_stats_record_busy_overwrite_window(
     MediaGatewayVideoPipelineStatsTracker *tracker,
     uint64_t overwrites_before,

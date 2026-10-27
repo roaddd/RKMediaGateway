@@ -78,6 +78,8 @@ static int test_overwrites_during_encode_are_accumulated(void)
     media_gateway_video_pipeline_stats_init(&tracker);
     TEST_ASSERT(media_gateway_video_pipeline_stats_record_acquire(&tracker) == MEDIA_OK,
                 "record acquired frame");
+    TEST_ASSERT(media_gateway_video_pipeline_stats_record_frame_rate_gate_drop(&tracker) == MEDIA_OK,
+                "record frame rate gate drop");
     TEST_ASSERT(media_gateway_video_pipeline_stats_record_busy_overwrite_window(
                     &tracker, 10U, 13U) == MEDIA_OK,
                 "record busy overwrite delta");
@@ -87,6 +89,8 @@ static int test_overwrites_during_encode_are_accumulated(void)
     TEST_ASSERT(media_gateway_video_pipeline_stats_snapshot(&tracker, &snapshot) == MEDIA_OK,
                 "read overwrite snapshot");
     TEST_ASSERT(snapshot.acquired_frames == 1U, "acquired frame count should be 1");
+    TEST_ASSERT(snapshot.frame_rate_gate_drops == 1U,
+                "frame rate gate drop count should be 1");
     TEST_ASSERT(snapshot.overwrites_while_encoder_busy == 3U,
                 "busy overwrite count should be 3");
     return EXIT_SUCCESS;
