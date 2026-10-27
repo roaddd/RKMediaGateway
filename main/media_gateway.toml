@@ -572,14 +572,14 @@ width = 1920
 # STREAM_MAIN_HEIGHT: 高度。
 height = 1080
 
-# STREAM_MAIN_FPS: 帧率。
-fps = 30
+# STREAM_MAIN_FPS: 主码流固定测试帧率。
+fps = 60
 
 # STREAM_MAIN_BITRATE: 码率，单位 bit/s。
 bitrate = 6291456
 
-# STREAM_MAIN_GOP: GOP 长度。
-gop = 30
+# STREAM_MAIN_GOP: GOP 长度，60 FPS时保持约1秒一个GOP。
+gop = 60
 
 # STREAM_MAIN_RC_MODE: 码率控制模式，0=VBR，1=CBR，2=FIXQP，3=AVBR。
 rc_mode = 1
@@ -780,7 +780,7 @@ video_width = 1920
 video_height = 1080
 
 # STREAM_MAIN_RTMP_VIDEO_FPS: 视频元数据帧率。
-video_fps = 30
+video_fps = 60
 
 # STREAM_MAIN_RTMP_VIDEO_BITRATE: 视频元数据码率。
 video_bitrate = 2097152
@@ -806,7 +806,7 @@ name = "webrtc-main"
 queue_capacity = 32
 
 # STREAM_MAIN_WEBRTC_VIDEO_FPS: WebRTC RTP 视频时间戳使用的帧率。
-video_fps = 30
+video_fps = 60
 
 # -----------------------------------------------------------------------------
 # 主码流输出：GB28181
