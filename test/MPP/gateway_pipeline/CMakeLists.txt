@@ -14,6 +14,22 @@ if(BUILD_TARGET STREQUAL "media_frame_source_stats_test" OR BUILD_TARGET STREQUA
     )
 endif()
 
+if(BUILD_TARGET STREQUAL "video_frame_rate_plan_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(video_frame_rate_plan_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/video_frame_rate_plan_test.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/testLoggerStub.c
+    )
+    target_include_directories(video_frame_rate_plan_test PRIVATE
+        ${PROJECT_SOURCE_DIR}/bussiness/common
+        ${PROJECT_SOURCE_DIR}/bussiness/logger/inc
+        ${PROJECT_SOURCE_DIR}/bussiness/videoFrameRate/inc
+    )
+    target_link_libraries(video_frame_rate_plan_test PRIVATE video_frame_rate)
+    set_target_properties(video_frame_rate_plan_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "gateway_pipeline_integration_test")
     add_executable(gateway_pipeline_integration_test
         ${CMAKE_CURRENT_SOURCE_DIR}/src/gateway_pipeline_integration_test.cpp
@@ -39,6 +55,7 @@ if(BUILD_TARGET STREQUAL "gateway_pipeline_integration_test")
     )
     target_link_libraries(gateway_pipeline_integration_test PRIVATE
         media_capability
+        video_frame_rate
         rockchip_mpp
         rtsp_server
         eXosip2
