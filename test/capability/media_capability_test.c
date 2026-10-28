@@ -38,8 +38,8 @@ static int test_query_provisional_h264_capability(void) {
     TEST_ASSERT(strcmp(media_capability_confidence_string(capability.confidence),
                        "provisional") == 0,
                 "provisional confidence name");
-    TEST_ASSERT(capability.verified_combination_count == 0,
-                "verified combination list must initially be empty");
+    TEST_ASSERT(capability.verified_combination_count == 1,
+                "verified combination count should include 1080p60 plus 720p30");
     return EXIT_SUCCESS;
 }
 
@@ -74,9 +74,9 @@ static int test_accept_current_combination(void) {
 }
 
 /**
- * @brief 验证1080p60和720p30组合在尚未实测前被暂定预算拒绝。
+ * @brief 验证1080p60和720p30精确组合能够越过暂定总像素预算。
  */
-static int test_reject_unverified_target_combination(void) {
+static int test_accept_verified_target_combination(void) {
     MediaVideoEncodeRequirement streams[2];
     MediaVideoCapabilityValidation validation;
     MediaResult ret = MEDIA_ERR;
@@ -95,13 +95,25 @@ static int test_reject_unverified_target_combination(void) {
     streams[1].fps = 30;
 
     ret = media_capability_validate_video_encode(streams, 2, &validation);
-    TEST_ASSERT(ret == MEDIA_ERR_UNSUPPORTED, "reject unverified target combination");
-    TEST_ASSERT(validation.code == MEDIA_VIDEO_CAPABILITY_AGGREGATE_LOAD_EXCEEDED,
-                "target rejection reason");
+    TEST_ASSERT(ret == MEDIA_OK, "accept verified target combination");
+    TEST_ASSERT(validation.code == MEDIA_VIDEO_CAPABILITY_OK,
+                "verified target combination code");
     TEST_ASSERT(validation.requested_pixels_per_second == 152064000ULL,
                 "target aggregate pixel rate");
-    TEST_ASSERT(validation.matched_verified_combination == 0,
-                "target combination must not be marked verified");
+    TEST_ASSERT(validation.matched_verified_combination == 1,
+                "target combination must be marked verified");
+
+    /* 白名单表示码流集合，不应依赖主、子码流在数组中的排列顺序。 */
+    streams[0].width = 1280;
+    streams[0].height = 720;
+    streams[0].fps = 30;
+    streams[1].width = 1920;
+    streams[1].height = 1080;
+    streams[1].fps = 60;
+    ret = media_capability_validate_video_encode(streams, 2, &validation);
+    TEST_ASSERT(ret == MEDIA_OK, "accept reversed verified target combination");
+    TEST_ASSERT(validation.matched_verified_combination == 1,
+                "reversed target combination must be marked verified");
     return EXIT_SUCCESS;
 }
 
@@ -162,8 +174,8 @@ int main(void) {
                 "query provisional H.264 capability test");
     TEST_ASSERT(test_accept_current_combination() == EXIT_SUCCESS,
                 "accept current combination test");
-    TEST_ASSERT(test_reject_unverified_target_combination() == EXIT_SUCCESS,
-                "reject target combination test");
+    TEST_ASSERT(test_accept_verified_target_combination() == EXIT_SUCCESS,
+                "accept verified target combination test");
     TEST_ASSERT(test_stream_level_validation() == EXIT_SUCCESS,
                 "stream-level validation test");
     TEST_ASSERT(test_accept_empty_video_configuration() == EXIT_SUCCESS,

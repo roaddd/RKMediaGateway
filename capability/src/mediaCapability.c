@@ -14,6 +14,7 @@
 #define RK3568_PROVISIONAL_MAX_SINGLE_STREAM_FPS 60
 #define RK3568_PROVISIONAL_MAX_PIXELS_PER_SECOND \
     ((uint64_t)1920 * (uint64_t)1080 * (uint64_t)60)
+#define RK3568_VERIFIED_COMBINATION_COUNT 1U
 
 /**
  * 当前先采用芯片资料中的1080p60作为H.264总像素预算，因此置信级别必须保持
@@ -27,7 +28,7 @@ static const MediaVideoEncodeCapability g_h264_capability = {
     RK3568_PROVISIONAL_MAX_HEIGHT,
     RK3568_PROVISIONAL_MAX_SINGLE_STREAM_FPS,
     RK3568_PROVISIONAL_MAX_PIXELS_PER_SECOND,
-    0,
+    RK3568_VERIFIED_COMBINATION_COUNT,
     MEDIA_CAPABILITY_CONFIDENCE_PROVISIONAL
 };
 
@@ -48,15 +49,46 @@ static void init_validation(MediaVideoCapabilityValidation *validation) {
 /**
  * @brief 返回候选配置是否命中实测组合。
  *
- * 当前矩阵测试尚未结束，白名单为空。保留该内部入口，使后续测试完成后只需
- * 增加能力数据，不需要修改公开接口或准入校验顺序。
+ * 当前精确放行1080p60 + 720p30，用于继续执行正式gateway链路的固定负载验证。
+ * 该白名单不会提高通用总像素预算，也不会放行720p60等其它超预算组合。
+ * 匹配按启用码流集合进行，不依赖主、子码流在配置数组中的排列顺序。
  */
 static int matches_verified_combination(
     const MediaVideoEncodeRequirement *streams,
     size_t stream_count) {
-    (void)streams;
-    (void)stream_count;
-    return 0;
+    const MediaVideoEncodeRequirement *stream = NULL;
+    size_t stream_index = 0;
+    int active_stream_count = 0;
+    int matched_1080p60 = 0;
+    int matched_720p30 = 0;
+
+    if (streams == NULL || stream_count == 0) {
+        return 0;
+    }
+
+    for (stream_index = 0; stream_index < stream_count; ++stream_index) {
+        stream = &streams[stream_index];
+        if (!stream->enabled) {
+            continue;
+        }
+
+        ++active_stream_count;
+        if (stream->codec == MEDIA_CODEC_H264 &&
+            stream->width == 1920 && stream->height == 1080 && stream->fps == 60) {
+            matched_1080p60 = 1;
+            continue;
+        }
+        if (stream->codec == MEDIA_CODEC_H264 &&
+            stream->width == 1280 && stream->height == 720 && stream->fps == 30) {
+            matched_720p30 = 1;
+            continue;
+        }
+
+        /* 任意其它启用码流都表示候选配置不是该精确白名单组合。 */
+        return 0;
+    }
+
+    return active_stream_count == 2 && matched_1080p60 && matched_720p30;
 }
 
 MediaResult media_capability_get_video_encode(
