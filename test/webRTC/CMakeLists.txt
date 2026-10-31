@@ -2,6 +2,17 @@ set(THIRDPARTY_DATACHANNEL_ROOT ${PROJECT_SOURCE_DIR}/thirdparty/datachannel)
 set(THIRDPARTY_DATACHANNEL_INC_DIR ${THIRDPARTY_DATACHANNEL_ROOT}/inc)
 set(THIRDPARTY_DATACHANNEL_LIB ${THIRDPARTY_DATACHANNEL_ROOT}/lib/libdatachannel.so.0.24.5)
 
+if(BUILD_TARGET STREQUAL "webrtc_video_diagnostics_test" OR BUILD_TARGET STREQUAL "all")
+    add_executable(webrtc_video_diagnostics_test
+        ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_video_diagnostics_test.cpp
+        ${PROJECT_SOURCE_DIR}/bussiness/mediaOutput/src/webRTC/src/core/webrtcVideoDiagnostics.cpp
+    )
+    target_compile_features(webrtc_video_diagnostics_test PRIVATE cxx_std_17)
+    set_target_properties(webrtc_video_diagnostics_test PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+endif()
+
 if(BUILD_TARGET STREQUAL "webrtc_audio_receiver_test" OR BUILD_TARGET STREQUAL "all")
     add_executable(webrtc_audio_receiver_test
         ${CMAKE_CURRENT_SOURCE_DIR}/webrtc_audio_receiver_test.cpp
