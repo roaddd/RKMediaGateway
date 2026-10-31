@@ -73,7 +73,7 @@ static void pipeline_set_error(MediaGatewayPipeline *pipeline)
     }
     pthread_mutex_lock(&pipeline->ret_lock);
     pipeline->ret = -1;
-    pipeline->ctx->running = 0;
+    media_gateway_stop(pipeline->ctx);
     pthread_mutex_unlock(&pipeline->ret_lock);
 }
 
@@ -647,7 +647,7 @@ static int video_worker_handle_control_event(MediaGatewayPipeline *pipeline,
                   ret);
         return -1;
     }
-    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+    if (!media_gateway_is_running(pipeline->ctx) || !video_worker_is_running(worker))
         return 0;
 
     video_worker_process_commands(pipeline, stream_idx);
@@ -839,7 +839,7 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
                   ret);
         return -1;
     }
-    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+    if (!media_gateway_is_running(pipeline->ctx) || !video_worker_is_running(worker))
         return 0;
 
     ret = media_frame_source_try_acquire_latest(source, &frame, &source_slot);
@@ -870,7 +870,7 @@ static int video_worker_handle_frame_event(MediaGatewayPipeline *pipeline,
 
     /* 处理等待帧期间新到达的命令，确保新配置在当前帧编码前生效。 */
     video_worker_process_commands(pipeline, stream_idx);
-    if (!pipeline->ctx->running || !video_worker_is_running(worker))
+    if (!media_gateway_is_running(pipeline->ctx) || !video_worker_is_running(worker))
     {
         media_frame_reset(&frame);
         return 0;
@@ -1017,7 +1017,7 @@ static void *video_encode_thread_main(void *arg)
              source_event_fd,
              worker->control_event_fd);
 
-    while (pipeline->ctx->running && video_worker_is_running(worker))
+    while (media_gateway_is_running(pipeline->ctx) && video_worker_is_running(worker))
     {
         /*
          * 帧源和控制命令各自维护 eventfd，poll 可以在没有超时轮询的情况下同时等待两类事件。
@@ -1025,6 +1025,7 @@ static void *video_encode_thread_main(void *arg)
          */
         poll_fds[VIDEO_WORKER_POLL_FRAME].revents = 0;
         poll_fds[VIDEO_WORKER_POLL_CONTROL].revents = 0;
+        /* todo:这里每次都靠fd的事件，会不会存在丢事件的情况呢？ */
         poll_ret = poll(poll_fds, VIDEO_WORKER_POLL_COUNT, -1);
         if (poll_ret < 0)
         {
@@ -1062,7 +1063,7 @@ static void *video_encode_thread_main(void *arg)
                 pipeline_set_error(pipeline);
                 break;
             }
-            if (!pipeline->ctx->running || !video_worker_is_running(worker))
+            if (!media_gateway_is_running(pipeline->ctx) || !video_worker_is_running(worker))
                 break;
         }
 
@@ -1121,7 +1122,7 @@ static void *audio_encode_thread_main(void *arg)
         return NULL;
     }
     pipeline_set_thread_name("enc-", "audio", 0);
-    while (pipeline->ctx->running)
+    while (media_gateway_is_running(pipeline->ctx))
     {
         source_slot = -1;
         ret = audio_frame_source_acquire(pipeline->audio.source,
@@ -1131,7 +1132,7 @@ static void *audio_encode_thread_main(void *arg)
         if (ret < 0)
         {
             /* stop 路径可能与帧源 fatal 状态同时发生，退出时不再升级为 pipeline 错误。 */
-            if (pipeline->ctx->running)
+            if (media_gateway_is_running(pipeline->ctx))
             {
                 LOG_ERROR("audio encode thread failed: acquire source");
                 pipeline_set_error(pipeline);
@@ -1140,7 +1141,7 @@ static void *audio_encode_thread_main(void *arg)
         }
         if (ret == MEDIA_OK)
             continue;
-        if (!pipeline->ctx->running)
+        if (!media_gateway_is_running(pipeline->ctx))
         {
             /* stop 唤醒时 ring 中可能还有未消费帧，退出前只释放 slot，不再发送尾包。 */
             audio_frame_source_release(pipeline->audio.source, source_slot);

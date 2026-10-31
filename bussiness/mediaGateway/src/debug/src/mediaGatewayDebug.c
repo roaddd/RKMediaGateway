@@ -436,7 +436,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     debug_command_reply_append(reply,
                                &offset,
                                "  gateway=%-3s isp=%-3s capture_sources=%d streams=%d outputs=%d\n",
-                               gateway_debug_switch_name(ctx->running),
+                               gateway_debug_switch_name(media_gateway_is_running(ctx)),
                                gateway_debug_switch_name(ctx->video.isp_ready),
                                ctx->config.input.capture_source_count,
                                ctx->config.video.stream_count,
@@ -740,7 +740,7 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
     }
 
     target_fps = (int)fps_value;
-    if (!ctx->running)
+    if (!media_gateway_is_running(ctx))
     {
         LOG_ERROR("gateway_shell_set_fps failed: gateway not running target=%d current=%d",
                   target_fps,

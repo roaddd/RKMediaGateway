@@ -547,7 +547,7 @@ typedef struct {
     MediaGatewayOutputRuntime output;   /* 协议输出通道及其路由状态。 */
     MediaGatewayMetricsRuntime metrics; /* 吞吐统计和 benchmark 状态。 */
     MediaGatewayPolicyRuntime policy;   /* 场景和网络自适应策略状态。 */
-    int running;                        /* 主循环是否正在运行。 */
+    int running;                        /* 主循环运行标志，只能通过原子访问接口读写。 */
     FILE *record_fp;                    /* 本地录像文件句柄。 */
 } MediaGatewayCtx;
 
@@ -566,6 +566,14 @@ int media_gateway_init(MediaGatewayCtx *ctx, const MediaGatewayConfig *config);
  * @description: 运行 gateway 主循环，启动采集源和音视频编码流水线。
  */
 int media_gateway_run(MediaGatewayCtx *ctx);
+
+/**
+ * @brief 原子查询网关主循环是否仍在运行。
+ * @param[in] ctx 网关上下文。
+ * @return 正在运行返回1，ctx为空或已经停止返回0。
+ * @note 供主循环、worker、调试线程和退出信号线程跨线程读取运行状态。
+ */
+int media_gateway_is_running(const MediaGatewayCtx *ctx);
 
 /**
  * @description: 请求 gateway 主循环退出。

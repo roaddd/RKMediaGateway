@@ -57,6 +57,7 @@ typedef struct {
 
 typedef struct {
     MediaGatewayPipeline pipeline;                               /* 运行期音视频编码流水线。 */
+    /* todo:下面三个成员变量可以合并成数组 */
     MediaFrameSource frame_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 视频帧源线程对象。 */
     int frame_source_inited[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES];  /* 对应视频帧源是否已初始化。 */
     int frame_source_started[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 对应视频帧源线程是否已启动。 */
@@ -2657,7 +2658,7 @@ static int init_gateway_runtime_stats(MediaGatewayCtx *ctx)
             return stats_ret;
         }
     }
-    ctx->running = 1;
+    __atomic_store_n(&ctx->running, 1, __ATOMIC_RELEASE);
     ctx->metrics.throughput.last_ts_us = media_gateway_get_now_us();
     ctx->metrics.benchmark.enable = ctx->config.system.bench.enabled ? 1 : 0;
     ctx->metrics.benchmark.sample_every = ctx->config.system.bench.sample_every;
@@ -3668,7 +3669,7 @@ static void cleanup_run_resources(MediaGatewayCtx *ctx, MediaGatewayRunResources
 {
     int source_idx = 0;
 
-    ctx->running = 0;
+    __atomic_store_n(&ctx->running, 0, __ATOMIC_RELEASE);
     /* 第一步：停止帧源并发送停止通知，唤醒直接等待帧源的音视频编码线程。 */
     if (res->audio_source_inited)
         audio_frame_source_stop(&res->audio_source);
@@ -3707,7 +3708,7 @@ int media_gateway_run(MediaGatewayCtx *ctx)
     MediaGatewayRunResources res = {0};
     int ret = 0;
 
-    if (!ctx || !ctx->running)
+    if (!ctx || !media_gateway_is_running(ctx))
     {
         LOG_ERROR("media_gateway_run failed: invalid ctx or not running");
         return -1;
@@ -3762,7 +3763,7 @@ int media_gateway_run(MediaGatewayCtx *ctx)
         goto out;
     }
     /* 进入主循环 */
-    while (ctx->running)
+    while (media_gateway_is_running(ctx))
     {
         if (run_gateway_once(ctx, &res) != 0)
         {
@@ -3777,13 +3778,26 @@ out:
 }
 
 /**
+ * @brief 原子查询网关主循环是否仍在运行。
+ * @param[in] ctx 网关上下文。
+ * @return 正在运行返回1，ctx为空或已经停止返回0。
+ */
+int media_gateway_is_running(const MediaGatewayCtx *ctx)
+{
+    if (!ctx)
+        return 0;
+    return __atomic_load_n(&ctx->running, __ATOMIC_ACQUIRE) != 0;
+}
+
+/**
  * @description: 请求 gateway 运行循环退出。
  */
 void media_gateway_stop(MediaGatewayCtx *ctx)
 {
     if (!ctx)
         return;
-    ctx->running = 0;
+    /* 本函数只发布停止请求，资源由 run 返回后的既定清理链路统一释放。 */
+    __atomic_store_n(&ctx->running, 0, __ATOMIC_RELEASE);
 }
 
 /**
@@ -3823,6 +3837,10 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
         audio_capture_deinit(&ctx->audio.capture);
         ctx->audio.capture_ready = 0;
     }
+    /*
+     * media_gateway_run() 已等待所有编码 worker 退出。此处先销毁 MPP 上下文，确保
+     * RKVENC 不再引用任何采集 DMA-BUF，然后才能进入后面的 V4L2 资源释放阶段。
+     */
     for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
         if (ctx->video.streams[i].encoder_ready)
@@ -3834,6 +3852,7 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
         ctx->video.streams[i].scaled_frame_cache = NULL;
         ctx->video.streams[i].scaled_frame_cache_size = 0;
     }
+    /* MPP 已完全停止后，v4l2_capture_deinit() 才会关闭导出的 DMA-BUF fd。 */
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
     {
         if (ctx->video.captures[i].ready)
@@ -3853,6 +3872,6 @@ void media_gateway_deinit(MediaGatewayCtx *ctx)
         ctx->metrics.lock_ready = 0;
     }
     memset(&ctx->config, 0, sizeof(ctx->config));
-    ctx->running = 0;
+    __atomic_store_n(&ctx->running, 0, __ATOMIC_RELEASE);
 }
 

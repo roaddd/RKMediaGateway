@@ -72,7 +72,7 @@ typedef struct {
     MediaGatewayRunState state;                             /* 编码过程中的运行状态和失败统计。 */
     MediaGatewayVideoEncodeGroup video;                      /* 视频帧源引用、控制 eventfd 和 worker 线程资源。 */
     MediaGatewayAudioEncodeGroup audio;                      /* 音频帧源引用、转换缓存和编码 worker。 */
-    pthread_mutex_t ret_lock;                                /* 保护 ret，并在 fatal error 时同步 ctx->running。 */
+    pthread_mutex_t ret_lock;                                /* 保护 ret，并在 fatal error 时请求 gateway 停止。 */
     int ret_lock_ready;                                      /* ret_lock 是否初始化成功。 */
     int ret;                                                 /* pipeline 运行结果：0 正常，-1 表示工作线程遇到致命错误。 */
     ThreadMessageQueue *result_queue;                         /* 编码线程执行结果统一回传队列。 */
