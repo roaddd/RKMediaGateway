@@ -148,6 +148,9 @@ static void debug_print_media_summary(char *reply,
                                offset,
                                "\n  media summary\n"
                                "    video input     : frames=%llu bytes=%llu\n"
+                               "    video window    : valid=%s duration=%llums frames=%llu bytes=%llu "
+                               "bitrate=%.2fkbps keyframes=%llu max_frame=%llu max_keyframe=%llu\n"
+                               "    video peaks     : bitrate=%.2fkbps max_frame=%llu max_keyframe=%llu\n"
                                "    video broadcast : targets=%llu no_ready=%llu\n"
                                "    video keyframe : pending=%s pli_pending=%s requests=%llu\n"
                                "    video pli      : rx=%llu accepted=%llu deferred=%llu\n"
@@ -158,6 +161,17 @@ static void debug_print_media_summary(char *reply,
                                "    audio receive   : rtp_packets=%llu payload_bytes=%llu\n",
                                static_cast<unsigned long long>(stats.inputVideoFrames),
                                static_cast<unsigned long long>(stats.inputVideoBytes),
+                               debug_bool_text(stats.videoWindowValid),
+                               static_cast<unsigned long long>(stats.videoWindowDurationMs),
+                               static_cast<unsigned long long>(stats.videoWindowFrames),
+                               static_cast<unsigned long long>(stats.videoWindowBytes),
+                               static_cast<double>(stats.videoWindowBitrateBps) / 1000.0,
+                               static_cast<unsigned long long>(stats.videoWindowKeyFrames),
+                               static_cast<unsigned long long>(stats.videoWindowMaxFrameBytes),
+                               static_cast<unsigned long long>(stats.videoWindowMaxKeyFrameBytes),
+                               static_cast<double>(stats.videoPeakBitrateBps) / 1000.0,
+                               static_cast<unsigned long long>(stats.videoMaxFrameBytes),
+                               static_cast<unsigned long long>(stats.videoMaxKeyFrameBytes),
                                static_cast<unsigned long long>(stats.videoBroadcastTargets),
                                static_cast<unsigned long long>(stats.videoNoReadySession),
                                debug_bool_text(stats.pendingVideoKeyframeRequest),
@@ -314,6 +328,50 @@ static void debug_print_session_counter_table(char *reply,
     }
 }
 
+/* 打印每个会话的视频 Track 发送耗时和内部待发送字节高水位。 */
+static void debug_print_video_transport_table(
+    char *reply,
+    size_t *offset,
+    const std::vector<WebRtcSessionStats> &sessions)
+{
+    size_t i;
+
+    if (sessions.empty()) {
+        return;
+    }
+
+    debug_command_reply_append(reply,
+                               offset,
+                               "\n  video transport diagnostics\n"
+                               "    %-24s %12s %12s %14s %14s %10s\n"
+                               "    %-24s %12s %12s %14s %14s %10s\n",
+                               "session_id",
+                               "send_avg_us",
+                               "send_max_us",
+                               "buffered_now",
+                               "buffered_max",
+                               "send_fail",
+                               "------------------------",
+                               "------------",
+                               "------------",
+                               "--------------",
+                               "--------------",
+                               "----------");
+
+    for (i = 0; i < sessions.size(); ++i) {
+        debug_command_reply_append(
+            reply,
+            offset,
+            "    %-24.24s %12llu %12llu %14llu %14llu %10llu\n",
+            sessions[i].sessionId.c_str(),
+            static_cast<unsigned long long>(sessions[i].videoSendCallAverageUs),
+            static_cast<unsigned long long>(sessions[i].videoSendCallMaxUs),
+            static_cast<unsigned long long>(sessions[i].videoBufferedAmount),
+            static_cast<unsigned long long>(sessions[i].videoBufferedAmountMax),
+            static_cast<unsigned long long>(sessions[i].videoSendFail));
+    }
+}
+
 /* 打印浏览器到设备的音频 RTP 接收质量和最近包位置。 */
 static void debug_print_incoming_audio_table(
     char *reply,
@@ -456,6 +514,7 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
         debug_print_media_summary(output, &offset, stats);
         debug_print_session_state_table(output, &offset, stats.sessions);
         debug_print_session_counter_table(output, &offset, stats.sessions);
+        debug_print_video_transport_table(output, &offset, stats.sessions);
         debug_print_incoming_audio_table(output, &offset, stats.sessions);
         debug_print_pli_test_table(output, &offset, stats.sessions);
     }

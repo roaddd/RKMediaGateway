@@ -11,6 +11,7 @@
 #define __WEBRTC_STREAM_ENDPOINT_H__
 
 #include "webrtcSession.h"
+#include "webrtcVideoDiagnostics.h"
 
 #include <chrono>
 #include <cstdint>
@@ -162,6 +163,7 @@ private:
 
     /* 媒体收发统计。 */
     WebRtcStreamMediaCounters mediaCounters_; /* 视频/音频输入和广播的内部累计统计。 */
+    WebRtcVideoDiagnostics videoDiagnostics_; /* 编码视频500 ms窗口与峰值诊断。 */
 
     /* PLI/FIR 与 IDR 请求调度状态。 */
     WebRtcKeyframeRequestState keyframeState_; /* 新客户端与 PLI/FIR 共用的 IDR 调度状态。 */

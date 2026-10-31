@@ -43,6 +43,10 @@ struct WebRtcSessionStats {
     uint64_t pliTestPliRecovered;                /* 收到 PLI/FIR 后恢复发送的次数。 */
     uint64_t pliTestTimeouts;                    /* PLI 测试超时恢复次数。 */
     uint64_t videoSendFail;                      /* 视频转换或发送失败次数。 */
+    uint64_t videoSendCallAverageUs;             /* video Track sendFrame 平均调用耗时。 */
+    uint64_t videoSendCallMaxUs;                 /* video Track sendFrame 最大调用耗时。 */
+    uint64_t videoBufferedAmount;                /* 最近一次发送后的 Track 待发送字节数。 */
+    uint64_t videoBufferedAmountMax;             /* Track 待发送字节数历史高水位。 */
     uint64_t audioFrames;                        /* 成功发送的音频编码包数。 */
     uint64_t audioBytes;                         /* 成功发送的音频编码字节数。 */
     uint64_t audioNotReady;                      /* 音频 Track 未就绪导致的丢包数。 */
@@ -80,6 +84,17 @@ struct WebRtcStreamEndpointStats {
     uint32_t audioChannels;                      /* 音频编码通道数。 */
     uint64_t inputVideoFrames;                   /* 输入端点的视频帧数。 */
     uint64_t inputVideoBytes;                    /* 输入端点的视频字节数。 */
+    bool videoWindowValid;                       /* 最近500 ms视频窗口统计是否有效。 */
+    uint64_t videoWindowDurationMs;              /* 最近视频窗口实际时长。 */
+    uint64_t videoWindowFrames;                  /* 最近视频窗口帧数。 */
+    uint64_t videoWindowBytes;                   /* 最近视频窗口字节数。 */
+    uint64_t videoWindowBitrateBps;              /* 最近视频窗口瞬时码率。 */
+    uint64_t videoWindowKeyFrames;               /* 最近视频窗口关键帧数。 */
+    uint64_t videoWindowMaxFrameBytes;           /* 最近窗口最大单帧字节数。 */
+    uint64_t videoWindowMaxKeyFrameBytes;        /* 最近窗口最大关键帧字节数。 */
+    uint64_t videoMaxFrameBytes;                 /* 端点运行期间最大单帧字节数。 */
+    uint64_t videoMaxKeyFrameBytes;              /* 端点运行期间最大关键帧字节数。 */
+    uint64_t videoPeakBitrateBps;                /* 端点运行期间最高窗口瞬时码率。 */
     uint64_t inputAudioFrames;                   /* 输入端点的音频包数。 */
     uint64_t inputAudioBytes;                    /* 输入端点的音频字节数。 */
     uint64_t videoBroadcastTargets;              /* 视频成功投递到会话的累计次数。 */

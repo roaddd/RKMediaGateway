@@ -84,6 +84,8 @@ static const char *gathering_state_name(rtc::PeerConnection::GatheringState stat
 
 /* PLI 测试最多抑制视频 15 秒，超时后自动恢复该浏览器的视频。 */
 static const std::chrono::seconds WEBRTC_PLI_TEST_TIMEOUT(15);
+/* 缓冲高水位每增加64 KiB记录一次，避免每帧打印相近数值。 */
+static const uint64_t WEBRTC_VIDEO_BUFFER_LOG_STEP_BYTES = 64ULL * 1024ULL;
 
 WebRtcSession::WebRtcSession(const std::string &sessionId,
                              const WebRtcStreamEndpointConfig &config,
@@ -338,6 +340,12 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.pliTestPliRecovered = counters_.pliTestPliRecovered;
     stats.pliTestTimeouts = counters_.pliTestTimeouts;
     stats.videoSendFail = counters_.videoSendFail;
+    stats.videoSendCallAverageUs = counters_.videoFrames > 0
+                                       ? counters_.videoSendCallTotalUs / counters_.videoFrames
+                                       : 0;
+    stats.videoSendCallMaxUs = counters_.videoSendCallMaxUs;
+    stats.videoBufferedAmount = counters_.videoBufferedAmount;
+    stats.videoBufferedAmountMax = counters_.videoBufferedAmountMax;
     stats.audioFrames = counters_.audioFrames;
     stats.audioBytes = counters_.audioBytes;
     stats.audioNotReady = counters_.audioNotReady;
@@ -478,10 +486,17 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
     std::shared_ptr<rtc::Track> track;
     rtc::binary payload;
     std::chrono::steady_clock::time_point now;
+    std::chrono::steady_clock::time_point sendStart;
+    std::chrono::steady_clock::time_point sendDone;
+    uint64_t sendCallUs;
+    size_t bufferedAmount;
     bool ok;
     bool waitingForKeyframe;
     bool suppressTestVideo;
     bool requestTimeoutRecovery;
+
+    sendCallUs = 0;
+    bufferedAmount = 0;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -546,7 +561,12 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
     }
 
     try {
+        sendStart = std::chrono::steady_clock::now();
         track->sendFrame(payload, std::chrono::duration<double, std::micro>(frame.ptsUs));
+        sendDone = std::chrono::steady_clock::now();
+        sendCallUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count());
+        bufferedAmount = track->bufferedAmount();
     } catch (const std::exception &e) {
         std::lock_guard<std::mutex> lock(mutex_);
 
@@ -564,6 +584,25 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         }
         ++counters_.videoFrames;
         counters_.videoBytes += frame.size;
+        counters_.videoSendCallTotalUs += sendCallUs;
+        if (sendCallUs > counters_.videoSendCallMaxUs) {
+            counters_.videoSendCallMaxUs = sendCallUs;
+        }
+        counters_.videoBufferedAmount = static_cast<uint64_t>(bufferedAmount);
+        if (counters_.videoBufferedAmount > counters_.videoBufferedAmountMax) {
+            counters_.videoBufferedAmountMax = counters_.videoBufferedAmount;
+        }
+        if (counters_.videoBufferedAmount >=
+            counters_.videoBufferedAmountLastLogged + WEBRTC_VIDEO_BUFFER_LOG_STEP_BYTES) {
+            counters_.videoBufferedAmountLastLogged = counters_.videoBufferedAmount;
+            LOG_WARN("[WEBRTC_VIDEO_DIAG] session=%s buffered_high_water=%llu "
+                     "frame_bytes=%zu keyframe=%d send_call_us=%llu",
+                     sessionId_.c_str(),
+                     static_cast<unsigned long long>(counters_.videoBufferedAmount),
+                     frame.size,
+                     frame.keyFrame ? 1 : 0,
+                     static_cast<unsigned long long>(sendCallUs));
+        }
     }
 
     return true;

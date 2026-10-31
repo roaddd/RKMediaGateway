@@ -71,6 +71,11 @@ struct WebRtcSessionCounters {
     uint64_t pliTestPliRecovered = 0; /* PLI/FIR 到达后自动解除视频抑制的次数。 */
     uint64_t pliTestTimeouts = 0; /* PLI 测试超时并恢复发送的次数。 */
     uint64_t videoSendFail = 0; /* 视频帧转换或发送失败次数。 */
+    uint64_t videoSendCallTotalUs = 0; /* 调用 video Track sendFrame 的累计耗时。 */
+    uint64_t videoSendCallMaxUs = 0; /* 单次 video Track sendFrame 最大耗时。 */
+    uint64_t videoBufferedAmount = 0; /* 最近一次发送完成后的 Track 待发送字节数。 */
+    uint64_t videoBufferedAmountMax = 0; /* 会话运行期间 Track 待发送字节数高水位。 */
+    uint64_t videoBufferedAmountLastLogged = 0; /* 最近一次告警日志对应的缓冲高水位。 */
     uint64_t audioFrames = 0; /* 成功发送到 audio Track 的音频包数量。 */
     uint64_t audioBytes = 0; /* 成功发送到 audio Track 的原始包字节数。 */
     uint64_t audioNotReady = 0; /* audio Track 未打开导致丢包的次数。 */

@@ -136,7 +136,9 @@ button:disabled {
 #wsCloseBtn,
 #resetBtn,
 #clearIpcBtn,
-#clearLogBtn {
+#clearLogBtn,
+#clearStatsBtn,
+#exportStatsBtn {
     border-color: var(--line);
     background: #fff;
     color: var(--text);
@@ -145,8 +147,50 @@ button:disabled {
 #wsCloseBtn:hover:not(:disabled),
 #resetBtn:hover:not(:disabled),
 #clearIpcBtn:hover:not(:disabled),
-#clearLogBtn:hover:not(:disabled) {
+#clearLogBtn:hover:not(:disabled),
+#clearStatsBtn:hover:not(:disabled),
+#exportStatsBtn:hover:not(:disabled) {
     background: #eef2f7;
+}
+
+.panel-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.diagnostic-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(150px, 1fr));
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.diagnostic-grid > div {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #f8fafc;
+}
+
+.diagnostic-grid span {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.diagnostic-grid strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+#statsLog {
+    min-height: 140px;
+    max-height: 320px;
 }
 
 .status-item,
@@ -283,7 +327,8 @@ pre {
     }
 
     .keyframe-test,
-    .keyframe-metrics {
+    .keyframe-metrics,
+    .diagnostic-grid {
         grid-template-columns: 1fr;
     }
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RKMediaGateway WebRTC 测试</title>
-    <link rel="stylesheet" href="style.css?v=20261014-cloud-only-1">
+    <link rel="stylesheet" href="style.css?v=20261030-video-diagnostics-1">
 </head>
 <body>
     <main class="page">
@@ -166,6 +166,29 @@
 
         <section class="panel">
             <div class="panel-head">
+                <h2>白板卡顿专项统计</h2>
+                <div class="panel-actions">
+                    <button id="whiteboardRemoveBtn" type="button" disabled>标记：拿走白板</button>
+                    <button id="whiteboardReturnBtn" type="button" disabled>标记：放回白板</button>
+                    <button id="exportStatsBtn" type="button" disabled>导出 CSV</button>
+                    <button id="clearStatsBtn" type="button">清空</button>
+                </div>
+            </div>
+            <div class="diagnostic-grid">
+                <div><span>接收码率</span><strong id="statsBitrate">-</strong></div>
+                <div><span>接收包/丢包</span><strong id="statsPackets">-</strong></div>
+                <div><span>接收/解码帧率</span><strong id="statsFrames">-</strong></div>
+                <div><span>Freeze</span><strong id="statsFreeze">-</strong></div>
+                <div><span>Jitter</span><strong id="statsJitter">-</strong></div>
+                <div><span>RTT</span><strong id="statsRtt">-</strong></div>
+                <div><span>关键帧</span><strong id="statsKeyFrames">-</strong></div>
+                <div><span>ICE路径</span><strong id="statsIcePath">-</strong></div>
+            </div>
+            <pre id="statsLog"></pre>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
                 <h2>运行日志</h2>
                 <button id="clearLogBtn" type="button">清空</button>
             </div>
@@ -173,6 +196,6 @@
         </section>
     </main>
 
-    <script src="app.js?v=20261014-cloud-only-1"></script>
+    <script src="app.js?v=20261030-video-diagnostics-1"></script>
 </body>
 </html>

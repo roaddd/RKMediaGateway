@@ -1,7 +1,9 @@
 (function () {
     "use strict";
 
-    const BROWSER_TEST_PAGE_VERSION = "2026-10-14-cloud-only-1";
+    const BROWSER_TEST_PAGE_VERSION = "2026-10-30-video-diagnostics-1";
+    const VIDEO_STATS_INTERVAL_MS = 500;
+    const VIDEO_STATS_LOG_MAX_LINES = 240;
 
     const els = {
         wsUrl: document.getElementById("wsUrl"),
@@ -46,6 +48,19 @@
         keyFrameRequestState: document.getElementById("keyFrameRequestState"),
         keyFrameArrivalLatency: document.getElementById("keyFrameArrivalLatency"),
         keyFrameRenderLatency: document.getElementById("keyFrameRenderLatency"),
+        whiteboardRemoveBtn: document.getElementById("whiteboardRemoveBtn"),
+        whiteboardReturnBtn: document.getElementById("whiteboardReturnBtn"),
+        exportStatsBtn: document.getElementById("exportStatsBtn"),
+        clearStatsBtn: document.getElementById("clearStatsBtn"),
+        statsBitrate: document.getElementById("statsBitrate"),
+        statsPackets: document.getElementById("statsPackets"),
+        statsFrames: document.getElementById("statsFrames"),
+        statsFreeze: document.getElementById("statsFreeze"),
+        statsJitter: document.getElementById("statsJitter"),
+        statsRtt: document.getElementById("statsRtt"),
+        statsKeyFrames: document.getElementById("statsKeyFrames"),
+        statsIcePath: document.getElementById("statsIcePath"),
+        statsLog: document.getElementById("statsLog"),
     };
 
     let ws = null;
@@ -65,6 +80,12 @@
     let keyFrameRequestSequence = 0;
     let pendingKeyFrameRequest = null;
     let keyFrameRequestTimeoutId = 0;
+    let videoStatsTimerId = 0;
+    let previousVideoStatsSample = null;
+    let latestVideoStatsRow = null;
+    let videoStatsSequence = 0;
+    let diagnosticLogLines = [];
+    let diagnosticRows = [];
     const renderedVideoFrames = new Map();
 
     function now() {
@@ -79,6 +100,237 @@
     function logIpc(direction, message) {
         els.ipcLog.textContent += `[${now()}] ${direction} ${message}\n`;
         els.ipcLog.scrollTop = els.ipcLog.scrollHeight;
+    }
+
+    /* 将专项诊断文本写入独立窗口，并限制页面保留行数以避免长时间测试占用过多内存。 */
+    function logVideoDiagnostic(message) {
+        diagnosticLogLines.push(`[${now()}] ${message}`);
+        if (diagnosticLogLines.length > VIDEO_STATS_LOG_MAX_LINES) {
+            diagnosticLogLines.splice(0,
+                diagnosticLogLines.length - VIDEO_STATS_LOG_MAX_LINES);
+        }
+        els.statsLog.textContent = `${diagnosticLogLines.join("\n")}\n`;
+        els.statsLog.scrollTop = els.statsLog.scrollHeight;
+    }
+
+    /* 把可能为空或非数字的 WebRTC 统计字段转换为稳定数值。 */
+    function statsNumber(value) {
+        const number = Number(value);
+
+        return Number.isFinite(number) ? number : 0;
+    }
+
+    /* 格式化可读码率，CSV仍保留原始 bit/s 数值。 */
+    function formatBitrate(bitsPerSecond) {
+        if (bitsPerSecond >= 1000000) {
+            return `${(bitsPerSecond / 1000000).toFixed(2)} Mbps`;
+        }
+        return `${(bitsPerSecond / 1000).toFixed(2)} kbps`;
+    }
+
+    /* 清空当前PeerConnection对应的采样基线、CSV数据和页面统计。 */
+    function resetVideoDiagnostics() {
+        previousVideoStatsSample = null;
+        latestVideoStatsRow = null;
+        videoStatsSequence = 0;
+        diagnosticLogLines = [];
+        diagnosticRows = [];
+        els.statsLog.textContent = "";
+        els.statsBitrate.textContent = "-";
+        els.statsPackets.textContent = "-";
+        els.statsFrames.textContent = "-";
+        els.statsFreeze.textContent = "-";
+        els.statsJitter.textContent = "-";
+        els.statsRtt.textContent = "-";
+        els.statsKeyFrames.textContent = "-";
+        els.statsIcePath.textContent = "-";
+        updateButtons();
+    }
+
+    /* 停止周期采样；关闭PeerConnection时必须调用，避免旧定时器读取新会话。 */
+    function stopVideoStatsSampling() {
+        if (videoStatsTimerId) {
+            window.clearInterval(videoStatsTimerId);
+            videoStatsTimerId = 0;
+        }
+    }
+
+    /* 从统计报告中寻找浏览器最终使用的候选对及两端候选。 */
+    function findSelectedCandidatePair(reports) {
+        const transport = [...reports.values()].find((item) =>
+            item.type === "transport" && item.selectedCandidatePairId);
+        const pair = transport ? reports.get(transport.selectedCandidatePairId) :
+            [...reports.values()].find((item) => item.type === "candidate-pair" &&
+                item.nominated && item.state === "succeeded");
+        const local = pair ? reports.get(pair.localCandidateId) : null;
+        const remote = pair ? reports.get(pair.remoteCandidateId) : null;
+
+        return { pair, local, remote };
+    }
+
+    /**
+     * 采集一次浏览器接收端统计。
+     * 码率和帧率通过相邻两次累计值求差得到，累计丢包、freeze和关键帧保留原值，
+     * 从而同时观察瞬时变化和会话整体结果。
+     */
+    async function collectVideoStats(peer) {
+        let reports;
+        let inbound;
+        let candidateInfo;
+        let current;
+        let previous;
+        let intervalMs;
+        let bitrateBps;
+        let receivedFps;
+        let decodedFps;
+        let icePath;
+        let row;
+
+        try {
+            reports = await peer.getStats();
+        } catch (error) {
+            if (pc === peer) {
+                logVideoDiagnostic(`读取 getStats() 失败：${error.message}`);
+            }
+            return;
+        }
+        if (pc !== peer) {
+            return;
+        }
+
+        inbound = [...reports.values()].find((item) =>
+            item.type === "inbound-rtp" && !item.isRemote &&
+            (item.kind === "video" || item.mediaType === "video"));
+        if (!inbound) {
+            return;
+        }
+
+        candidateInfo = findSelectedCandidatePair(reports);
+        current = {
+            sampledAtMs: Date.now(),
+            bytesReceived: statsNumber(inbound.bytesReceived),
+            packetsReceived: statsNumber(inbound.packetsReceived),
+            packetsLost: statsNumber(inbound.packetsLost),
+            framesReceived: statsNumber(inbound.framesReceived),
+            framesDecoded: statsNumber(inbound.framesDecoded),
+        };
+        previous = previousVideoStatsSample;
+        intervalMs = previous ? current.sampledAtMs - previous.sampledAtMs : 0;
+        bitrateBps = previous && intervalMs > 0
+            ? Math.max(0, current.bytesReceived - previous.bytesReceived) * 8 * 1000 / intervalMs
+            : 0;
+        receivedFps = previous && intervalMs > 0
+            ? Math.max(0, current.framesReceived - previous.framesReceived) * 1000 / intervalMs
+            : 0;
+        decodedFps = previous && intervalMs > 0
+            ? Math.max(0, current.framesDecoded - previous.framesDecoded) * 1000 / intervalMs
+            : 0;
+        icePath = candidateInfo.local && candidateInfo.remote
+            ? `${candidateInfo.local.candidateType}→${candidateInfo.remote.candidateType}`
+            : "-";
+
+        ++videoStatsSequence;
+        row = {
+            type: "sample",
+            sequence: videoStatsSequence,
+            timestamp: new Date(current.sampledAtMs).toISOString(),
+            elapsedMs: intervalMs,
+            bitrateBps: Math.round(bitrateBps),
+            bytesReceived: current.bytesReceived,
+            packetsReceived: current.packetsReceived,
+            packetsLost: current.packetsLost,
+            jitterMs: statsNumber(inbound.jitter) * 1000,
+            framesReceived: current.framesReceived,
+            framesDecoded: current.framesDecoded,
+            framesDropped: statsNumber(inbound.framesDropped),
+            receivedFps,
+            decodedFps,
+            freezeCount: statsNumber(inbound.freezeCount),
+            freezeDurationMs: statsNumber(inbound.totalFreezesDuration || inbound.freezeDuration) * 1000,
+            keyFramesDecoded: statsNumber(inbound.keyFramesDecoded),
+            currentRttMs: candidateInfo.pair
+                ? statsNumber(candidateInfo.pair.currentRoundTripTime) * 1000
+                : 0,
+            icePath,
+            marker: "",
+        };
+
+        diagnosticRows.push(row);
+        latestVideoStatsRow = row;
+        previousVideoStatsSample = current;
+        els.statsBitrate.textContent = formatBitrate(row.bitrateBps);
+        els.statsPackets.textContent = `${row.packetsReceived} / ${row.packetsLost}`;
+        els.statsFrames.textContent = `${row.receivedFps.toFixed(1)} / ${row.decodedFps.toFixed(1)} FPS`;
+        els.statsFreeze.textContent = `${row.freezeCount} / ${row.freezeDurationMs.toFixed(0)} ms`;
+        els.statsJitter.textContent = `${row.jitterMs.toFixed(2)} ms`;
+        els.statsRtt.textContent = candidateInfo.pair &&
+            Number.isFinite(Number(candidateInfo.pair.currentRoundTripTime))
+            ? `${row.currentRttMs.toFixed(2)} ms`
+            : "-";
+        els.statsKeyFrames.textContent = String(row.keyFramesDecoded);
+        els.statsIcePath.textContent = row.icePath;
+        logVideoDiagnostic(`sample=${row.sequence} bitrate=${formatBitrate(row.bitrateBps)} ` +
+            `packets=${row.packetsReceived}/${row.packetsLost} ` +
+            `fps=${row.receivedFps.toFixed(1)}/${row.decodedFps.toFixed(1)} ` +
+            `freeze=${row.freezeCount}/${row.freezeDurationMs.toFixed(0)}ms ` +
+            `ice=${row.icePath}`);
+        updateButtons();
+    }
+
+    /* 为新PeerConnection启动独立的500 ms统计采样。 */
+    function startVideoStatsSampling(peer) {
+        stopVideoStatsSampling();
+        resetVideoDiagnostics();
+        videoStatsTimerId = window.setInterval(() => {
+            collectVideoStats(peer);
+        }, VIDEO_STATS_INTERVAL_MS);
+    }
+
+    /* 在CSV时间轴中插入人工动作事件，并复制最近一次统计便于前后对比。 */
+    function recordWhiteboardMarker(marker) {
+        const base = latestVideoStatsRow || {};
+        const row = { ...base };
+
+        ++videoStatsSequence;
+        row.type = "marker";
+        row.sequence = videoStatsSequence;
+        row.timestamp = new Date().toISOString();
+        row.marker = marker;
+        diagnosticRows.push(row);
+        logVideoDiagnostic(`MARKER ${marker}`);
+        log(`白板动作标记：${marker}`);
+        updateButtons();
+    }
+
+    /* 将诊断行导出为CSV，便于与设备日志按时间戳对齐。 */
+    function exportVideoStatsCsv() {
+        const columns = ["type", "sequence", "timestamp", "elapsedMs", "bitrateBps",
+            "bytesReceived", "packetsReceived", "packetsLost", "jitterMs",
+            "framesReceived", "framesDecoded", "framesDropped", "receivedFps",
+            "decodedFps", "freezeCount", "freezeDurationMs", "keyFramesDecoded",
+            "currentRttMs", "icePath", "marker"];
+        const escapeCsv = (value) => `"${String(value === undefined ? "" : value)
+            .replace(/"/g, "\"\"")}"`;
+        const lines = [columns.join(",")];
+        let csv;
+        let blob;
+        let url;
+        let link;
+
+        diagnosticRows.forEach((row) => {
+            lines.push(columns.map((column) => escapeCsv(row[column])).join(","));
+        });
+        csv = `\uFEFF${lines.join("\r\n")}\r\n`;
+        blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+        url = URL.createObjectURL(blob);
+        link = document.createElement("a");
+        link.href = url;
+        link.download = `webrtc-video-diagnostics-${Date.now()}.csv`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        log(`已导出白板专项统计：${diagnosticRows.length} 行`);
     }
 
     /*
@@ -132,6 +384,9 @@
         els.ipcInput.disabled = !dcOpen;
         els.sendIpcBtn.disabled = !dcOpen;
         els.requestKeyFrameBtn.disabled = !keyFrameReady || !!pendingKeyFrameRequest;
+        els.whiteboardRemoveBtn.disabled = !pc || !latestVideoStatsRow;
+        els.whiteboardReturnBtn.disabled = !pc || !latestVideoStatsRow;
+        els.exportStatsBtn.disabled = diagnosticRows.length === 0;
     }
 
     /* 判断当前浏览器是否支持接收端 WebRTC Encoded Transform。 */
@@ -437,6 +692,7 @@
         closePeerConnection();
 
         pc = new RTCPeerConnection(buildIceConfiguration());
+        startVideoStatsSampling(pc);
 
         pendingLocalCandidates = [];
         cloudOfferSent = false;
@@ -449,6 +705,7 @@
             const state = pc.connectionState || "unknown";
             setText(els.pcState, state, state === "connected" ? "state-ok" : "");
             log(`PeerConnection 状态：${state}`);
+            logVideoDiagnostic(`PeerConnection state=${state}`);
         };
 
         pc.oniceconnectionstatechange = () => {
@@ -457,6 +714,7 @@
                 state === "failed" || state === "disconnected" ? "state-bad" : "";
             setText(els.iceState, state, stateClass);
             log(`ICE 状态：${state}`);
+            logVideoDiagnostic(`ICE state=${state}`);
             if (state === "connected" || state === "completed") {
                 updateSelectedIcePath(pc);
             }
@@ -544,6 +802,7 @@
     }
 
     function closePeerConnection() {
+        stopVideoStatsSampling();
         closeKeyFrameTest();
         if (dc) {
             dc.close();
@@ -893,6 +1152,10 @@
     els.pingBtn.onclick = () => sendIpcObject({ cmd: "ping", ts: Date.now() });
     els.statusBtn.onclick = () => sendIpcObject({ cmd: "get_status", ts: Date.now() });
     els.requestKeyFrameBtn.onclick = requestRemoteKeyFrame;
+    els.whiteboardRemoveBtn.onclick = () => recordWhiteboardMarker("remove_whiteboard");
+    els.whiteboardReturnBtn.onclick = () => recordWhiteboardMarker("return_whiteboard");
+    els.exportStatsBtn.onclick = exportVideoStatsCsv;
+    els.clearStatsBtn.onclick = resetVideoDiagnostics;
     els.sendIpcBtn.onclick = () => sendIpc(els.ipcInput.value);
     els.clearIpcBtn.onclick = () => {
         els.ipcLog.textContent = "";

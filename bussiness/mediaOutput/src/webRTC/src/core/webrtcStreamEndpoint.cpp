@@ -41,6 +41,7 @@ bool WebRtcStreamEndpoint::start(const WebRtcStreamEndpointConfig &config)
         return false;
     }
     config_ = config;
+    videoDiagnostics_.reset();
     running_ = true;
     LOG_INFO("[WEBRTC] stream endpoint started name=%s", config_.name.c_str());
     return true;
@@ -76,6 +77,8 @@ int WebRtcStreamEndpoint::sendVideoFrame(const WebRtcVideoFrame &frame)
     std::vector<std::shared_ptr<WebRtcSession>> sessions;
     std::map<std::string, std::shared_ptr<WebRtcSession>>::iterator iter;
     std::chrono::steady_clock::time_point now;
+    WebRtcVideoWindowStats completedWindow;
+    std::string endpointName;
     size_t i;
     int sentCount;
 
@@ -86,11 +89,13 @@ int WebRtcStreamEndpoint::sendVideoFrame(const WebRtcVideoFrame &frame)
             LOG_WARN("[WEBRTC] send video ignored: stream endpoint not running");
             return 0;
         }
+        endpointName = config_.name;
         ++mediaCounters_.videoInput.frames;
         mediaCounters_.videoInput.bytes += frame.size;
+        now = std::chrono::steady_clock::now();
+        videoDiagnostics_.recordFrame(frame.size, frame.keyFrame, now, completedWindow);
         if (frame.keyFrame) {
             /* 此时 MPP 已经产出 IDR 且媒体帧进入 WebRTC，作为请求到编码完成的终点。 */
-            now = std::chrono::steady_clock::now();
             keyframeState_.timing.lastIdrInputTime = now;
             keyframeState_.timing.hasLastIdrInputTime = true;
             if (keyframeState_.pending.waitingIdrInput) {
@@ -107,6 +112,23 @@ int WebRtcStreamEndpoint::sendVideoFrame(const WebRtcVideoFrame &frame)
              ++iter) {
             sessions.push_back(iter->second);
         }
+    }
+
+    /*
+     * 每个完整窗口只输出一行，既保留白板动作瞬间的短时码率和峰值帧，
+     * 又避免逐帧日志干扰媒体发送线程的实时性。
+     */
+    if (completedWindow.valid) {
+        LOG_INFO("[WEBRTC_VIDEO_DIAG] endpoint=%s window_ms=%llu frames=%llu bytes=%llu "
+                 "bitrate_kbps=%.2f keyframes=%llu max_frame=%zu max_keyframe=%zu",
+                 endpointName.c_str(),
+                 static_cast<unsigned long long>(completedWindow.durationMs),
+                 static_cast<unsigned long long>(completedWindow.frames),
+                 static_cast<unsigned long long>(completedWindow.bytes),
+                 static_cast<double>(completedWindow.bitrateBps) / 1000.0,
+                 static_cast<unsigned long long>(completedWindow.keyFrames),
+                 completedWindow.maxFrameBytes,
+                 completedWindow.maxKeyFrameBytes);
     }
 
     if (sessions.empty()) {
@@ -298,6 +320,14 @@ void WebRtcStreamEndpoint::getStats(WebRtcStreamEndpointStats &stats) const
     std::chrono::steady_clock::time_point now;
     std::function<bool()> signalingReadyCallback;
     size_t i;
+    WebRtcVideoWindowStats videoWindow;
+    size_t videoMaxFrameBytes;
+    size_t videoMaxKeyFrameBytes;
+    uint64_t videoPeakBitrateBps;
+
+    videoMaxFrameBytes = 0;
+    videoMaxKeyFrameBytes = 0;
+    videoPeakBitrateBps = 0;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -314,6 +344,21 @@ void WebRtcStreamEndpoint::getStats(WebRtcStreamEndpointStats &stats) const
         stats.audioChannels = config_.audioChannels;
         stats.inputVideoFrames = mediaCounters_.videoInput.frames;
         stats.inputVideoBytes = mediaCounters_.videoInput.bytes;
+        videoDiagnostics_.snapshot(videoWindow,
+                                   videoMaxFrameBytes,
+                                   videoMaxKeyFrameBytes,
+                                   videoPeakBitrateBps);
+        stats.videoWindowValid = videoWindow.valid;
+        stats.videoWindowDurationMs = videoWindow.durationMs;
+        stats.videoWindowFrames = videoWindow.frames;
+        stats.videoWindowBytes = videoWindow.bytes;
+        stats.videoWindowBitrateBps = videoWindow.bitrateBps;
+        stats.videoWindowKeyFrames = videoWindow.keyFrames;
+        stats.videoWindowMaxFrameBytes = static_cast<uint64_t>(videoWindow.maxFrameBytes);
+        stats.videoWindowMaxKeyFrameBytes = static_cast<uint64_t>(videoWindow.maxKeyFrameBytes);
+        stats.videoMaxFrameBytes = static_cast<uint64_t>(videoMaxFrameBytes);
+        stats.videoMaxKeyFrameBytes = static_cast<uint64_t>(videoMaxKeyFrameBytes);
+        stats.videoPeakBitrateBps = videoPeakBitrateBps;
         stats.inputAudioFrames = mediaCounters_.audioInput.frames;
         stats.inputAudioBytes = mediaCounters_.audioInput.bytes;
         stats.videoBroadcastTargets = mediaCounters_.videoBroadcast.targets;
