@@ -66,6 +66,7 @@ typedef struct {
     uint64_t baseline_ts_us;       /* 当前统计窗口起点。 */
     uint64_t baseline_frames;      /* 窗口起点的主采集源累计帧数。 */
     uint32_t consecutive_mismatch; /* 连续不一致窗口数。 */
+    int expected_fps;              /* 当前采样基线对应的已提交Sensor目标帧率。 */
     int baseline_valid;            /* 是否已有可用于计算增量的窗口起点。 */
     int warning_active;            /* 是否已经输出过持续不一致告警。 */
     int suspended;                 /* 切换事务或收敛期内是否已发布暂停状态。 */
@@ -3680,8 +3681,8 @@ static int publish_capture_fps_consistency_stats(
  * @brief 检查Sensor目标帧率与主V4L2采集源实际帧率是否持续一致。
  *
  * 主要逻辑：
- * 1. 视频控制事务执行期间和切换后的短暂收敛期只重建统计基线，不判错；
- * 2. 每5秒根据source0累计采集帧数的增量计算实际FPS；
+ * 1. 视频控制事务执行期间持续重建基线，事务提交后立即发布新目标快照；
+ * 2. 收敛期不判错且不移动新基线，每5秒根据source0帧数增量计算实际FPS；
  * 3. 实际FPS偏离目标20%以上时累计异常窗口，连续3个窗口后输出告警；
  * 4. 后续窗口恢复正常时输出恢复日志，并清除连续异常状态。
  */
@@ -3695,6 +3696,7 @@ static int check_capture_fps_consistency(MediaGatewayCtx *ctx,
     uint64_t elapsed_us = 0;
     uint64_t frame_delta = 0;
     int expected_fps = 0;
+    int expected_changed = 0;
     int mismatch = 0;
     int lock_ret = 0;
 
@@ -3724,25 +3726,59 @@ static int check_capture_fps_consistency(MediaGatewayCtx *ctx,
         return MEDIA_ERR;
     }
 
-    /* 切换过程中目标和硬件尚未一致，跨越该区间计算FPS会产生无意义的误报。 */
+    expected_changed = monitor->expected_fps != expected_fps;
+
+    /*
+     * Sensor或编码器控制事务执行期间，硬件尚未形成一致状态。此时持续把
+     * 最新帧计数作为基线，确保后续统计窗口不会跨越帧率切换过程。
+     */
     if (!res->frame_source_started[0] || expected_fps <= 0 ||
-        res->video_control_transition.phase != MEDIA_GATEWAY_FPS_TRANSITION_IDLE ||
-        (ctx->policy.light_fps.last_switch_ts_us > 0U &&
-         now_us >= ctx->policy.light_fps.last_switch_ts_us &&
-         now_us - ctx->policy.light_fps.last_switch_ts_us <
-             MEDIA_GATEWAY_CAPTURE_FPS_SWITCH_GRACE_US))
+        res->video_control_transition.phase != MEDIA_GATEWAY_FPS_TRANSITION_IDLE)
     {
         monitor->baseline_ts_us = now_us;
         monitor->baseline_frames = source_stats.captured_frames;
         monitor->baseline_valid = 1;
         monitor->consecutive_mismatch = 0;
         monitor->warning_active = 0;
-        if (!monitor->suspended)
+        if (!monitor->suspended || expected_changed)
         {
+            monitor->expected_fps = expected_fps;
             monitor->suspended = 1;
             stats.expected_fps = expected_fps;
             return publish_capture_fps_consistency_stats(ctx, &stats);
         }
+        return MEDIA_OK;
+    }
+
+    /*
+     * 完整视频控制事务提交后，current_fps 才代表整条链路共同生效的帧率。
+     * 目标变化时立即发布新的无效窗口快照并重建基线，避免getStatus继续
+     * 显示上一个目标值，或用旧目标下的帧数计算新目标FPS。
+     */
+    if (expected_changed)
+    {
+        monitor->expected_fps = expected_fps;
+        monitor->baseline_ts_us = now_us;
+        monitor->baseline_frames = source_stats.captured_frames;
+        monitor->baseline_valid = 1;
+        monitor->consecutive_mismatch = 0;
+        monitor->warning_active = 0;
+        monitor->suspended = 1;
+        stats.expected_fps = expected_fps;
+        return publish_capture_fps_consistency_stats(ctx, &stats);
+    }
+
+    /*
+     * 收敛期内暂不判错，但不反复移动采样基线。基线从事务提交时开始，
+     * 因而切换后约一个检查周期即可形成首个有效窗口，而不是等待
+     * “收敛期 + 完整检查周期”。
+     */
+    if (ctx->policy.light_fps.last_switch_ts_us > 0U &&
+        now_us >= ctx->policy.light_fps.last_switch_ts_us &&
+        now_us - ctx->policy.light_fps.last_switch_ts_us <
+            MEDIA_GATEWAY_CAPTURE_FPS_SWITCH_GRACE_US)
+    {
+        monitor->suspended = 1;
         return MEDIA_OK;
     }
 
