@@ -417,8 +417,8 @@ typedef struct {
     int current_fps;                                      /* 当前已应用/初始帧率。 */
     int target_fps;                                       /* 当前策略目标帧率。 */
     int last_logged_target_fps;                           /* 上次日志记录的目标帧率。 */
-    int low_light_active;                                 /* 最近一次策略评估使用的低照状态。 */
-    int bright_active;                                    /* 最近一次策略评估使用的亮光状态。 */
+    int ae_scene_low_light_detected;                       /* 最近一次AE场景评估是否判定为低照；不表示ISP低照增强模式已启用。 */
+    int ae_scene_bright_detected;                          /* 最近一次AE场景评估是否判定为亮光。 */
     uint64_t last_evaluate_ts_us;                         /* 上次策略评估时间。 */
     uint64_t last_switch_ts_us;                           /* 上次目标帧率切换时间。 */
     int pending_fps;                                      /* AE 候选目标帧率。 */
@@ -426,6 +426,16 @@ typedef struct {
     int manual_override;                                  /* shell 手动固定帧率标志；置 1 时暂停 AE 自动动态帧率策略。 */
     char reason[128];                                     /* 最近一次策略决策原因。 */
 } MediaLightFpsState;
+
+/** @description: Sensor目标帧率与V4L2实际采集帧率的一致性检查快照。 */
+typedef struct {
+    int valid;                  /* 是否已经完成至少一个有效统计窗口。 */
+    int expected_fps;           /* 检查窗口使用的Sensor目标帧率。 */
+    double actual_fps;          /* 根据采集帧计数增量计算出的实际帧率。 */
+    int mismatch;               /* 当前窗口是否超出允许偏差。 */
+    uint32_t consecutive_count; /* 连续不一致窗口数量。 */
+    uint64_t checked_ts_us;     /* 最近一次检查完成时的单调时钟时间戳。 */
+} MediaGatewayCaptureFpsConsistencyStats;
 
 typedef struct {
     MediaGatewaySceneState state; /* 最近一次场景状态判定。 */
@@ -529,6 +539,7 @@ typedef struct {
     MediaGatewayStats throughput;  /* 吞吐统计窗口。 */
     MediaGatewayBenchmarkStats benchmark; /* benchmark 埋点配置与统计窗口。 */
     MediaFrameSourceStats capture_sources[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES]; /* 主循环缓存的采集源统计快照。 */
+    MediaGatewayCaptureFpsConsistencyStats capture_fps_consistency; /* Sensor目标帧率与实际采集帧率的一致性状态。 */
     MediaGatewayVideoPipelineStatsTracker video_pipeline[MEDIA_GATEWAY_MAX_STREAMS]; /* 正式视频链路累计统计。 */
 } MediaGatewayMetricsRuntime;
 

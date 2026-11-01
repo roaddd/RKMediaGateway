@@ -35,6 +35,12 @@
 #include <unistd.h>
 
 #define MEDIA_GATEWAY_CAPTURE_STATS_REFRESH_INTERVAL_US 100000ULL
+#define MEDIA_GATEWAY_CAPTURE_FPS_CHECK_INTERVAL_US 5000000ULL
+#define MEDIA_GATEWAY_CAPTURE_FPS_SWITCH_GRACE_US 3000000ULL
+#define MEDIA_GATEWAY_CAPTURE_FPS_MIN_RATIO 0.80
+#define MEDIA_GATEWAY_CAPTURE_FPS_MAX_RATIO 1.20
+#define MEDIA_GATEWAY_CAPTURE_FPS_MISMATCH_CONFIRM_WINDOWS 3U
+#define MEDIA_GATEWAY_CAPTURE_FPS_WARNING_REPEAT_WINDOWS 6U
 
 typedef enum {
     MEDIA_GATEWAY_FPS_TRANSITION_IDLE = 0,
@@ -55,6 +61,16 @@ typedef struct {
     MediaVideoCapabilityCode rejection_code; /* 最近一次能力拒绝原因，用于目标变化诊断。 */
 } MediaGatewayVideoControlTransition;
 
+/** @description: 运行期Sensor目标帧率与实际采集帧率检查器的私有状态。 */
+typedef struct {
+    uint64_t baseline_ts_us;       /* 当前统计窗口起点。 */
+    uint64_t baseline_frames;      /* 窗口起点的主采集源累计帧数。 */
+    uint32_t consecutive_mismatch; /* 连续不一致窗口数。 */
+    int baseline_valid;            /* 是否已有可用于计算增量的窗口起点。 */
+    int warning_active;            /* 是否已经输出过持续不一致告警。 */
+    int suspended;                 /* 切换事务或收敛期内是否已发布暂停状态。 */
+} MediaGatewayCaptureFpsMonitor;
+
 typedef struct {
     MediaGatewayPipeline pipeline;                               /* 运行期音视频编码流水线。 */
     /* todo:下面三个成员变量可以合并成数组 */
@@ -67,6 +83,7 @@ typedef struct {
     int result_queue_inited;                                      /* 结果队列是否初始化成功。 */
     MediaGatewayVideoControlTransition video_control_transition;      /* 运行期视频控制异步事务。 */
     uint64_t last_capture_stats_refresh_us;                       /* 上次缓存采集统计快照的时间。 */
+    MediaGatewayCaptureFpsMonitor capture_fps_monitor;             /* Sensor目标帧率与实际采集帧率检查器。 */
 } MediaGatewayRunResources;
 
 /**
@@ -3624,6 +3641,174 @@ static int refresh_capture_source_stats(MediaGatewayCtx *ctx,
 }
 
 /**
+ * @brief 发布采集帧率一致性检查快照。
+ *
+ * 检查器运行在gateway主循环，调试命令运行在独立线程，因此通过metrics锁
+ * 提交完整快照，避免getStatus读到一半更新的数据。
+ */
+static int publish_capture_fps_consistency_stats(
+    MediaGatewayCtx *ctx,
+    const MediaGatewayCaptureFpsConsistencyStats *stats)
+{
+    int lock_ret = 0;
+
+    if (!ctx || !stats)
+    {
+        LOG_ERROR("publish_capture_fps_consistency_stats failed: ctx=%p stats=%p",
+                  (void *)ctx,
+                  (const void *)stats);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("publish_capture_fps_consistency_stats failed: lock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+    ctx->metrics.capture_fps_consistency = *stats;
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("publish_capture_fps_consistency_stats failed: unlock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+    return MEDIA_OK;
+}
+
+/**
+ * @brief 检查Sensor目标帧率与主V4L2采集源实际帧率是否持续一致。
+ *
+ * 主要逻辑：
+ * 1. 视频控制事务执行期间和切换后的短暂收敛期只重建统计基线，不判错；
+ * 2. 每5秒根据source0累计采集帧数的增量计算实际FPS；
+ * 3. 实际FPS偏离目标20%以上时累计异常窗口，连续3个窗口后输出告警；
+ * 4. 后续窗口恢复正常时输出恢复日志，并清除连续异常状态。
+ */
+static int check_capture_fps_consistency(MediaGatewayCtx *ctx,
+                                         MediaGatewayRunResources *res)
+{
+    MediaGatewayCaptureFpsMonitor *monitor = NULL;
+    MediaGatewayCaptureFpsConsistencyStats stats = {0};
+    MediaFrameSourceStats source_stats = {0};
+    uint64_t now_us = 0;
+    uint64_t elapsed_us = 0;
+    uint64_t frame_delta = 0;
+    int expected_fps = 0;
+    int mismatch = 0;
+    int lock_ret = 0;
+
+    if (!ctx || !res)
+    {
+        LOG_ERROR("check_capture_fps_consistency failed: ctx=%p res=%p",
+                  (void *)ctx,
+                  (void *)res);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    monitor = &res->capture_fps_monitor;
+    now_us = media_gateway_get_now_us();
+    expected_fps = ctx->policy.light_fps.current_fps;
+
+    lock_ret = pthread_mutex_lock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("check_capture_fps_consistency failed: lock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+    source_stats = ctx->metrics.capture_sources[0];
+    lock_ret = pthread_mutex_unlock(&ctx->metrics.lock);
+    if (lock_ret != 0)
+    {
+        LOG_ERROR("check_capture_fps_consistency failed: unlock ret=%d", lock_ret);
+        return MEDIA_ERR;
+    }
+
+    /* 切换过程中目标和硬件尚未一致，跨越该区间计算FPS会产生无意义的误报。 */
+    if (!res->frame_source_started[0] || expected_fps <= 0 ||
+        res->video_control_transition.phase != MEDIA_GATEWAY_FPS_TRANSITION_IDLE ||
+        (ctx->policy.light_fps.last_switch_ts_us > 0U &&
+         now_us >= ctx->policy.light_fps.last_switch_ts_us &&
+         now_us - ctx->policy.light_fps.last_switch_ts_us <
+             MEDIA_GATEWAY_CAPTURE_FPS_SWITCH_GRACE_US))
+    {
+        monitor->baseline_ts_us = now_us;
+        monitor->baseline_frames = source_stats.captured_frames;
+        monitor->baseline_valid = 1;
+        monitor->consecutive_mismatch = 0;
+        monitor->warning_active = 0;
+        if (!monitor->suspended)
+        {
+            monitor->suspended = 1;
+            stats.expected_fps = expected_fps;
+            return publish_capture_fps_consistency_stats(ctx, &stats);
+        }
+        return MEDIA_OK;
+    }
+
+    monitor->suspended = 0;
+
+    if (!monitor->baseline_valid)
+    {
+        monitor->baseline_ts_us = now_us;
+        monitor->baseline_frames = source_stats.captured_frames;
+        monitor->baseline_valid = 1;
+        return MEDIA_OK;
+    }
+
+    elapsed_us = now_us - monitor->baseline_ts_us;
+    if (elapsed_us < MEDIA_GATEWAY_CAPTURE_FPS_CHECK_INTERVAL_US)
+        return MEDIA_OK;
+
+    if (source_stats.captured_frames >= monitor->baseline_frames)
+        frame_delta = source_stats.captured_frames - monitor->baseline_frames;
+    stats.valid = 1;
+    stats.expected_fps = expected_fps;
+    stats.actual_fps = elapsed_us > 0U
+                           ? (double)frame_delta * 1000000.0 / (double)elapsed_us
+                           : 0.0;
+    stats.checked_ts_us = now_us;
+    mismatch = stats.actual_fps < (double)expected_fps * MEDIA_GATEWAY_CAPTURE_FPS_MIN_RATIO ||
+               stats.actual_fps > (double)expected_fps * MEDIA_GATEWAY_CAPTURE_FPS_MAX_RATIO;
+
+    if (mismatch)
+    {
+        monitor->consecutive_mismatch++;
+        if (monitor->consecutive_mismatch == MEDIA_GATEWAY_CAPTURE_FPS_MISMATCH_CONFIRM_WINDOWS ||
+            (monitor->consecutive_mismatch > MEDIA_GATEWAY_CAPTURE_FPS_MISMATCH_CONFIRM_WINDOWS &&
+             monitor->consecutive_mismatch % MEDIA_GATEWAY_CAPTURE_FPS_WARNING_REPEAT_WINDOWS == 0U))
+        {
+            LOG_WARN("[CAPTURE_FPS_MISMATCH] source=0 expected=%d actual=%.2f frames=%" PRIu64
+                     " window_ms=%" PRIu64 " consecutive=%u",
+                     expected_fps,
+                     stats.actual_fps,
+                     frame_delta,
+                     elapsed_us / 1000U,
+                     monitor->consecutive_mismatch);
+            monitor->warning_active = 1;
+        }
+    }
+    else
+    {
+        if (monitor->warning_active)
+        {
+            LOG_INFO("[CAPTURE_FPS_RECOVERED] source=0 expected=%d actual=%.2f previous_consecutive=%u",
+                     expected_fps,
+                     stats.actual_fps,
+                     monitor->consecutive_mismatch);
+        }
+        monitor->consecutive_mismatch = 0;
+        monitor->warning_active = 0;
+    }
+
+    stats.mismatch = mismatch;
+    stats.consecutive_count = monitor->consecutive_mismatch;
+    monitor->baseline_ts_us = now_us;
+    monitor->baseline_frames = source_stats.captured_frames;
+    return publish_capture_fps_consistency_stats(ctx, &stats);
+}
+
+/**
  * @description: 执行一次 run 主循环控制调度。
  * 视频编码线程已经通过 eventfd 直接等待各自帧源，主循环只负责错误检查、
  * 自适应控制和周期统计，不再搬运视频帧。
@@ -3653,6 +3838,13 @@ static int run_gateway_once(MediaGatewayCtx *ctx, MediaGatewayRunResources *res)
 
     /* 执行运行期自适应控制：策略目标刷新、输出 pacer 下发、视频硬件控制下发。 */
     media_gateway_run_adaptive_control_once(ctx, res);
+
+    /* 使用实际DQBUF帧计数闭环校验控制事务记录的Sensor目标帧率。 */
+    if (check_capture_fps_consistency(ctx, res) != MEDIA_OK)
+    {
+        LOG_ERROR("run_gateway_once failed: check capture fps consistency");
+        return -1;
+    }
 
     pthread_mutex_lock(&ctx->metrics.lock);
     media_gateway_log_throughput_if_due(ctx);

@@ -362,6 +362,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
     MediaGatewayStatsSnapshot stats_snapshot = {0};
     MediaGatewayAudioEncoderGroupStats audio_group_stats[MEDIA_GATEWAY_MAX_AUDIO_ENCODER_GROUPS] = {{0}};
     MediaFrameSourceStats capture_stats[MEDIA_GATEWAY_MAX_CAPTURE_SOURCES] = {{0}};
+    MediaGatewayCaptureFpsConsistencyStats capture_fps_consistency = {0};
     MediaGatewayVideoPipelineStats video_pipeline_stats[MEDIA_GATEWAY_MAX_STREAMS] = {{0}};
     AudioTalkbackStats talkback_stats = {0};
     MediaOutputStats output_stats = {0};
@@ -415,6 +416,7 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
             memcpy(capture_stats,
                    ctx->metrics.capture_sources,
                    sizeof(capture_stats));
+            capture_fps_consistency = ctx->metrics.capture_fps_consistency;
             for (i = 0; i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
             {
                 if (media_gateway_video_pipeline_stats_snapshot(
@@ -493,6 +495,14 @@ static int gateway_shell_get_status(void *user_data, const char *input, char *ou
                                    capture_stats[i].no_writable_slot_drops,
                                    capture_stats[i].acquired_frames);
     }
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  fps_consistency valid=%s expected=%d actual=%.2f mismatch=%s consecutive=%u\n",
+                               gateway_debug_switch_name(capture_fps_consistency.valid),
+                               capture_fps_consistency.expected_fps,
+                               capture_fps_consistency.actual_fps,
+                               gateway_debug_switch_name(capture_fps_consistency.mismatch),
+                               capture_fps_consistency.consecutive_count);
 
     gateway_debug_append_section(reply, &offset, GATEWAY_DEBUG_COLOR_BLUE, "VIDEO_STREAMS");
     debug_command_reply_append(reply,
@@ -643,8 +653,9 @@ static int gateway_shell_get_fps(void *user_data, const char *input, char *outpu
     debug_command_reply_append(reply, &offset, "current_fps=%d\n", state->current_fps);
     debug_command_reply_append(reply, &offset, "target_fps=%d\n", state->target_fps);
     debug_command_reply_append(reply, &offset, "pending_fps=%d\n", state->pending_fps);
-    debug_command_reply_append(reply, &offset, "low_light_active=%d\n", state->low_light_active);
-    debug_command_reply_append(reply, &offset, "bright_active=%d\n", state->bright_active);
+    debug_command_reply_append(reply, &offset, "ae_scene_evaluation_paused=%d\n", state->manual_override);
+    debug_command_reply_append(reply, &offset, "ae_scene_low_light_detected=%d\n", state->ae_scene_low_light_detected);
+    debug_command_reply_append(reply, &offset, "ae_scene_bright_detected=%d\n", state->ae_scene_bright_detected);
     debug_command_reply_append(reply, &offset, "last_evaluate_ms=%" PRIu64 "\n", state->last_evaluate_ts_us / 1000ULL);
     debug_command_reply_append(reply, &offset, "last_switch_ms=%" PRIu64 "\n", state->last_switch_ts_us / 1000ULL);
     debug_command_reply_append(reply, &offset, "reason=%s\n", state->reason);
@@ -880,9 +891,9 @@ static int gateway_shell_get_isp(void *user_data, const char *input, char *outpu
     debug_command_reply_append(reply, &offset, "ae_env_lux=%.2f\n", status.ae.env_lux);
     debug_command_reply_append(reply, &offset, "ae_integration_time=%.2f\n", status.ae.integration_time);
     debug_command_reply_append(reply, &offset, "ae_analog_gain=%.2f\n", status.ae.analog_gain);
-    debug_command_reply_append(reply, &offset, "low_light_enabled=%d\n", status.low_light.enabled);
-    debug_command_reply_append(reply, &offset, "low_light_active=%d\n", status.low_light.active);
-    debug_command_reply_append(reply, &offset, "low_light_reason=%s\n", status.low_light.reason);
+    debug_command_reply_append(reply, &offset, "low_light_enhancement_enabled=%d\n", status.low_light.enabled);
+    debug_command_reply_append(reply, &offset, "low_light_enhancement_active=%d\n", status.low_light.active);
+    debug_command_reply_append(reply, &offset, "low_light_enhancement_reason=%s\n", status.low_light.reason);
 
     return 0;
 }

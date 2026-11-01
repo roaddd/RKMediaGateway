@@ -815,9 +815,9 @@ static const char *light_fps_scene_name(const MediaLightFpsState *state)
 {
     if (!state)
         return "unknown";
-    if (state->low_light_active)
+    if (state->ae_scene_low_light_detected)
         return "low_light";
-    if (state->bright_active)
+    if (state->ae_scene_bright_detected)
         return "bright";
     return "normal";
 }
@@ -983,8 +983,8 @@ static int media_gateway_update_light_fps_policy(MediaGatewayCtx *ctx)
             bright_active = light_fps_ae_is_bright(cfg, &isp_status.ae);
         }
     }
-    state->low_light_active = low_light_active;
-    state->bright_active = bright_active;
+    state->ae_scene_low_light_detected = low_light_active;
+    state->ae_scene_bright_detected = bright_active;
 
     /* AE 不可用时退回正常帧率；低照优先级高于亮光，避免暗场误判到高帧率。 */
     if (!ae_valid)
