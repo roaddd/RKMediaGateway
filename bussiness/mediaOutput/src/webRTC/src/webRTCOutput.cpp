@@ -649,6 +649,7 @@ static int webrtc_output_send_packet(MediaOutput *output, const MediaPacket *pac
         frame.data = packet->buffer->data;
         frame.size = packet->buffer->size;
         frame.ptsUs = packet->pts_us;
+        frame.frameId = packet->frame_id;
         frame.keyFrame = packet->is_key_frame ? true : false;
         frame.format = H264_FRAME_FORMAT_ANNEX_B;
         sentCount = impl->endpoint->sendVideoFrame(frame);

@@ -26,6 +26,8 @@
 namespace rkmedia {
 namespace webrtc {
 
+class WebRtcRtpFrameDiagnostics;
+
 typedef std::function<bool(const std::string &)> WebRtcSessionSignalingSendCallback;
 typedef std::function<void(const char *)> WebRtcSessionSignalingCloseCallback;
 typedef std::function<void(const std::string &)> WebRtcSessionClosedCallback;
@@ -150,7 +152,7 @@ public:
 
     /**
      * @brief 向浏览器发送一帧 H.264 编码视频。
-     * @param[in] frame 待发送的视频帧及其格式、PTS 和关键帧标记。
+     * @param[in] frame 待发送的视频帧及其 frame_id、格式、PTS 和关键帧标记。
      * @retval true 视频帧已经成功提交给 Track。
      * @retval false Track 未就绪、正在等待关键帧、测试抑制、帧格式非法或发送失败。
      */
@@ -317,6 +319,7 @@ private:
 
     /* WebRTC 媒体对象：所有权和指针替换由 mutex_ 保护，底层调用在锁外执行。 */
     WebRtcSessionTransport transport_; /* 本会话 PeerConnection、DataChannel 和 Track 的所有权。 */
+    std::shared_ptr<WebRtcRtpFrameDiagnostics> videoRtpDiagnostics_; /* H.264 帧到 RTP 分片的只读诊断器。 */
     std::shared_ptr<WebRtcAudioReceiver> audioReceiver_; /* audio Track 的 RTP 解析与统计对象。 */
 };
 

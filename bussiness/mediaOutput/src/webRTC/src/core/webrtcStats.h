@@ -14,6 +14,44 @@
 namespace rkmedia {
 namespace webrtc {
 
+/** @brief 单个编码视频帧经 H.264 packetizer 生成 RTP 包后的关联快照。 */
+struct WebRtcRtpFrameStats {
+    bool valid = false; /* 是否已经记录过一帧有效的诊断数据。 */
+    bool keyFrame = false; /* 输入 packetizer 的编码帧是否为关键帧。 */
+    bool sendAccepted = false; /* Track::sendFrame 是否正常返回；不表示 UDP 已成功送达。 */
+    bool markerSeen = false; /* 该帧最后一个 RTP 包是否观察到 Marker 位。 */
+    uint64_t frameId = 0; /* gateway 视频帧序号。 */
+    uint64_t ptsUs = 0; /* 输入编码帧 PTS，单位微秒。 */
+    uint64_t encodedBytes = 0; /* 输入 packetizer 的 H.264 编码帧字节数。 */
+    uint64_t rtpPackets = 0; /* packetizer 为该帧生成的 RTP 包数。 */
+    uint64_t rtpBytes = 0; /* 生成的完整 RTP 包总字节数，包含 RTP 头。 */
+    uint64_t rtpPayloadBytes = 0; /* 生成的 RTP payload 总字节数。 */
+    uint64_t parseFailures = 0; /* RTP 头长度、版本或 PT 不合法的包数。 */
+    uint64_t sequenceDiscontinuities = 0; /* 同一批生成包中序列号不连续的次数。 */
+    uint64_t timestampMismatches = 0; /* 同一编码帧中出现不同 RTP 时间戳的包数。 */
+    uint64_t sendCallUs = 0; /* Track::sendFrame 调用耗时，单位微秒。 */
+    uint64_t bufferedAmount = 0; /* sendFrame 返回后 Track 待发送字节数。 */
+    uint32_t rtpTimestamp = 0; /* 该帧生成的 RTP 时间戳，可与抓包直接关联。 */
+    uint16_t firstSequence = 0; /* 该帧首个 RTP 包序列号。 */
+    uint16_t lastSequence = 0; /* 该帧末个 RTP 包序列号。 */
+};
+
+/** @brief 单个 WebRTC 会话的视频 RTP 帧级诊断累计统计。 */
+struct WebRtcRtpFrameDiagnosticsStats {
+    uint64_t frames = 0; /* 已完成关联统计的视频帧数。 */
+    uint64_t generatedPackets = 0; /* packetizer 累计生成的 RTP 包数。 */
+    uint64_t generatedBytes = 0; /* packetizer 累计生成的完整 RTP 字节数。 */
+    uint64_t generatedPayloadBytes = 0; /* packetizer 累计生成的 RTP payload 字节数。 */
+    uint64_t framesWithoutRtp = 0; /* sendFrame 期间未观察到 RTP 输出的帧数。 */
+    uint64_t parseFailures = 0; /* 累计 RTP 解析失败包数。 */
+    uint64_t sequenceDiscontinuities = 0; /* 累计 RTP 序列号不连续次数。 */
+    uint64_t timestampMismatches = 0; /* 累计同一帧 RTP 时间戳不一致的包数。 */
+    uint64_t overlappingFrames = 0; /* 前一帧未结束时又开始新帧的次数。 */
+    uint64_t orphanBatches = 0; /* 没有活动帧元数据时收到 RTP 输出批次的次数。 */
+    WebRtcRtpFrameStats latestFrame; /* 最近完成的帧级关联快照。 */
+    WebRtcRtpFrameStats largestFrame; /* RTP 包数最多的帧级关联快照。 */
+};
+
 /** @brief 单个浏览器 WebRTC 会话的只读调试快照。 */
 struct WebRtcSessionStats {
     std::string sessionId;                       /* 云端分配的唯一会话 ID。 */
@@ -47,6 +85,7 @@ struct WebRtcSessionStats {
     uint64_t videoSendCallMaxUs;                 /* video Track sendFrame 最大调用耗时。 */
     uint64_t videoBufferedAmount;                /* 最近一次发送后的 Track 待发送字节数。 */
     uint64_t videoBufferedAmountMax;             /* Track 待发送字节数历史高水位。 */
+    WebRtcRtpFrameDiagnosticsStats videoRtp;     /* 编码帧到 packetizer RTP 输出的关联统计。 */
     uint64_t audioFrames;                        /* 成功发送的音频编码包数。 */
     uint64_t audioBytes;                         /* 成功发送的音频编码字节数。 */
     uint64_t audioNotReady;                      /* 音频 Track 未就绪导致的丢包数。 */

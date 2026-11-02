@@ -5,6 +5,7 @@
 #include "webrtcSession.h"
 
 #include "webrtcDataChannelMessage.h"
+#include "webrtcRtpFrameDiagnostics.h"
 #include "webrtcSignalingMessage.h"
 
 #include <chrono>
@@ -203,6 +204,7 @@ void WebRtcSession::close()
         signalingCloseCallback.swap(signalingCloseCallback_);
         signalingSendCallback_ = WebRtcSessionSignalingSendCallback();
         transport_.videoTrack.reset();
+        videoRtpDiagnostics_.reset();
         transport_.audioTrack.reset();
         audioReceiver_.reset();
         transport_.dc.reset();
@@ -305,14 +307,18 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     std::shared_ptr<rtc::Track> videoTrack;
     std::shared_ptr<rtc::Track> audioTrack;
     std::shared_ptr<WebRtcAudioReceiver> audioReceiver;
+    std::shared_ptr<WebRtcRtpFrameDiagnostics> videoRtpDiagnostics;
     WebRtcAudioReceiverStats audioReceiverStats;
+    std::unique_lock<std::mutex> lock(mutex_, std::defer_lock);
 
-    std::lock_guard<std::mutex> lock(mutex_);
-
+    audioReceiverStats = WebRtcAudioReceiverStats();
+    stats.videoRtp = WebRtcRtpFrameDiagnosticsStats();
+    lock.lock();
     dc = transport_.dc;
     videoTrack = transport_.videoTrack;
     audioTrack = transport_.audioTrack;
     audioReceiver = audioReceiver_;
+    videoRtpDiagnostics = videoRtpDiagnostics_;
     stats.sessionId = sessionId_;
     stats.remoteAddress = state_.remoteAddress;
     stats.path = state_.path;
@@ -354,6 +360,13 @@ void WebRtcSession::getStats(WebRtcSessionStats &stats) const
     stats.dataChannelTxMessages = counters_.dataChannelTxMessages;
     stats.dataChannelRxBytes = counters_.dataChannelRxBytes;
     stats.dataChannelTxBytes = counters_.dataChannelTxBytes;
+
+    /* 子模块各自维护锁；先释放 session 锁，避免调试快照形成跨模块锁嵌套。 */
+    lock.unlock();
+
+    if (videoRtpDiagnostics) {
+        videoRtpDiagnostics->getStats(stats.videoRtp);
+    }
 
     if (audioReceiver) {
         audioReceiver->getStats(audioReceiverStats);
@@ -484,6 +497,7 @@ bool WebRtcSession::copyLengthPrefixedFrame(const uint8_t *data, size_t size, rt
 bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
 {
     std::shared_ptr<rtc::Track> track;
+    std::shared_ptr<WebRtcRtpFrameDiagnostics> rtpDiagnostics;
     rtc::binary payload;
     std::chrono::steady_clock::time_point now;
     std::chrono::steady_clock::time_point sendStart;
@@ -501,6 +515,7 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         track = transport_.videoTrack;
+        rtpDiagnostics = videoRtpDiagnostics_;
         waitingForKeyframe = state_.waitingForVideoKeyframe;
         suppressTestVideo = false;
         requestTimeoutRecovery = false;
@@ -560,19 +575,37 @@ bool WebRtcSession::sendVideoFrame(const WebRtcVideoFrame &frame)
         return false;
     }
 
+    sendStart = std::chrono::steady_clock::now();
     try {
-        sendStart = std::chrono::steady_clock::now();
+        /*
+         * 在调用 packetizer 前登记 gateway frame_id。packetizer 输出会同步经过
+         * WebRtcRtpFrameDiagnostics，从而把编码帧、RTP timestamp 和序列号范围关联起来。
+         */
+        if (rtpDiagnostics) {
+            rtpDiagnostics->beginFrame(frame.frameId, frame.ptsUs, frame.size, frame.keyFrame);
+        }
         track->sendFrame(payload, std::chrono::duration<double, std::micro>(frame.ptsUs));
         sendDone = std::chrono::steady_clock::now();
         sendCallUs = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count());
         bufferedAmount = track->bufferedAmount();
     } catch (const std::exception &e) {
+        sendDone = std::chrono::steady_clock::now();
+        sendCallUs = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(sendDone - sendStart).count());
+        if (rtpDiagnostics) {
+            rtpDiagnostics->finishFrame(false, sendCallUs, 0);
+        }
         std::lock_guard<std::mutex> lock(mutex_);
 
         ++counters_.videoSendFail;
         LOG_ERROR("[WEBRTC] session=%s send video failed: %s", sessionId_.c_str(), e.what());
         return false;
+    }
+
+    /* 正常返回仅表示 Track 已接受该帧；网络是否成功发出仍需结合设备抓包判断。 */
+    if (rtpDiagnostics) {
+        rtpDiagnostics->finishFrame(true, sendCallUs, static_cast<uint64_t>(bufferedAmount));
     }
 
     {
@@ -1187,6 +1220,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
     std::shared_ptr<rtc::Track> track;
     std::shared_ptr<rtc::RtpPacketizationConfig> rtpConfig;
     std::shared_ptr<rtc::H264RtpPacketizer> packetizer;
+    std::shared_ptr<WebRtcRtpFrameDiagnostics> rtpDiagnostics;
     std::shared_ptr<rtc::RtcpSrReporter> srReporter;
     std::shared_ptr<rtc::RtcpNackResponder> nackResponder;
     std::shared_ptr<rtc::PliHandler> pliHandler;
@@ -1229,6 +1263,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
         ssrc, cname, payloadType, rtc::H264RtpPacketizer::ClockRate);
     packetizer = std::make_shared<rtc::H264RtpPacketizer>(
         rtc::NalUnit::Separator::Length, rtpConfig);
+    rtpDiagnostics = std::make_shared<WebRtcRtpFrameDiagnostics>(sessionId_, payloadType);
     srReporter = std::make_shared<rtc::RtcpSrReporter>(rtpConfig);
     /*
      * 视频发送方向的 NACK responder：缓存该视频 Track 最近发送的 H.264 RTP 包。
@@ -1252,6 +1287,11 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
             session->requestVideoKeyframe(WEBRTC_KEYFRAME_REQUEST_PLI);
         }
     });
+    /*
+     * 诊断器紧跟 packetizer，看到的是本帧实际生成的 RTP 包；它位于 SR/NACK
+     * 处理器之前，因此不会把后续插入的 RTCP 或 NACK 重传包误计为首次分片。
+     */
+    packetizer->addToChain(rtpDiagnostics);
     packetizer->addToChain(srReporter);
     packetizer->addToChain(nackResponder);
     packetizer->addToChain(pliHandler);
@@ -1333,6 +1373,7 @@ void WebRtcSession::addH264VideoTrack(const std::string &mid, uint8_t payloadTyp
          */
         state_.waitingForVideoKeyframe = true;
         transport_.videoTrack = track;
+        videoRtpDiagnostics_ = rtpDiagnostics;
     }
 
     LOG_INFO("[WEBRTC] session=%s add h264 track mid=%s pt=%u", sessionId_.c_str(), mid.c_str(), payloadType);

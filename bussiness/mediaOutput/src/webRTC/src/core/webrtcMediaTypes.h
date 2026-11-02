@@ -35,6 +35,7 @@ struct WebRtcVideoFrame {
     const uint8_t *data; /* 编码帧数据地址。 */
     size_t size; /* 编码帧字节数。 */
     uint64_t ptsUs; /* 媒体时间戳，单位微秒。 */
+    uint64_t frameId; /* gateway 视频帧序号，用于关联编码、RTP 分片和设备抓包。 */
     bool keyFrame; /* 是否为关键帧。 */
     H264FrameFormat format; /* H264 输入格式。 */
 };

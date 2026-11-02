@@ -372,6 +372,144 @@ static void debug_print_video_transport_table(
     }
 }
 
+/**
+ * @brief 打印编码视频帧到 H.264 RTP 分片的会话级累计统计。
+ * @param[in,out] reply shell 回复缓冲区。
+ * @param[in,out] offset 当前写入偏移。
+ * @param[in] sessions 当前输出端点的会话统计快照。
+ *
+ * 这里的 packets/bytes 表示 packetizer 已生成的数据，不代表 ICE/UDP 已成功发送。
+ * 设备抓包可通过 latest/largest 行中的 rtp_ts 与 RTP timestamp 逐帧交叉核对。
+ */
+static void debug_print_video_rtp_frame_table(
+    char *reply,
+    size_t *offset,
+    const std::vector<WebRtcSessionStats> &sessions)
+{
+    const WebRtcRtpFrameDiagnosticsStats *rtpStats;
+    size_t i;
+
+    if (sessions.empty()) {
+        return;
+    }
+
+    debug_command_reply_append(
+        reply,
+        offset,
+        "\n  video RTP frame diagnostics (packetizer generated, not network delivered)\n"
+        "    %-24s %10s %12s %12s %8s %8s %8s %8s %8s %8s\n"
+        "    %-24s %10s %12s %12s %8s %8s %8s %8s %8s %8s\n",
+        "session_id",
+        "frames",
+        "rtp_packets",
+        "rtp_bytes",
+        "no_rtp",
+        "bad_rtp",
+        "seq_disc",
+        "ts_diff",
+        "overlap",
+        "orphan",
+        "------------------------",
+        "----------",
+        "------------",
+        "------------",
+        "--------",
+        "--------",
+        "--------",
+        "--------",
+        "--------",
+        "--------");
+
+    for (i = 0; i < sessions.size(); ++i) {
+        rtpStats = &sessions[i].videoRtp;
+        debug_command_reply_append(
+            reply,
+            offset,
+            "    %-24.24s %10llu %12llu %12llu %8llu %8llu %8llu %8llu %8llu %8llu\n",
+            sessions[i].sessionId.c_str(),
+            static_cast<unsigned long long>(rtpStats->frames),
+            static_cast<unsigned long long>(rtpStats->generatedPackets),
+            static_cast<unsigned long long>(rtpStats->generatedBytes),
+            static_cast<unsigned long long>(rtpStats->framesWithoutRtp),
+            static_cast<unsigned long long>(rtpStats->parseFailures),
+            static_cast<unsigned long long>(rtpStats->sequenceDiscontinuities),
+            static_cast<unsigned long long>(rtpStats->timestampMismatches),
+            static_cast<unsigned long long>(rtpStats->overlappingFrames),
+            static_cast<unsigned long long>(rtpStats->orphanBatches));
+    }
+
+    debug_command_reply_append(
+        reply,
+        offset,
+        "\n  latest/largest generated RTP frame\n"
+        "    %-24s %-7s %10s %5s %10s %10s %8s %8s %8s %8s %8s %10s\n"
+        "    %-24s %-7s %10s %5s %10s %10s %8s %8s %8s %8s %8s %10s\n",
+        "session_id",
+        "sample",
+        "frame_id",
+        "key",
+        "encoded",
+        "rtp_ts",
+        "packets",
+        "rtp_bytes",
+        "seq_first",
+        "seq_last",
+        "marker",
+        "buffered",
+        "------------------------",
+        "-------",
+        "----------",
+        "-----",
+        "----------",
+        "----------",
+        "--------",
+        "--------",
+        "--------",
+        "--------",
+        "--------",
+        "----------");
+
+    for (i = 0; i < sessions.size(); ++i) {
+        rtpStats = &sessions[i].videoRtp;
+        if (rtpStats->latestFrame.valid) {
+            debug_command_reply_append(
+                reply,
+                offset,
+                "    %-24.24s %-7s %10llu %5s %10llu %10u %8llu %8llu %8u %8u %8s %10llu\n",
+                sessions[i].sessionId.c_str(),
+                "latest",
+                static_cast<unsigned long long>(rtpStats->latestFrame.frameId),
+                rtpStats->latestFrame.keyFrame ? "yes" : "no",
+                static_cast<unsigned long long>(rtpStats->latestFrame.encodedBytes),
+                static_cast<unsigned int>(rtpStats->latestFrame.rtpTimestamp),
+                static_cast<unsigned long long>(rtpStats->latestFrame.rtpPackets),
+                static_cast<unsigned long long>(rtpStats->latestFrame.rtpBytes),
+                static_cast<unsigned int>(rtpStats->latestFrame.firstSequence),
+                static_cast<unsigned int>(rtpStats->latestFrame.lastSequence),
+                rtpStats->latestFrame.markerSeen ? "yes" : "no",
+                static_cast<unsigned long long>(rtpStats->latestFrame.bufferedAmount));
+        }
+        if (rtpStats->largestFrame.valid) {
+            debug_command_reply_append(
+                reply,
+                offset,
+                "    %-24.24s %-7s %10llu %5s %10llu %10u %8llu %8llu %8u %8u %8s %10llu\n",
+                sessions[i].sessionId.c_str(),
+                "largest",
+                static_cast<unsigned long long>(rtpStats->largestFrame.frameId),
+                rtpStats->largestFrame.keyFrame ? "yes" : "no",
+                static_cast<unsigned long long>(rtpStats->largestFrame.encodedBytes),
+                static_cast<unsigned int>(rtpStats->largestFrame.rtpTimestamp),
+                static_cast<unsigned long long>(rtpStats->largestFrame.rtpPackets),
+                static_cast<unsigned long long>(rtpStats->largestFrame.rtpBytes),
+                static_cast<unsigned int>(rtpStats->largestFrame.firstSequence),
+                static_cast<unsigned int>(rtpStats->largestFrame.lastSequence),
+                rtpStats->largestFrame.markerSeen ? "yes" : "no",
+                static_cast<unsigned long long>(rtpStats->largestFrame.bufferedAmount));
+        }
+    }
+}
+
 /* 打印浏览器到设备的音频 RTP 接收质量和最近包位置。 */
 static void debug_print_incoming_audio_table(
     char *reply,
@@ -515,6 +653,7 @@ static int debug_handle_get_webrtc(void *user_data, const char *input, char *out
         debug_print_session_state_table(output, &offset, stats.sessions);
         debug_print_session_counter_table(output, &offset, stats.sessions);
         debug_print_video_transport_table(output, &offset, stats.sessions);
+        debug_print_video_rtp_frame_table(output, &offset, stats.sessions);
         debug_print_incoming_audio_table(output, &offset, stats.sessions);
         debug_print_pli_test_table(output, &offset, stats.sessions);
     }
