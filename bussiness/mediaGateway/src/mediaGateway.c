@@ -156,7 +156,7 @@ static int adaptive_target_params_need_apply(MediaGatewayCtx *ctx)
     int i = 0;
     MediaVideoEncodeParams current = {0};
 
-    if (!ctx || !ctx->config.policy.network_encode.enabled)
+    if (!ctx)
         return 0;
     for (i = 0; i < ctx->config.video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
@@ -3017,9 +3017,7 @@ static void submit_pending_encoder_control_commands(MediaGatewayCtx *ctx,
         if (retry_mask != 0 && (retry_mask & bit) == 0)
             continue;
 
-        params = NULL;
-        if (ctx->config.policy.network_encode.enabled)
-            params = &ctx->policy.adaptive.encode_params.target[stream_idx];
+        params = &ctx->policy.adaptive.encode_params.target[stream_idx];
         if (params && params->fps > 0 && params->bitrate > 0 && params->gop > 0)
         {
             submit_ret = submit_encoder_params_command(res,
@@ -3401,12 +3399,30 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
     int need_params_apply = 0;
     int need_sensor_fps = 0;
     int submit_ret = 0;
+    int manual_bitrate_active = 0;
+    int stream_idx = 0;
 
-    /* 如果场景和网络自适应都未启用，直接返回 */
-    if (!ctx || !res || (!ctx->config.policy.light_fps.enabled && !ctx->config.policy.network_encode.enabled))
+    /* 参数检查完成后，再统一判断场景策略、网络策略和手动码率覆盖是否需要运行。 */
+    if (!ctx || !res)
     {
         return;
     }
+
+    for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        if (__atomic_load_n(
+                &ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+                __ATOMIC_ACQUIRE))
+        {
+            manual_bitrate_active = 1;
+            break;
+        }
+    }
+    /* 场景、网络策略和手动码率覆盖都未启用时，无需运行视频控制事务。 */
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled &&
+        !manual_bitrate_active)
+        return;
 
     transition = &res->video_control_transition;
     now_us = media_gateway_get_now_us();

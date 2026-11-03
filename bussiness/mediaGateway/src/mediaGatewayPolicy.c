@@ -561,6 +561,8 @@ static int adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNe
     int stream_idx = 0;
     int base_bitrate = 0;
     int bitrate_percent = 100;
+    int manual_bitrate_enabled = 0;
+    int manual_bitrate_bps = 0;
     int64_t bitrate = 0;
     int target_gop = 0;
 
@@ -607,6 +609,19 @@ static int adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNe
         params->fps = state->output.target_fps;
         /* 调整码率 */
         params->bitrate = clamp_int_policy((int)bitrate, cfg->min_bitrate, cfg->max_bitrate);
+        /*
+         * Shell 手动覆盖用于固定其他编码参数、只改变码率的诊断实验。
+         * 调试线程只发布原子状态，策略线程在统一目标生成点消费；实际 MPP 配置仍由
+         * 编码 worker 串行执行，避免跨线程直接操作编码器上下文。
+         */
+        manual_bitrate_enabled = __atomic_load_n(
+            &state->encode_params.manual_bitrate_enabled[stream_idx],
+            __ATOMIC_ACQUIRE);
+        manual_bitrate_bps = __atomic_load_n(
+            &state->encode_params.manual_bitrate_bps[stream_idx],
+            __ATOMIC_RELAXED);
+        if (manual_bitrate_enabled && manual_bitrate_bps > 0)
+            params->bitrate = manual_bitrate_bps;
         /* 调整 GOP */
         target_gop = adaptive_compute_gop(cfg, stream_network->state, state->output.target_fps);
         if (target_gop <= 0)
@@ -1089,12 +1104,24 @@ out_update_scene:
 void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
 {
     MediaAdaptNetworkDecision network_decision;
+    int manual_bitrate_active = 0;
+    int stream_idx = 0;
 
     adaptive_init_network_decision(&network_decision);
     if (!ctx)
     {
         LOG_ERROR("[ADAPTIVE_CONTROL] ctx is null, skipping runtime policy update");
         return;
+    }
+    for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        if (__atomic_load_n(
+                &ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+                __ATOMIC_ACQUIRE))
+        {
+            manual_bitrate_active = 1;
+            break;
+        }
     }
 #if 0
     if (!ctx->config.policy.light_fps.enabled &&
@@ -1103,7 +1130,8 @@ void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
         return;
 #else
     if (!ctx->config.policy.light_fps.enabled &&
-        !ctx->config.policy.network_encode.enabled)
+        !ctx->config.policy.network_encode.enabled &&
+        !manual_bitrate_active)
         return;
 #endif
 

@@ -11,6 +11,8 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -834,6 +836,136 @@ static int gateway_shell_set_fps(void *user_data, const char *input, char *outpu
 }
 
 /**
+ * @brief 处理 setBitrate 调试命令，按码流设置或取消手动目标码率覆盖。
+ *
+ * 命令格式为 setBitrate <stream_id> <Mbps|auto>。Mbps 使用十进制定义，
+ * 1 Mbps 等于 1,000,000 bit/s，并允许输入 1.5 等小数。函数只发布手动覆盖状态，
+ * 实际 MPP 参数仍由 gateway 主循环通过统一控制事务投递到所属编码线程执行。
+ */
+static int gateway_shell_set_bitrate(void *user_data, const char *input, char *output)
+{
+    MediaGatewayCtx *ctx = NULL;
+    char *reply = NULL;
+    char *stream_end = NULL;
+    char *bitrate_end = NULL;
+    const char *bitrate_text = NULL;
+    size_t offset = 0;
+    long stream_value = -1;
+    double bitrate_mbps = 0.0;
+    double bitrate_bps_value = 0.0;
+    int stream_idx = -1;
+    int bitrate_bps = 0;
+
+    if (!user_data || !output)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: invalid argument user_data=%p output=%p",
+                  user_data,
+                  (void *)output);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    ctx = (MediaGatewayCtx *)user_data;
+    reply = output;
+    reply[0] = '\0';
+    debug_command_reply_append(reply, &offset, "cmd=setBitrate\n");
+    if (!input || input[0] == '\0')
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: missing input");
+        debug_command_reply_append(reply, &offset, "ret=%d\n", MEDIA_ERR_INVALID_PARAM);
+        debug_command_reply_append(reply, &offset, "usage=setBitrate <stream_id> <Mbps|auto>\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    errno = 0;
+    stream_value = strtol(input, &stream_end, 10);
+    if (errno != 0 || stream_end == input)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: invalid stream input='%s' errno=%d", input, errno);
+        debug_command_reply_append(reply, &offset, "ret=%d\nerror=invalid stream_id\n", MEDIA_ERR_INVALID_PARAM);
+        debug_command_reply_append(reply, &offset, "usage=setBitrate <stream_id> <Mbps|auto>\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    while (*stream_end == ' ' || *stream_end == '\t')
+        ++stream_end;
+    bitrate_text = stream_end;
+    if (bitrate_text[0] == '\0' ||
+        stream_value < 0 ||
+        stream_value >= ctx->config.video.stream_count ||
+        stream_value >= MEDIA_GATEWAY_MAX_STREAMS)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: stream out of range stream=%ld stream_count=%d",
+                  stream_value,
+                  ctx->config.video.stream_count);
+        debug_command_reply_append(reply, &offset, "ret=%d\nerror=stream_id out of range\n", MEDIA_ERR_INVALID_PARAM);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    stream_idx = (int)stream_value;
+    if (!ctx->config.policy.light_fps.enabled &&
+        !ctx->config.policy.network_encode.enabled)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: runtime video policy disabled stream=%d", stream_idx);
+        debug_command_reply_append(reply, &offset, "ret=%d\nerror=runtime video policy disabled\n", MEDIA_ERR_NOT_READY);
+        return MEDIA_ERR_NOT_READY;
+    }
+    if (!ctx->config.video.streams[stream_idx].enabled ||
+        !ctx->video.streams[stream_idx].encoder_ready)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: stream not ready stream=%d enabled=%d encoder_ready=%d",
+                  stream_idx,
+                  ctx->config.video.streams[stream_idx].enabled,
+                  ctx->video.streams[stream_idx].encoder_ready);
+        debug_command_reply_append(reply, &offset, "ret=%d\nerror=stream not ready\n", MEDIA_ERR_NOT_READY);
+        return MEDIA_ERR_NOT_READY;
+    }
+
+    if (strcmp(bitrate_text, "auto") == 0)
+    {
+        __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+                         0,
+                         __ATOMIC_RELEASE);
+        LOG_WARN("[VIDEO_CONTROL] manual bitrate override disabled by shell stream=%d", stream_idx);
+        debug_command_reply_append(reply, &offset, "ret=%d\n", MEDIA_OK);
+        debug_command_reply_append(reply, &offset, "stream=%d\nmanual_override=0\n", stream_idx);
+        debug_command_reply_append(reply, &offset, "note=policy target will be restored asynchronously\n");
+        return MEDIA_OK;
+    }
+
+    errno = 0;
+    bitrate_mbps = strtod(bitrate_text, &bitrate_end);
+    while (bitrate_end && (*bitrate_end == ' ' || *bitrate_end == '\t'))
+        ++bitrate_end;
+    bitrate_bps_value = bitrate_mbps * 1000000.0;
+    if (errno != 0 || bitrate_end == bitrate_text ||
+        (bitrate_end && bitrate_end[0] != '\0') ||
+        !isfinite(bitrate_mbps) || bitrate_mbps <= 0.0 ||
+        bitrate_bps_value > (double)INT_MAX)
+    {
+        LOG_ERROR("gateway_shell_set_bitrate failed: invalid Mbps input='%s' errno=%d", bitrate_text, errno);
+        debug_command_reply_append(reply, &offset, "ret=%d\nerror=invalid Mbps value\n", MEDIA_ERR_INVALID_PARAM);
+        debug_command_reply_append(reply, &offset, "usage=setBitrate <stream_id> <Mbps|auto>\n");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    bitrate_bps = (int)(bitrate_bps_value + 0.5);
+    __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_bps[stream_idx],
+                     bitrate_bps,
+                     __ATOMIC_RELAXED);
+    __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+                     1,
+                     __ATOMIC_RELEASE);
+    LOG_WARN("[VIDEO_CONTROL] manual bitrate override set by shell stream=%d mbps=%.3f bitrate_bps=%d",
+             stream_idx,
+             bitrate_mbps,
+             bitrate_bps);
+    debug_command_reply_append(reply, &offset, "ret=%d\n", MEDIA_OK);
+    debug_command_reply_append(reply, &offset, "stream=%d\nmanual_override=1\n", stream_idx);
+    debug_command_reply_append(reply, &offset, "target_mbps=%.3f\ntarget_bitrate_bps=%d\n", bitrate_mbps, bitrate_bps);
+    debug_command_reply_append(reply, &offset, "note=encoder update is asynchronous; verify with getEncoder\n");
+    return MEDIA_OK;
+}
+
+/**
  * @description: 处理 getIsp 调试命令，输出 ISP/RKAIQ 聚合状态。
  *
  * 该命令通过 isp_controller_query_status 获取 ISP 模块内部快照，避免直接读
@@ -1009,6 +1141,8 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_jitter=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter);
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_jitter_ms=%u\n", stream_idx, state.stream_network[stream_idx].rtcp_jitter_ms);
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_last_ms=%" PRIu64 "\n", stream_idx, state.stream_network[stream_idx].last_rtcp_feedback_ts_us / 1000ULL);
+        debug_command_reply_append(reply, &offset, "stream%d_manual_bitrate_override=%d\n", stream_idx, state.encode_params.manual_bitrate_enabled[stream_idx]);
+        debug_command_reply_append(reply, &offset, "stream%d_manual_bitrate_bps=%d\n", stream_idx, state.encode_params.manual_bitrate_bps[stream_idx]);
         debug_command_reply_append(reply, &offset, "stream%d_target_fps=%d\n", stream_idx, params->fps);
         debug_command_reply_append(reply, &offset, "stream%d_target_bitrate=%d\n", stream_idx, params->bitrate);
         debug_command_reply_append(reply, &offset, "stream%d_target_gop=%d\n", stream_idx, params->gop);
@@ -1861,6 +1995,11 @@ int media_gateway_debug_register_debug_commands(MediaGatewayCtx *ctx)
     if (regDebugCmd("setFps", gateway_shell_set_fps, ctx) != 0)
     {
         LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd setFps");
+        return -1;
+    }
+    if (regDebugCmd("setBitrate", gateway_shell_set_bitrate, ctx) != 0)
+    {
+        LOG_ERROR("media_gateway_debug_register_debug_commands failed: regDebugCmd setBitrate");
         return -1;
     }
     if (regDebugCmd("getIsp", gateway_shell_get_isp, ctx) != 0)
