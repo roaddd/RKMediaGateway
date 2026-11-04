@@ -646,6 +646,83 @@ static int adaptive_build_target_params(MediaGatewayCtx *ctx, const MediaAdaptNe
 }
 
 /**
+ * @brief 网络编码自适应关闭时，为 Shell 手动码率命令构造待下发参数。
+ *
+ * 手动命令只覆盖码率，其余参数取当前已提交配置。若亮度策略正在切换 source 0
+ * 的帧率，则同时携带融合后的目标帧率，避免完整参数命令把帧率写回旧值。
+ */
+static int adaptive_build_manual_bitrate_targets(MediaGatewayCtx *ctx)
+{
+    MediaAdaptCtrlState *state = NULL;
+    MediaGatewayStreamConfig *stream = NULL;
+    MediaVideoEncodeParams *params = NULL;
+    const MediaVideoEncodeParams *base_params = NULL;
+    int manual_enabled = 0;
+    int update_pending = 0;
+    int manual_bitrate_bps = 0;
+    int stream_idx = 0;
+
+    if (!ctx)
+    {
+        LOG_ERROR("[ADAPTIVE_CONTROL] build manual bitrate targets failed: ctx is NULL");
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+
+    state = &ctx->policy.adaptive;
+    for (stream_idx = 0;
+         stream_idx < ctx->config.video.stream_count && stream_idx < MEDIA_GATEWAY_MAX_STREAMS;
+         ++stream_idx)
+    {
+        manual_enabled = __atomic_load_n(&state->encode_params.manual_bitrate_enabled[stream_idx],
+                                         __ATOMIC_ACQUIRE);
+        update_pending = __atomic_load_n(&state->encode_params.manual_bitrate_pending[stream_idx],
+                                         __ATOMIC_ACQUIRE);
+        if (!manual_enabled && !update_pending)
+            continue;
+
+        stream = &ctx->config.video.streams[stream_idx];
+        if (!stream->enabled)
+            continue;
+        base_params = &state->encode_params.base[stream_idx];
+        params = &state->encode_params.target[stream_idx];
+
+        /* 先复制当前已提交参数，保证 setBitrate 不意外改变 RC、QP 或 GOP。 */
+        params->fps = stream->fps;
+        params->bitrate = stream->bitrate;
+        params->gop = stream->gop;
+        params->rc_mode = stream->rc_mode;
+        params->qp_init = stream->qp_init;
+        params->qp_min = stream->qp_min;
+        params->qp_max = stream->qp_max;
+        params->qp_min_i = stream->qp_min_i;
+        params->qp_max_i = stream->qp_max_i;
+        params->qp_max_step = stream->qp_max_step;
+        if (stream->source_index == 0 && state->output.target_fps > 0)
+            params->fps = state->output.target_fps;
+
+        manual_bitrate_bps = __atomic_load_n(&state->encode_params.manual_bitrate_bps[stream_idx],
+                                             __ATOMIC_RELAXED);
+        if (manual_enabled)
+        {
+            if (manual_bitrate_bps <= 0)
+            {
+                LOG_ERROR("[ADAPTIVE_CONTROL] invalid manual bitrate: stream=%d bitrate=%d",
+                          stream_idx,
+                          manual_bitrate_bps);
+                return MEDIA_ERR_INVALID_PARAM;
+            }
+            params->bitrate = manual_bitrate_bps;
+        }
+        else
+        {
+            /* auto 必须恢复启动配置，而不能继续沿用上一次手动码率。 */
+            params->bitrate = base_params->bitrate;
+        }
+    }
+    return MEDIA_OK;
+}
+
+/**
  * @brief 更新 RTCP/输出队列反馈驱动的网络侧策略输出。
  *
  * 网络自适应关闭时生成中性网络约束，保证最终融合只受场景侧影响。
@@ -718,6 +795,8 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
     const MediaGatewayNetworkLevelConfig *level = NULL;
 #endif
     int ret = MEDIA_OK;
+    int manual_bitrate_work = 0;
+    int stream_idx = 0;
 
     if (!ctx)
     {
@@ -726,18 +805,20 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
     }
 
     /* 场景与网络编码都未启用时直接返回。 */
-#if 0
+    state = &ctx->policy.adaptive;
+    for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        if (__atomic_load_n(&state->encode_params.manual_bitrate_enabled[stream_idx], __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&state->encode_params.manual_bitrate_pending[stream_idx], __ATOMIC_ACQUIRE))
+        {
+            manual_bitrate_work = 1;
+            break;
+        }
+    }
     if (!ctx->config.policy.light_fps.enabled &&
         !ctx->config.policy.network_encode.enabled &&
-        !ctx->config.policy.network_encode.pacing_enabled)
+        !manual_bitrate_work)
         return MEDIA_OK;
-#else
-    if (!ctx->config.policy.light_fps.enabled &&
-        !ctx->config.policy.network_encode.enabled)
-        return MEDIA_OK;
-#endif
-
-    state = &ctx->policy.adaptive;
     old_target_fps = state->output.target_fps;
 
     /* 取网络反馈决定的帧率和亮度决定的帧率最小值作为最终帧率,此时肯定有一个是有效的 */
@@ -759,6 +840,15 @@ static int media_gateway_fuse_runtime_policy_outputs(MediaGatewayCtx *ctx,
         if (ret != MEDIA_OK)
         {
             LOG_ERROR("[ADAPTIVE_CONTROL] fuse runtime policy failed: build target params ret=%d", ret);
+            return ret;
+        }
+    }
+    else if (manual_bitrate_work)
+    {
+        ret = adaptive_build_manual_bitrate_targets(ctx);
+        if (ret != MEDIA_OK)
+        {
+            LOG_ERROR("[ADAPTIVE_CONTROL] fuse runtime policy failed: build manual bitrate targets ret=%d", ret);
             return ret;
         }
     }
@@ -1104,7 +1194,7 @@ out_update_scene:
 void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
 {
     MediaAdaptNetworkDecision network_decision;
-    int manual_bitrate_active = 0;
+    int manual_bitrate_work = 0;
     int stream_idx = 0;
 
     adaptive_init_network_decision(&network_decision);
@@ -1115,11 +1205,10 @@ void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
     }
     for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
     {
-        if (__atomic_load_n(
-                &ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
-                __ATOMIC_ACQUIRE))
+        if (__atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx], __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx], __ATOMIC_ACQUIRE))
         {
-            manual_bitrate_active = 1;
+            manual_bitrate_work = 1;
             break;
         }
     }
@@ -1131,7 +1220,7 @@ void media_gateway_refresh_adaptive_policy_targets_if_due(MediaGatewayCtx *ctx)
 #else
     if (!ctx->config.policy.light_fps.enabled &&
         !ctx->config.policy.network_encode.enabled &&
-        !manual_bitrate_active)
+        !manual_bitrate_work)
         return;
 #endif
 

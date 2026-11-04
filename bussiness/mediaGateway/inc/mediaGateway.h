@@ -474,6 +474,7 @@ typedef struct {
     MediaVideoEncodeParams target[MEDIA_GATEWAY_MAX_STREAMS]; /* 每路编码器最终目标参数。 */
     int manual_bitrate_enabled[MEDIA_GATEWAY_MAX_STREAMS];    /* Shell 手动码率覆盖开关；跨线程访问时使用原子操作。 */
     int manual_bitrate_bps[MEDIA_GATEWAY_MAX_STREAMS];        /* Shell 指定的目标码率，单位 bit/s；仅在对应开关开启时有效。 */
+    int manual_bitrate_pending[MEDIA_GATEWAY_MAX_STREAMS];    /* 设置或 auto 恢复尚未完成异步下发；跨线程访问时使用原子操作。 */
 } MediaAdaptEncodeParamsState;
 
 typedef struct {

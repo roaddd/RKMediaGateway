@@ -924,6 +924,9 @@ static int gateway_shell_set_bitrate(void *user_data, const char *input, char *o
         __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
                          0,
                          __ATOMIC_RELEASE);
+        __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx],
+                         1,
+                         __ATOMIC_RELEASE);
         LOG_WARN("[VIDEO_CONTROL] manual bitrate override disabled by shell stream=%d", stream_idx);
         debug_command_reply_append(reply, &offset, "ret=%d\n", MEDIA_OK);
         debug_command_reply_append(reply, &offset, "stream=%d\nmanual_override=0\n", stream_idx);
@@ -952,6 +955,9 @@ static int gateway_shell_set_bitrate(void *user_data, const char *input, char *o
                      bitrate_bps,
                      __ATOMIC_RELAXED);
     __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+                     1,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx],
                      1,
                      __ATOMIC_RELEASE);
     LOG_WARN("[VIDEO_CONTROL] manual bitrate override set by shell stream=%d mbps=%.3f bitrate_bps=%d",
@@ -1143,6 +1149,7 @@ static int gateway_shell_get_adapt(void *user_data, const char *input, char *out
         debug_command_reply_append(reply, &offset, "stream%d_rtcp_last_ms=%" PRIu64 "\n", stream_idx, state.stream_network[stream_idx].last_rtcp_feedback_ts_us / 1000ULL);
         debug_command_reply_append(reply, &offset, "stream%d_manual_bitrate_override=%d\n", stream_idx, state.encode_params.manual_bitrate_enabled[stream_idx]);
         debug_command_reply_append(reply, &offset, "stream%d_manual_bitrate_bps=%d\n", stream_idx, state.encode_params.manual_bitrate_bps[stream_idx]);
+        debug_command_reply_append(reply, &offset, "stream%d_manual_bitrate_pending=%d\n", stream_idx, state.encode_params.manual_bitrate_pending[stream_idx]);
         debug_command_reply_append(reply, &offset, "stream%d_target_fps=%d\n", stream_idx, params->fps);
         debug_command_reply_append(reply, &offset, "stream%d_target_bitrate=%d\n", stream_idx, params->bitrate);
         debug_command_reply_append(reply, &offset, "stream%d_target_gop=%d\n", stream_idx, params->gop);

@@ -154,6 +154,7 @@ static int video_encode_params_equal(const MediaVideoEncodeParams *a,
 static int adaptive_target_params_need_apply(MediaGatewayCtx *ctx)
 {
     int i = 0;
+    int compare_stream = 0;
     MediaVideoEncodeParams current = {0};
 
     if (!ctx)
@@ -161,6 +162,11 @@ static int adaptive_target_params_need_apply(MediaGatewayCtx *ctx)
     for (i = 0; i < ctx->config.video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
         if (!ctx->video.streams[i].enabled || !ctx->video.streams[i].encoder_ready)
+            continue;
+        compare_stream = ctx->config.policy.network_encode.enabled ||
+                         __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[i], __ATOMIC_ACQUIRE) ||
+                         __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[i], __ATOMIC_ACQUIRE);
+        if (!compare_stream)
             continue;
         memset(&current, 0, sizeof(current));
         current.fps = ctx->config.video.streams[i].fps;
@@ -3018,7 +3024,10 @@ static void submit_pending_encoder_control_commands(MediaGatewayCtx *ctx,
             continue;
 
         params = &ctx->policy.adaptive.encode_params.target[stream_idx];
-        if (params && params->fps > 0 && params->bitrate > 0 && params->gop > 0)
+        if ((ctx->config.policy.network_encode.enabled ||
+             __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx], __ATOMIC_ACQUIRE) ||
+             __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx], __ATOMIC_ACQUIRE)) &&
+            params && params->fps > 0 && params->bitrate > 0 && params->gop > 0)
         {
             submit_ret = submit_encoder_params_command(res,
                                                         stream_idx,
@@ -3066,6 +3075,9 @@ static void commit_video_control_transition(MediaGatewayCtx *ctx,
 {
     MediaGatewayVideoControlTransition *transition = NULL;
     int old_fps = 0;
+    int stream_idx = 0;
+    int manual_enabled = 0;
+    int desired_bitrate = 0;
 
     if (!ctx || !res)
     {
@@ -3106,6 +3118,27 @@ static void commit_video_control_transition(MediaGatewayCtx *ctx,
              old_fps,
              transition->target_fps,
              transition->request_id);
+    /*
+     * 仅当当前配置已经等于最新手动目标时才清除 pending。若 Shell 在旧事务执行期间
+     * 又发布了新值，则保留 pending，让主循环继续发起下一次参数事务。
+     */
+    for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
+    {
+        manual_enabled = __atomic_load_n(
+            &ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
+            __ATOMIC_ACQUIRE);
+        desired_bitrate = manual_enabled
+                              ? __atomic_load_n(
+                                    &ctx->policy.adaptive.encode_params.manual_bitrate_bps[stream_idx],
+                                    __ATOMIC_RELAXED)
+                              : ctx->policy.adaptive.encode_params.base[stream_idx].bitrate;
+        if (ctx->config.video.streams[stream_idx].bitrate == desired_bitrate)
+        {
+            __atomic_store_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx],
+                             0,
+                             __ATOMIC_RELEASE);
+        }
+    }
     /* 提交完成后清理事务位图，使状态机可以接受下一次目标切换。 */
     transition->phase = MEDIA_GATEWAY_FPS_TRANSITION_IDLE;
     transition->encoder_pending_mask = 0;
@@ -3399,7 +3432,7 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
     int need_params_apply = 0;
     int need_sensor_fps = 0;
     int submit_ret = 0;
-    int manual_bitrate_active = 0;
+    int manual_bitrate_work = 0;
     int stream_idx = 0;
 
     /* 参数检查完成后，再统一判断场景策略、网络策略和手动码率覆盖是否需要运行。 */
@@ -3410,18 +3443,17 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
 
     for (stream_idx = 0; stream_idx < MEDIA_GATEWAY_MAX_STREAMS; ++stream_idx)
     {
-        if (__atomic_load_n(
-                &ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx],
-                __ATOMIC_ACQUIRE))
+        if (__atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_enabled[stream_idx], __ATOMIC_ACQUIRE) ||
+            __atomic_load_n(&ctx->policy.adaptive.encode_params.manual_bitrate_pending[stream_idx], __ATOMIC_ACQUIRE))
         {
-            manual_bitrate_active = 1;
+            manual_bitrate_work = 1;
             break;
         }
     }
     /* 场景、网络策略和手动码率覆盖都未启用时，无需运行视频控制事务。 */
     if (!ctx->config.policy.light_fps.enabled &&
         !ctx->config.policy.network_encode.enabled &&
-        !manual_bitrate_active)
+        !manual_bitrate_work)
         return;
 
     transition = &res->video_control_transition;
