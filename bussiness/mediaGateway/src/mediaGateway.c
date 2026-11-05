@@ -2182,6 +2182,37 @@ static int init_gateway_captures(MediaGatewayCtx *ctx)
 }
 
 /**
+ * @brief 将应用层目标帧率转换为 RKAIQ 自动曝光的帧周期约束。
+ *
+ * ISP 未启用或已经降级时保持普通 V4L2 行为；ISP 正常运行时，约束下发失败
+ * 必须阻止后续 Sensor 帧率切换，避免 Sensor 与 AE 对 VTS/VBLANK 的控制目标冲突。
+ */
+static int apply_gateway_isp_ae_fps_constraint(MediaGatewayCtx *ctx, int target_fps)
+{
+    int ret = 0;
+
+    if (!ctx || target_fps <= 0)
+    {
+        LOG_ERROR("apply_gateway_isp_ae_fps_constraint failed: ctx=%p target_fps=%d",
+                  (void *)ctx,
+                  target_fps);
+        return MEDIA_ERR_INVALID_PARAM;
+    }
+    if (!ctx->video.isp_ready)
+        return MEDIA_OK;
+
+    ret = isp_controller_set_ae_fps_constraint(&ctx->video.isp, target_fps);
+    if (ret != 0)
+    {
+        LOG_ERROR("apply_gateway_isp_ae_fps_constraint failed: target_fps=%d ret=%d",
+                  target_fps,
+                  ret);
+        return MEDIA_ERR;
+    }
+    return MEDIA_OK;
+}
+
+/**
  * @brief 按全部启用码流的最高帧率配置共享Sensor输入帧率。
  *
  * RKISP mainpath和selfpath来自同一个Sensor时，共享同一个物理输入帧率。这里通过
@@ -2233,6 +2264,19 @@ static int configure_gateway_sensor_fps(MediaGatewayCtx *ctx)
                       ? ctx->video.captures[sensor_source_idx].ready
                       : 0);
         return MEDIA_ERR_NOT_READY;
+    }
+
+    /*
+     * 必须先更新 AE 最大曝光时间，再切换 Sensor 帧率。这样 RKAIQ 下一帧生成的
+     * 曝光结果已经受新帧周期约束，不会在 Sensor 切换后重新写入旧 VBLANK。
+     */
+    set_ret = apply_gateway_isp_ae_fps_constraint(ctx, sensor_fps);
+    if (set_ret != MEDIA_OK)
+    {
+        LOG_ERROR("configure_gateway_sensor_fps failed: apply AE constraint fps=%d ret=%d",
+                  sensor_fps,
+                  set_ret);
+        return set_ret;
     }
 
     set_ret = v4l2_capture_set_fps(
@@ -3212,6 +3256,13 @@ static void handle_fps_command_result(MediaGatewayCtx *ctx,
             LOG_ERROR("[VIDEO_CONTROL] sensor async apply failed target=%d request=%" PRIu64,
                       transition->target_fps,
                       transition->request_id);
+            /* Sensor 切换失败后恢复原帧率的 AE 曝光约束，避免控制目标长期不一致。 */
+            if (apply_gateway_isp_ae_fps_constraint(ctx, ctx->policy.light_fps.current_fps) != MEDIA_OK)
+            {
+                LOG_ERROR("[VIDEO_CONTROL] rollback AE constraint after sensor failure failed current=%d request=%" PRIu64,
+                          ctx->policy.light_fps.current_fps,
+                          transition->request_id);
+            }
             transition->phase = MEDIA_GATEWAY_FPS_TRANSITION_IDLE;
             transition->retry_after_ts_us = media_gateway_get_now_us() +
                                             (uint64_t)MEDIA_GATEWAY_COMMAND_RETRY_MS * 1000ULL;
@@ -3573,14 +3624,33 @@ static void media_gateway_apply_adaptive_video_source_and_encoder_controls(Media
     }
 
     /*
-     * 切换顺序必须从 Sensor 开始。只有 Sensor 返回成功后，
+     * 先约束 RKAIQ 自动曝光，再切换 Sensor。只有 Sensor 返回成功后，
      * handle_fps_command_result 才会向编码线程投递命令。
      */
+    submit_ret = apply_gateway_isp_ae_fps_constraint(ctx, transition->target_fps);
+    if (submit_ret != MEDIA_OK)
+    {
+        transition->retry_after_ts_us = now_us +
+                                        (uint64_t)MEDIA_GATEWAY_COMMAND_RETRY_MS * 1000ULL;
+        LOG_ERROR("[VIDEO_CONTROL] apply AE fps constraint failed target=%d ret=%d request=%" PRIu64,
+                  transition->target_fps,
+                  submit_ret,
+                  transition->request_id);
+        return;
+    }
+
     submit_ret = submit_sensor_fps_command(res,
                                            transition->request_id,
                                            transition->target_fps);
     if (submit_ret != 0)
     {
+        /* Sensor 未接受新目标时恢复当前帧率对应的曝光上限。 */
+        if (apply_gateway_isp_ae_fps_constraint(ctx, ctx->policy.light_fps.current_fps) != MEDIA_OK)
+        {
+            LOG_ERROR("[VIDEO_CONTROL] rollback AE fps constraint failed current=%d request=%" PRIu64,
+                      ctx->policy.light_fps.current_fps,
+                      transition->request_id);
+        }
         /* 命令入队失败时保持 IDLE，设置退避时间后重新发起完整事务。 */
         transition->retry_after_ts_us = now_us +
                                         (uint64_t)MEDIA_GATEWAY_COMMAND_RETRY_MS * 1000ULL;

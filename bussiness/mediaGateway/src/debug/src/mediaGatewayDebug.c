@@ -1029,6 +1029,10 @@ static int gateway_shell_get_isp(void *user_data, const char *input, char *outpu
     debug_command_reply_append(reply, &offset, "ae_env_lux=%.2f\n", status.ae.env_lux);
     debug_command_reply_append(reply, &offset, "ae_integration_time=%.2f\n", status.ae.integration_time);
     debug_command_reply_append(reply, &offset, "ae_analog_gain=%.2f\n", status.ae.analog_gain);
+    debug_command_reply_append(reply, &offset, "ae_fps_constraint_applied=%d\n", status.ae_constraint.applied);
+    debug_command_reply_append(reply, &offset, "ae_fps_constraint_target=%d\n", status.ae_constraint.target_fps);
+    debug_command_reply_append(reply, &offset, "ae_exposure_min_ms=%.3f\n", status.ae_constraint.min_exposure_time * 1000.0f);
+    debug_command_reply_append(reply, &offset, "ae_exposure_max_ms=%.3f\n", status.ae_constraint.max_exposure_time * 1000.0f);
     debug_command_reply_append(reply, &offset, "low_light_enhancement_enabled=%d\n", status.low_light.enabled);
     debug_command_reply_append(reply, &offset, "low_light_enhancement_active=%d\n", status.low_light.active);
     debug_command_reply_append(reply, &offset, "low_light_enhancement_reason=%s\n", status.low_light.reason);

@@ -733,6 +733,126 @@ int isp_controller_apply_image_controls(IspControllerCtx *ctx, const IspControll
 #endif
 }
 
+/**
+ * @brief 根据目标帧率约束 RKAIQ 自动曝光的最大积分时间。
+ *
+ * 目标帧率由应用层统一策略决定。这里读取并保留 RKAIQ 当前最小曝光时间，
+ * 仅把最大曝光时间限制到单帧周期的 95%，避免 AE 为增加曝光量而扩大
+ * Sensor VTS/VBLANK，导致实际帧率低于应用层目标。
+ */
+int isp_controller_set_ae_fps_constraint(IspControllerCtx *ctx, int target_fps)
+{
+    float frame_period_s = 0.0f;
+    float max_exposure_s = 0.0f;
+
+    if (!ctx || target_fps <= 0)
+    {
+        LOG_ERROR("[ISP_AE_CONSTRAINT] invalid argument ctx=%p target_fps=%d",
+                  (void *)ctx,
+                  target_fps);
+        return -1;
+    }
+
+#ifndef ENABLE_RKAIQ
+    LOG_WARN("[ISP_AE_CONSTRAINT] RKAIQ support is not compiled in; skip target_fps=%d",
+             target_fps);
+    return 0;
+#else
+    {
+        rk_aiq_sys_ctx_t *sys_ctx = NULL;
+        paRange_t exposure_range;
+        frameRateInfo_t frame_rate_info;
+        opMode_t exposure_mode = OP_AUTO;
+        XCamReturn ret = XCAM_RETURN_NO_ERROR;
+
+        sys_ctx = (rk_aiq_sys_ctx_t *)ctx->sys_ctx;
+        if (!sys_ctx || !ctx->started)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] RKAIQ is not started ctx=%p sys_ctx=%p started=%d",
+                      (void *)ctx,
+                      (void *)sys_ctx,
+                      ctx->started);
+            return -1;
+        }
+
+        memset(&exposure_range, 0, sizeof(exposure_range));
+        memset(&frame_rate_info, 0, sizeof(frame_rate_info));
+        ret = rk_aiq_uapi2_getExpMode(sys_ctx, &exposure_mode);
+        if (ret != XCAM_RETURN_NO_ERROR)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] get exposure mode failed ret=%d target_fps=%d",
+                      ret,
+                      target_fps);
+            return -1;
+        }
+        if (exposure_mode != OP_AUTO)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] automatic exposure is required mode=%d target_fps=%d",
+                      exposure_mode,
+                      target_fps);
+            return -1;
+        }
+
+        /*
+         * RKAIQ 的帧率模式必须与应用层目标同步。只限制曝光时间仍可能让 AE 沿用
+         * 旧帧率对应的 frame-length，并再次把旧 VBLANK 写回 Sensor。
+         */
+        frame_rate_info.mode = OP_MANUAL;
+        frame_rate_info.fps = (unsigned int)target_fps;
+        ret = rk_aiq_uapi_setFrameRate(sys_ctx, frame_rate_info);
+        if (ret != XCAM_RETURN_NO_ERROR)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] set RKAIQ frame rate failed ret=%d target_fps=%d",
+                      ret,
+                      target_fps);
+            return -1;
+        }
+
+        ret = rk_aiq_uapi2_getExpTimeRange(sys_ctx, &exposure_range);
+        if (ret != XCAM_RETURN_NO_ERROR)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] get exposure range failed ret=%d target_fps=%d",
+                      ret,
+                      target_fps);
+            return -1;
+        }
+
+        frame_period_s = 1.0f / (float)target_fps;
+        max_exposure_s = frame_period_s * 0.95f;
+        if (exposure_range.min <= 0.0f || exposure_range.min >= max_exposure_s)
+            exposure_range.min = max_exposure_s * 0.01f;
+        exposure_range.max = max_exposure_s;
+
+        ret = rk_aiq_uapi2_setExpTimeRange(sys_ctx, &exposure_range);
+        if (ret != XCAM_RETURN_NO_ERROR)
+        {
+            LOG_ERROR("[ISP_AE_CONSTRAINT] set exposure range failed ret=%d target_fps=%d min=%.6f max=%.6f",
+                      ret,
+                      target_fps,
+                      exposure_range.min,
+                      exposure_range.max);
+            return -1;
+        }
+
+        if (ctx->status_lock_ready)
+            pthread_mutex_lock(&ctx->status_lock);
+        ctx->ae_constraint_applied = 1;
+        ctx->ae_constraint_target_fps = target_fps;
+        ctx->ae_constraint_min_time = exposure_range.min;
+        ctx->ae_constraint_max_time = exposure_range.max;
+        if (ctx->status_lock_ready)
+            pthread_mutex_unlock(&ctx->status_lock);
+
+        LOG_WARN("[ISP_AE_CONSTRAINT] applied target_fps=%d frame_period_ms=%.3f exposure_min_ms=%.3f exposure_max_ms=%.3f",
+                 target_fps,
+                 frame_period_s * 1000.0f,
+                 exposure_range.min * 1000.0f,
+                 exposure_range.max * 1000.0f);
+        return 0;
+    }
+#endif
+}
+
 #ifdef ENABLE_RKAIQ
 
 /**
@@ -1120,6 +1240,10 @@ int isp_controller_query_status(IspControllerCtx *ctx, IspControllerStatus *stat
     status->callbacks.last_error_ts_us = ctx->last_error_ts_us;
     status->control.applied = ctx->controls_applied;
     status->control.controls = ctx->last_controls;
+    status->ae_constraint.applied = ctx->ae_constraint_applied;
+    status->ae_constraint.target_fps = ctx->ae_constraint_target_fps;
+    status->ae_constraint.min_exposure_time = ctx->ae_constraint_min_time;
+    status->ae_constraint.max_exposure_time = ctx->ae_constraint_max_time;
     status->low_light.active = ctx->low_light_active;
     snprintf(status->low_light.reason, sizeof(status->low_light.reason), "%s", ctx->low_light_reason);
     if (ctx->status_lock_ready)

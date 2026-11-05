@@ -228,6 +228,19 @@ typedef struct {
 } IspControllerAeStatus;
 
 /**
+ * @brief 应用层下发给 RKAIQ 自动曝光算法的帧周期约束状态。
+ *
+ * 该状态描述应用层要求的目标帧率及其对应曝光时间范围。最大曝光时间必须小于
+ * 单帧周期，防止 AE 通过增大 Sensor VTS/VBLANK 将实际采集帧率降到目标值以下。
+ */
+typedef struct {
+    int applied;                    /* 最近一次帧周期曝光约束是否成功下发。 */
+    int target_fps;                 /* 曝光约束对应的目标 Sensor 帧率。 */
+    float min_exposure_time;        /* 保留的最小曝光时间，单位为秒。 */
+    float max_exposure_time;        /* 按目标帧周期计算的最大曝光时间，单位为秒。 */
+} IspControllerAeConstraintStatus;
+
+/**
  * @brief AWB 白平衡查询状态。
  *
  * 该结构体承载 RKAIQ AWB 查询结果，包括色温、白平衡四通道 gain 和 LVValue，
@@ -258,6 +271,7 @@ typedef struct {
     IspControllerHealthStatus health;       /* ISP/RKAIQ 健康诊断状态。 */
     IspControllerLowLightStatus low_light;  /* 低照度自动优化状态。 */
     IspControllerAeStatus ae;               /* AE 曝光、亮度、增益查询状态。 */
+    IspControllerAeConstraintStatus ae_constraint; /* 应用层设置的 AE 帧周期约束。 */
     IspControllerAwbStatus awb;             /* AWB 色温、白平衡 gain 查询状态。 */
 } IspControllerStatus;
 
@@ -285,6 +299,10 @@ typedef struct {
     uint64_t last_error_ts_us;      /* 最近一次 error 回调时间戳。 */
     IspControllerImageControls last_controls; /* 最近一次成功下发的运行时图像控制参数快照。 */
     int controls_applied;           /* last_controls 是否包含有效的下发记录。 */
+    int ae_constraint_applied;      /* 最近一次 AE 帧周期约束是否成功下发。 */
+    int ae_constraint_target_fps;   /* 最近一次 AE 帧周期约束对应的目标帧率。 */
+    float ae_constraint_min_time;   /* 最近一次 AE 最小曝光时间，单位为秒。 */
+    float ae_constraint_max_time;   /* 最近一次 AE 最大曝光时间，单位为秒。 */
     int low_light_active;           /* 当前是否处于低照度优化模式。 */
     uint64_t low_light_last_switch_ts_us; /* 最近一次低照度模式切换时间。 */
     char low_light_reason[128];     /* 最近一次低照度状态切换原因。 */
@@ -333,6 +351,19 @@ int isp_controller_is_started(const IspControllerCtx *ctx);
  * @return 0 表示下发成功或无需处理；-1 表示参数无效或 RKAIQ API 调用失败。
  */
 int isp_controller_apply_image_controls(IspControllerCtx *ctx, const IspControllerImageControls *controls);
+
+/**
+ * @brief 根据目标 Sensor 帧率限制 RKAIQ 自动曝光时间范围。
+ *
+ * 本接口保持 RKAIQ 自动曝光模式，只收紧最大曝光时间。最大值按目标帧周期的
+ * 95% 计算，为曝光量化和 Sensor 时序预留安全余量，防止 AE 扩大 VTS/VBLANK
+ * 后把实际采集帧率降到目标帧率以下。
+ *
+ * @param ctx ISP 控制上下文，必须已经完成 RKAIQ start。
+ * @param target_fps 应用层要求的 Sensor 目标帧率，必须大于 0。
+ * @return 0 表示约束下发成功或当前构建未启用 RKAIQ；-1 表示参数、模式或 RKAIQ 调用失败。
+ */
+int isp_controller_set_ae_fps_constraint(IspControllerCtx *ctx, int target_fps);
 
 /**
  * @brief 根据 AE 状态更新低照度优化策略。
