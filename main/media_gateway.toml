@@ -7,21 +7,28 @@
 [webrtc.cloud]
 # 启用任意 WebRTC 输出前必须填写以下三项。
 # 联调阶段可使用 ws://服务器:测试端口/device；正式部署必须改为可信 wss:// 地址。
-url = ""
-device_id = ""
+url = "ws://XXX:18080/device"
+device_id = "rk3568-001"
 # 只填写设备凭据文件路径，真实 Token 不写入本文件或 Git。
-token_file = ""
+token_file = "/etc/rkmedia-gateway/secrets/webrtc_device.token"
 
 [webrtc.ice]
 # 云端模式按需填写；地址和端口不包含 stun:/turn: 前缀。
-stun_host = ""
+stun_host = "XXX"
 stun_port = 3478
-turn_host = ""
+turn_host = "XXX"
 turn_port = 3478
-turn_username = ""
-turn_password_file = ""
+turn_username = "user"
+turn_password_file = "/etc/rkmedia-gateway/secrets/turn_password"
 # 仅用于验证 TURN 路径；开启时必须配置 TURN。
 relay_only = false
+
+[webrtc.video]
+# WebRTC视频质量档位：0=流畅，1=高清。默认使用流畅档，修改后重启生效。
+active_profile = 0
+# 两个档位显式引用已经存在的视频编码流，不会创建新的MPP编码器。
+smooth_stream = "sub"
+hd_stream = "main"
 
 # =============================================================================
 # 网关基础、输出开关与视频编码默认参数
@@ -620,9 +627,6 @@ enable_rtmp = 0
 # STREAM_MAIN_ENABLE_GB28181: 是否启用 GB28181 输出。
 enable_gb28181 = 0
 
-# STREAM_MAIN_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
-enable_webrtc = 1
-
 # -----------------------------------------------------------------------------
 # 主码流动态编码档位
 # -----------------------------------------------------------------------------
@@ -950,9 +954,6 @@ enable_rtmp = 0
 # STREAM_SUB_ENABLE_GB28181: 是否启用 GB28181 输出。
 enable_gb28181 = 0
 
-# STREAM_SUB_ENABLE_WEBRTC: 是否启用 WebRTC 浏览器输出。
-enable_webrtc = 0
-
 # -----------------------------------------------------------------------------
 # 子码流动态编码档位
 # -----------------------------------------------------------------------------
@@ -1124,8 +1125,8 @@ encoder_name = "RKMediaGateway"
 # 子码流输出：WebRTC
 # -----------------------------------------------------------------------------
 [stream.sub.webrtc]
-# 云端信令服务器使用该 ID 将浏览器会话路由到本路输出。
-stream_id = "sub"
+# 质量档位只切换设备内部编码流；云端和浏览器继续使用稳定的逻辑ID main。
+stream_id = "main"
 audio_encoder_group = "opus_48k_mono"
 # STREAM_SUB_WEBRTC_NAME: WebRTC 输出名称，用于日志和通道标识。
 name = "webrtc-sub"

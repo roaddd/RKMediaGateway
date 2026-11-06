@@ -1372,6 +1372,13 @@ static int gateway_shell_get_config(void *user_data, const char *input, char *ou
                                gateway_debug_switch_name(cfg->output.switches.enable_rtmp),
                                gateway_debug_switch_name(cfg->output.switches.enable_gb28181),
                                gateway_debug_switch_name(cfg->output.switches.enable_webrtc));
+    debug_command_reply_append(reply,
+                               &offset,
+                               "  webrtc_video: profile=%d smooth_stream=%s hd_stream=%s selected_stream=%d\n",
+                               cfg->output.webrtc_video.active_profile,
+                               gateway_debug_safe_str(cfg->output.webrtc_video.smooth.stream_name),
+                               gateway_debug_safe_str(cfg->output.webrtc_video.hd.stream_name),
+                               cfg->output.webrtc_video.selected_stream_index);
     gateway_debug_append_rtsp_config_compact(reply, &offset, &cfg->output.rtsp);
     gateway_debug_append_rtmp_config_compact(reply, &offset, &cfg->output.rtmp);
     gateway_debug_append_gb28181_config_compact(reply, &offset, &cfg->output.gb28181);
