@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cerrno>
 #include <csignal>
+#include <cstring>
 #include <pthread.h>
 
 #include "defValue.h"
@@ -86,6 +87,8 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
 {
     const MediaGatewayAudioEncoderGroupConfig *audio_group = NULL;
     const MediaGatewayStreamConfig *s = NULL;
+    const char *selected_webrtc_stream_name = NULL;
+    int webrtc_selected = 0;
     int i = 0;
 
     if (!config)
@@ -102,6 +105,15 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
              config->system.bench.sample_every,
              config->system.bench.print_interval_sec,
              config->system.log.level);
+    LOG_INFO("[MAIN_CFG] parsed webrtc_video enabled=%d profile=%d smooth_stream=%s hd_stream=%s",
+             config->output.switches.enable_webrtc,
+             config->output.webrtc_video.active_profile,
+             config->output.webrtc_video.smooth.stream_name ? config->output.webrtc_video.smooth.stream_name : "unknown",
+             config->output.webrtc_video.hd.stream_name ? config->output.webrtc_video.hd.stream_name : "unknown");
+    selected_webrtc_stream_name =
+        (config->output.webrtc_video.active_profile == MEDIA_GATEWAY_WEBRTC_QUALITY_HD)
+            ? config->output.webrtc_video.hd.stream_name
+            : config->output.webrtc_video.smooth.stream_name;
     LOG_INFO("[MAIN_CFG] parsed light_fps enable=%d normal=%d low_light=%d bright=%d min_switch_ms=%d eval_ms=%d",
              config->policy.light_fps.enabled,
              config->policy.light_fps.targets.normal_fps,
@@ -147,6 +159,10 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
     for (i = 0; i < config->video.stream_count && i < MEDIA_GATEWAY_MAX_STREAMS; ++i)
     {
         s = &config->video.streams[i];
+        webrtc_selected = config->output.switches.enable_webrtc &&
+                           selected_webrtc_stream_name &&
+                           s->name &&
+                           std::strcmp(selected_webrtc_stream_name, s->name) == 0;
         LOG_INFO("[MAIN_CFG] parsed stream=%d name=%s enabled=%d source=%d size=%dx%d fps=%d bitrate=%d rc=%d out(rtsp=%d rtmp=%d gb28181=%d webrtc=%d)",
                  i,
                  s->name ? s->name : "unknown",
@@ -160,7 +176,7 @@ static void log_main_config_snapshot(const MediaGatewayConfig *config)
                  s->enable_rtsp,
                  s->enable_rtmp,
                  s->enable_gb28181,
-                 s->enable_webrtc);
+                 webrtc_selected);
         LOG_INFO("[MAIN_CFG] audio_bindings stream=%d rtsp=%s rtmp=%s gb28181=%s webrtc=%s",
                  i,
                  s->rtsp_audio.encoder_group,

@@ -14,6 +14,7 @@
 #include "mediaGatewayPolicy.h"
 #include "mediaGatewayProcess.h"
 #include "mediaGatewayStats.h"
+#include "mediaGatewayWebRtcProfile.h"
 #include "mediaGatewayDebug.h"
 #include "videoFrameRate.h"
 
@@ -999,24 +1000,6 @@ static int validate_raw_gb28181_config(const MediaOutputGb28181Config *cfg, int 
     return 0;
 }
 
-static int validate_raw_webrtc_config(const MediaOutputWebRtcConfig *cfg, int stream_idx)
-{
-    if (cfg->name[0] == '\0' ||
-        require_positive_int("streams[].webrtc.queue_capacity", cfg->queue_capacity) != 0 ||
-        require_positive_int("streams[].webrtc.video_fps", cfg->media.video_fps) != 0)
-    {
-        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d name=%s queue=%d fps=%d",
-                  stream_idx, cfg->name, cfg->queue_capacity, cfg->media.video_fps);
-        return -1;
-    }
-    if (cfg->signaling.stream_id[0] == '\0')
-    {
-        LOG_ERROR("media_gateway config invalid: WebRTC stream=%d cloud stream_id is empty", stream_idx);
-        return -1;
-    }
-    return 0;
-}
-
 /**
  * @description: 校验网关级 WebRTC 参数；云端凭据只在启用云端输出时要求。
  */
@@ -1091,8 +1074,6 @@ static int validate_raw_stream_config(const MediaGatewayStreamConfig *cfg,
     if (cfg->enable_rtmp && validate_raw_rtmp_config(&cfg->rtmp, stream_idx) != 0)
         return -1;
     if (cfg->enable_gb28181 && validate_raw_gb28181_config(&cfg->gb28181, stream_idx) != 0)
-        return -1;
-    if (cfg->enable_webrtc && validate_raw_webrtc_config(&cfg->webrtc, stream_idx) != 0)
         return -1;
     return 0;
 }
@@ -1205,6 +1186,11 @@ static int fill_default_config(MediaGatewayConfig *dst, const MediaGatewayConfig
         return config_error_int("stream_count", dst->video.stream_count, "must be between 0 and MEDIA_GATEWAY_MAX_STREAMS");
     if (dst->video.stream_count > 0 && dst->input.capture_source_count <= 0)
         return config_error_int("capture_source_count", dst->input.capture_source_count, "must be > 0 when streams are configured");
+    if (media_gateway_resolve_webrtc_video_binding(dst) != 0)
+    {
+        LOG_ERROR("media_gateway config invalid: resolve WebRTC video quality profile");
+        return -1;
+    }
     for (i = 0; i < MEDIA_GATEWAY_MAX_CAPTURE_SOURCES; ++i)
         source_stream_owner[i] = -1;
     for (i = 0; i < dst->video.stream_count; ++i)

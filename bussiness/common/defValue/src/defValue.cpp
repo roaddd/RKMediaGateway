@@ -420,7 +420,6 @@ static void set_stream_defaults(const char *prefix,
     set_value_int((p + "ENABLE_RTSP").c_str(), 1);
     set_value_int((p + "ENABLE_RTMP").c_str(), 0);
     set_value_int((p + "ENABLE_GB28181").c_str(), is_main ? 1 : 0);
-    set_value_int((p + "ENABLE_WEBRTC").c_str(), 0);
 
     set_value((p + "RTSP_NAME").c_str(), is_main ? "rtsp-main" : "rtsp-sub");
     set_value((p + "RTSP_SESSION_NAME").c_str(), is_main ? "live_main" : "live_sub");
@@ -472,7 +471,8 @@ static void set_stream_defaults(const char *prefix,
     set_value((p + "GB28181_AUDIO_ENCODER_GROUP").c_str(), "");
 
     set_value((p + "WEBRTC_NAME").c_str(), is_main ? "webrtc-main" : "webrtc-sub");
-    set_value((p + "WEBRTC_STREAM_ID").c_str(), is_main ? "main" : "sub");
+    /* 质量档位切换只改变设备内部编码流绑定，云端逻辑码流身份保持稳定。 */
+    set_value((p + "WEBRTC_STREAM_ID").c_str(), "main");
     set_value_int((p + "WEBRTC_QUEUE_CAPACITY").c_str(), 32);
     set_value_int((p + "WEBRTC_VIDEO_FPS").c_str(), fps);
     set_value((p + "WEBRTC_AUDIO_ENCODER_GROUP").c_str(), "");
@@ -528,6 +528,9 @@ static void load_defaults(void) {
     set_value("WEBRTC_ICE_TURN_USERNAME", "");
     set_value("WEBRTC_ICE_TURN_PASSWORD_FILE", "");
     set_value_int("WEBRTC_ICE_RELAY_ONLY", 0);
+    set_value_int("WEBRTC_VIDEO_ACTIVE_PROFILE", MEDIA_GATEWAY_WEBRTC_QUALITY_SMOOTH);
+    set_value("WEBRTC_VIDEO_SMOOTH_STREAM", "sub");
+    set_value("WEBRTC_VIDEO_HD_STREAM", "main");
     set_value_int("GATEWAY_FPS", 30);
     set_value_int("GATEWAY_BITRATE", 2 * 1024 * 1024);
     set_value_int("GATEWAY_GOP", 30);
@@ -876,7 +879,8 @@ static void fill_stream(MediaGatewayStreamConfig *stream, const char *prefix) {
     stream->enable_rtsp = value_int((p + "ENABLE_RTSP").c_str());
     stream->enable_rtmp = value_int((p + "ENABLE_RTMP").c_str());
     stream->enable_gb28181 = value_int((p + "ENABLE_GB28181").c_str());
-    stream->enable_webrtc = value_int((p + "ENABLE_WEBRTC").c_str());
+    /* WebRTC输出由网关级质量档位显式选择，不再读取每路码流的独立开关。 */
+    stream->enable_webrtc = 0;
 
     stream->rtsp.name = value_string((p + "RTSP_NAME").c_str());
     stream->rtsp.session_name = value_string((p + "RTSP_SESSION_NAME").c_str());
@@ -1037,6 +1041,11 @@ void def_value_get_media_gateway_config(MediaGatewayConfig *config) {
     snprintf(config->output.webrtc_shared.ice.turn.password_file,
              sizeof(config->output.webrtc_shared.ice.turn.password_file), "%s", value_string("WEBRTC_ICE_TURN_PASSWORD_FILE"));
     config->output.webrtc_shared.ice.relay_only = value_int("WEBRTC_ICE_RELAY_ONLY");
+    config->output.webrtc_video.active_profile =
+        static_cast<MediaGatewayWebRtcQualityProfile>(value_int("WEBRTC_VIDEO_ACTIVE_PROFILE"));
+    config->output.webrtc_video.smooth.stream_name = value_string("WEBRTC_VIDEO_SMOOTH_STREAM");
+    config->output.webrtc_video.hd.stream_name = value_string("WEBRTC_VIDEO_HD_STREAM");
+    config->output.webrtc_video.selected_stream_index = -1;
 
     config->output.rtsp.name = value_string("RTSP_NAME");
     config->output.rtsp.session_name = value_string("RTSP_SESSION_NAME");

@@ -231,7 +231,7 @@ typedef struct {
     int enable_rtsp;                 /* 该码流是否启用 RTSP 输出。 */
     int enable_rtmp;                 /* 该码流是否启用 RTMP 输出。 */
     int enable_gb28181;              /* 该码流是否启用 GB28181 输出。 */
-    int enable_webrtc;               /* 该码流是否启用 WebRTC 浏览器输出。 */
+    int enable_webrtc;               /* 运行期派生标志：该码流是否被当前 WebRTC 质量档位选中。 */
     MediaOutputRtspConfig rtsp;      /* 该码流 RTSP 输出配置。 */
     MediaOutputRtmpConfig rtmp;      /* 该码流 RTMP 输出配置。 */
     MediaOutputGb28181Config gb28181;/* 该码流 GB28181 输出配置。 */
@@ -248,6 +248,26 @@ typedef struct {
     int enable_gb28181;              /* 是否启用 GB28181 设备输出链路。 */
     int enable_webrtc;               /* 是否启用 WebRTC 浏览器输出链路。 */
 } MediaGatewayOutputSwitchConfig;
+
+/** WebRTC 视频质量档位。 */
+typedef enum {
+    MEDIA_GATEWAY_WEBRTC_QUALITY_SMOOTH = 0, /* 流畅档：默认绑定低码率子码流。 */
+    MEDIA_GATEWAY_WEBRTC_QUALITY_HD = 1,     /* 高清档：绑定高质量主码流。 */
+    MEDIA_GATEWAY_WEBRTC_QUALITY_BUTT
+} MediaGatewayWebRtcQualityProfile;
+
+/** 单个 WebRTC 视频质量档位到已有编码流的显式绑定。 */
+typedef struct {
+    const char *stream_name; /* 引用 video.streams 中的码流名称，不创建新编码器。 */
+} MediaGatewayWebRtcQualityBinding;
+
+/** WebRTC 视频档位选择及运行期解析结果。 */
+typedef struct {
+    MediaGatewayWebRtcQualityProfile active_profile; /* 当前启用的质量档位。 */
+    MediaGatewayWebRtcQualityBinding smooth;         /* 流畅档绑定。 */
+    MediaGatewayWebRtcQualityBinding hd;             /* 高清档绑定。 */
+    int selected_stream_index; /* 校验阶段解析出的实际码流下标，-1 表示 WebRTC 未启用。 */
+} MediaGatewayWebRtcVideoBindingConfig;
 
 typedef struct {
     int fps;                         /* 顶层默认编码帧率；多码流配置以 streams[i].fps 为准。 */
@@ -321,6 +341,7 @@ typedef struct {
     MediaOutputRtmpConfig rtmp;      /* RTMP 协议专用配置块。 */
     MediaOutputGb28181Config gb28181;/* GB28181/SIP+RTP 协议专用配置块。 */
     MediaOutputWebRtcSharedConfig webrtc_shared; /* 网关级云端信令与 ICE 共享配置。 */
+    MediaGatewayWebRtcVideoBindingConfig webrtc_video; /* WebRTC 质量档位与已有视频流的绑定。 */
 } MediaGatewayOutputConfig;
 
 typedef struct {
