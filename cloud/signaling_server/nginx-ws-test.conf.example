@@ -1,0 +1,30 @@
+# 仅供受控公网 WS 联调：放入 Nginx 的 server 配置并替换来源公网 IP。
+# 联调完成后关闭此入口并作废测试 Token；正式部署应改用可信 WSS。
+server {
+    listen 18080;
+    server_name _;
+
+    # 默认拒绝所有来源，只临时放行开发板和 PC 当前的公网出口地址。
+    # 将下面的示例地址替换成实际公网 IP，不能直接使用示例值。
+    allow 192.0.2.10;
+    allow 192.0.2.11;
+    deny all;
+
+    location /device {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 90s;
+    }
+
+    location /browser {
+        proxy_pass http://127.0.0.1:8765;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 90s;
+    }
+}
